@@ -244,6 +244,7 @@ that pays for it.
   | is | answer a yes-or-no question about a value, returning a bool |
   | open | open a file and return it, to be read or written |
   | reconcile | build a locus's locus alleles and its samples' sample results (`doc/specs/reconciliation.md` §4) |
+  | evaluate | give the outcome of a sample pair (`doc/specs/reconciliation.md` §5) |
 
 - Public is only what another module or the user calls: everything else
   starts with an underscore, functions, classes and constants alike. The
