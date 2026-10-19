@@ -486,6 +486,31 @@ def test_phase_set_dot_is_none(tmp_path: Path, reference: IndexedFasta) -> None:
     )
 
 
+def test_dropped_trailing_sample_fields_are_absent(tmp_path: Path, reference: IndexedFasta) -> None:
+    # VCF lets a sample drop trailing fields: HG002 drops PS, HG003 drops GQ and PS too.
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGT:GQ:PS\t1|0:20\t0|1\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(1, 0), phased=True, phase_set=None, quality=20),
+        VcfGenotype(alleles=(0, 1), phased=True, phase_set=None, quality=None),
+    )
+
+
+def test_key_named_twice_in_format_takes_its_last_value(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGQ:GT:GQ\t10:0/1:20\t10:1/1:30\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(0, 1), phased=False, phase_set=None, quality=20),
+        VcfGenotype(alleles=(1, 1), phased=False, phase_set=None, quality=30),
+    )
+
+
 def test_alt_dot_gives_a_record_with_ref_only(tmp_path: Path, reference: IndexedFasta) -> None:
     path = write_vcf(tmp_path, "chr1\t5\t.\tA\t.\t.\t.\t.\tGT\t0/0\t0/0\n")
 
