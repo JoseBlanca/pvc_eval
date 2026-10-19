@@ -9,7 +9,7 @@ converted here, and nowhere else.
 Public: parse_vcf, which gives the VCF records; parse_vcf_samples, which gives the sample
 names; VcfRecord and VcfGenotype; Span, the type of VcfRecord.span; the sentinels a
 genotype is compared with, MISSING, MALFORMED_GT and HAPLOID_GT; and the constants PLOIDY
-and MAX_SPAN_REACH.
+and DEFAULT_SPAN_LIMIT.
 """
 
 import gzip
@@ -17,13 +17,14 @@ import heapq
 import logging
 import math
 import re
-from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from collections.abc import Generator, Iterable, Iterator, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
 from pvc_eval.errors import PvcEvalInputError
+from pvc_eval.fasta import FastaWindow
 
 _logger = logging.getLogger(__name__)
 
@@ -44,9 +45,15 @@ _SPANNING_DELETION = "*"
 _GZIP_MAGIC = b"\x1f\x8b"
 _DECIMAL_NUMBER = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?")
 _NUM_FIXED_COLUMNS = 9  # CHROM to FORMAT
-# doc/spec.md §5.2: a span that would reach further than this beyond its REF, on either
-# side, is cut to the REF, which bounds how long the reader holds a record.
-MAX_SPAN_REACH = 10_000
+# doc/spec.md §5.2: the span limit when the caller sets none. A span that would reach
+# further than the limit beyond its REF, on either side, is cut to the REF, which bounds
+# how long the reader holds a record and how many bases it holds of the reference.
+DEFAULT_SPAN_LIMIT = 10_000
+# How many bases on each side of a REF its span is first looked for in. A slide that runs
+# into the end of them looks again in twice as many, up to one more than the span limit, so
+# the bases a record asks the window for are a few times its slide, whatever the limit,
+# and a record with no limit does not ask for its whole contig.
+_FIRST_REACH = 64
 
 type Span = tuple[int, int]
 """A stretch of a contig, 0-based and half-open."""
@@ -119,24 +126,30 @@ def parse_vcf_samples(path: Path) -> tuple[str, ...]:
 
 
 def parse_vcf(
-    path: Path, contigs: Sequence[str], contig_sequence_of: Callable[[str], str]
+    path: Path, reference_window: FastaWindow, *, span_limit: int | None = DEFAULT_SPAN_LIMIT
 ) -> Iterator[VcfRecord]:
     """The VCF records of a file, plain or bgzipped, normalised and given their spans
     (§5.2), in order of span start, and in the file's order where two spans start at one
     position.
 
-    contigs: the contig names of the reference, in the order of its `.fai`.
-    contig_sequence_of: gives the sequence of a contig of the reference, by its name, in upper or
-        lower case; it is compared in upper case, so a soft-masked reference gives no
-        REF mismatch (§5.2). It is called once for each contig that has a VCF record.
+    reference_window: the reference, read through a window the caller owns. The contigs,
+        their order and their lengths are those of its IndexedFasta's `.fai`. Its bases
+        come in upper case, so a soft-masked reference gives no REF mismatch (§5.2).
+    span_limit: the most bases a span may reach beyond its REF on either side, or None
+        for no limit (§5.2). A record whose span would reach further is given its REF as
+        its span, and the number of those is logged as a warning at the end.
 
-    A record is held only until no later record of its contig can have a span that
-    starts before its own: a span starts at most MAX_SPAN_REACH bases before its REF,
-    and the file is sorted by POS. A record whose span would reach further than that
-    beyond its REF is given its REF as its span, and the number of those is logged as a
-    warning at the end. A record whose REF differs from the reference is marked
-    ref_mismatch and given its trimmed REF as its span: such a record makes its locus
-    invalid for every sample of its file (§5.4), so its slide is not looked for.
+    With a limit, a record is held only until no later record of its contig can have a
+    span that starts before its own: a span starts at most span_limit bases before its
+    REF, and the file is sorted by POS. The reader evicts from the window the bases no
+    record still to come can need, so the window holds about span_limit bases behind the
+    last record read and a block ahead of it. With no limit, the records of a contig are
+    held until the next contig begins, and the reader never evicts: the caller does, with
+    evict_before, or the window keeps the bases it reads along the contig.
+
+    A record whose REF differs from the reference, or runs past the end of its contig, is
+    marked ref_mismatch and given its trimmed REF as its span: such a record makes its
+    locus invalid for every sample of its file (§5.4), so its slide is not looked for.
 
     Raises PvcEvalInputError, when the stream reaches it, for a VCF record on a contig
     the reference lacks, for records out of the `.fai`'s contig order or out of position
@@ -145,13 +158,18 @@ def parse_vcf(
     number of samples the #CHROM line names. A blank line is skipped. A record with a symbolic
     allele is skipped, and the number skipped is logged as a warning at the end (§9). A
     QUAL or GQ that is not a number is taken as absent, and those are counted in a
-    warning at the end too.
+    warning at the end too. Raises ValueError, when the stream starts, for a negative
+    span_limit.
     """
-    with closing(_parse_records_in_file_order(path, contigs, contig_sequence_of)) as records:
-        yield from _sort_by_span_start(records)
+    if span_limit is not None and span_limit < 0:
+        raise ValueError(f"span_limit must be 0 or more, not {span_limit}")
+    with closing(_parse_records_in_file_order(path, reference_window, span_limit)) as records:
+        yield from _sort_by_span_start(records, span_limit)
 
 
-def _sort_by_span_start(records: Iterable[tuple[int, VcfRecord]]) -> Iterator[VcfRecord]:
+def _sort_by_span_start(
+    records: Iterable[tuple[int, VcfRecord]], span_limit: int | None
+) -> Iterator[VcfRecord]:
     """The records in order of span start, and of the file where two spans start at one
     position.
 
@@ -167,20 +185,25 @@ def _sort_by_span_start(records: Iterable[tuple[int, VcfRecord]]) -> Iterator[Vc
                 yield heapq.heappop(held)[2]
             contig = vcf_record.contig
         heapq.heappush(held, (vcf_record.span[0], place_in_file, vcf_record))
+        # With no limit, a later record of the contig can span from its first base.
+        if span_limit is None:
+            continue
         # Every later record of the contig has its POS at pos or after, and its REF,
-        # trimmed, too, so its span starts at pos - MAX_SPAN_REACH or after.
-        while held and held[0][0] <= pos - MAX_SPAN_REACH:
+        # trimmed, too, so its span starts at pos - span_limit or after.
+        while held and held[0][0] <= pos - span_limit:
             yield heapq.heappop(held)[2]
     while held:
         yield heapq.heappop(held)[2]
 
 
 def _parse_records_in_file_order(
-    path: Path, contigs: Sequence[str], contig_sequence_of: Callable[[str], str]
+    path: Path, reference_window: FastaWindow, span_limit: int | None
 ) -> Generator[tuple[int, VcfRecord]]:
     """The records of parse_vcf in the file's order, each with the 0-based
     position of its POS."""
-    contig_rank = {contig: rank for rank, contig in enumerate(contigs)}
+    contig_rank = {
+        contig: rank for rank, contig in enumerate(reference_window.indexed_fasta.contigs)
+    }
     # The (contig rank, POS) of the previous record, which this one must not come before,
     # and where that record is, for the message.
     previous_order: tuple[int, int] | None = None
@@ -189,8 +212,6 @@ def _parse_records_in_file_order(
     num_not_numbers = 0
     num_beyond_reach = 0
     first_beyond_reach_line = 0
-    sequence_contig = ""
-    sequence = ""
     with closing(_read_numbered_lines(path)) as numbered_lines:
         num_samples = len(_parse_samples(numbered_lines, path))
         for line_number, line in numbered_lines:
@@ -219,16 +240,22 @@ def _parse_records_in_file_order(
                 continue
             if pos_1based == 0:
                 raise _make_pos_error(fields[1], path, line_number)
-            if contig != sequence_contig:
-                sequence_contig, sequence = contig, contig_sequence_of(contig).upper()
+            pos = pos_1based - 1
+            if span_limit is not None:
+                # §5.2: no base before pos - span_limit - 1 is needed again. This record and
+                # every later one of the contig have their POS at pos or after (the file is
+                # sorted), their trimmed REF too, and their span is looked for at most
+                # span_limit + 1 bases before it; the records held for their order need no
+                # more bases. A record on the next contig makes the window drop the buffer.
+                reference_window.evict_before(pos - span_limit - 1)
             record, num_record_not_numbers, is_beyond_reach = _parse_record(
-                fields, contig, pos_1based - 1, alts, line_number, sequence
+                fields, contig, pos, alts, line_number, reference_window, span_limit
             )
             num_not_numbers += num_record_not_numbers
             if is_beyond_reach:
                 num_beyond_reach += 1
                 first_beyond_reach_line = first_beyond_reach_line or line_number
-            yield pos_1based - 1, record
+            yield pos, record
     if num_symbolic:
         _logger.warning(
             "%s: skipped %s with symbolic alleles (<DEL>, breakends); pvc_eval does not"
@@ -244,6 +271,7 @@ def _parse_records_in_file_order(
             _format_count(num_not_numbers, "QUAL or GQ value"),
         )
     if num_beyond_reach:
+        assert span_limit is not None, "only a limit cuts a span"
         if num_beyond_reach == 1:
             which, given = f"at line {first_beyond_reach_line}", "was given"
         else:
@@ -255,7 +283,7 @@ def _parse_records_in_file_order(
             path,
             _format_count(num_beyond_reach, "VCF record"),
             which,
-            f"{MAX_SPAN_REACH:,}",
+            f"{span_limit:,}",
             given,
         )
 
@@ -424,20 +452,31 @@ def _parse_record(
     pos: int,
     alts: tuple[str, ...],
     line_number: int,
-    contig_sequence: str,
+    reference_window: FastaWindow,
+    span_limit: int | None,
 ) -> tuple[VcfRecord, int, bool]:
     """The VCF record of a line, normalised and with its span; how many of its QUAL and
     GQ values were taken as absent for not being numbers; and whether its span was cut
-    to its REF for reaching more than MAX_SPAN_REACH beyond it.
+    to its REF for reaching more than span_limit beyond it.
 
     pos: the 0-based position of POS.
     """
-    # VCF bases are case-insensitive, and the reference is compared in upper case.
+    # VCF bases are case-insensitive, and the window gives the reference in upper case.
     alleles = (fields[3].upper(), *(alt.upper() for alt in alts))
-    ref_mismatch = contig_sequence[pos : pos + len(alleles[0])] != alleles[0]
+    contig_length = reference_window.indexed_fasta.get_length(contig)
+    # A REF that runs past the end of the contig gets fewer bases, and differs.
+    ref_end = min(pos + len(alleles[0]), contig_length)
+    ref_bases = reference_window.get_bases(contig, min(pos, ref_end), ref_end)
+    ref_mismatch = ref_bases != alleles[0]
     start, trimmed = _trim(pos, alleles)
     ref_span = (start, start + len(trimmed[0]))
-    span = ref_span if ref_mismatch else _find_span(start, trimmed, contig_sequence)
+    span = (
+        ref_span
+        if ref_mismatch
+        else _find_span_in_window(
+            start, trimmed, reference_window, contig, contig_length, span_limit
+        )
+    )
     is_beyond_reach = span is None
     if span is None:
         span = ref_span
@@ -529,34 +568,83 @@ def _trim(start: int, alleles: Sequence[str]) -> tuple[int, tuple[str, ...]]:
     return start, _make_trimmed_alleles(alleles, trimmed)
 
 
-def _find_span(start: int, alleles: Sequence[str], contig_sequence: str) -> Span | None:
+def _find_span_in_window(
+    start: int,
+    alleles: Sequence[str],
+    reference_window: FastaWindow,
+    contig: str,
+    contig_length: int,
+    span_limit: int | None,
+) -> Span | None:
     """The span of a trimmed record whose REF agrees with the reference (§5.2), or None
-    when it would reach more than MAX_SPAN_REACH bases beyond the REF.
+    when it would reach more than span_limit bases beyond the REF on either side; with no
+    limit, never None.
 
-    start: where REF starts, 0-based. contig_sequence: the record's contig, in upper case.
+    start: where REF starts, 0-based.
+
+    The span is looked for in the bases within a reach of the REF, and again in twice as
+    many while a slide runs into their end short of the contig's. With a limit the reach
+    stops at span_limit + 1: a slide that runs into the end of those bases reaches beyond
+    the limit, and how far it goes is not needed.
+    """
+    end = start + len(alleles[0])
+    reach = _FIRST_REACH
+    while True:
+        if span_limit is not None:
+            reach = min(reach, span_limit + 1)
+        stretch_start = max(0, start - reach)
+        stretch_end = min(contig_length, end + reach)
+        stretch = reference_window.get_bases(contig, stretch_start, stretch_end)
+        span_start, span_end = _find_span(start, alleles, stretch, stretch_start, contig_length)
+        # A slide that ran into an end of the stretch short of the contig's gives a span
+        # that starts before the stretch or ends at its end or after (see _find_span). An
+        # insertion that stops one base short of the end gives that too, and is only
+        # looked for again.
+        is_cut_by_stretch = span_start < stretch_start or (
+            span_end >= stretch_end and stretch_end < contig_length
+        )
+        if not is_cut_by_stretch or (span_limit is not None and reach > span_limit):
+            break
+        reach *= 2
+    if span_limit is not None and (start - span_start > span_limit or span_end - end > span_limit):
+        return None
+    return span_start, span_end
+
+
+def _find_span(
+    start: int, alleles: Sequence[str], stretch: str, stretch_start: int, contig_length: int
+) -> Span:
+    """The span of a trimmed record whose REF agrees with the reference (§5.2), as far as a
+    stretch of its contig shows it.
+
+    start: where REF starts, 0-based. stretch: the bases of the contig from stretch_start,
+    0-based, in upper case, the REF among them. contig_length: the number of bases of the
+    contig, which tells the end of the stretch from the end of the contig.
 
     The span is the union of the REF and of the span of each ALT. An ALT that is an
     insertion or a deletion spans from the anchor of its left-aligned form to the last
     base it deletes, or the base after the point it is inserted at, when slid as far
-    right as it goes. A SNP, a complex ALT and a `*` add nothing to the REF.
+    right as it goes. A SNP, a complex ALT and a `*` add nothing to the REF. A slide stops
+    at the ends of the stretch; one that stops there, short of the ends of the contig,
+    gives a span that starts one base before the stretch or ends at its end or after.
     """
     end = start + len(alleles[0])
     span_start, span_end = start, end
     for alt in alleles[1:]:
         if alt == _SPANNING_DELETION:
             continue
-        indel_span = _find_indel_span(start, alleles[0], alt, contig_sequence)
+        indel_span = _find_indel_span(start, alleles[0], alt, stretch, stretch_start, contig_length)
         if indel_span is not None:
             span_start = min(span_start, indel_span[0])
             span_end = max(span_end, indel_span[1])
-    if start - span_start > MAX_SPAN_REACH or span_end - end > MAX_SPAN_REACH:
-        return None
     return span_start, span_end
 
 
-def _find_indel_span(start: int, ref: str, alt: str, contig_sequence: str) -> Span | None:
-    """The span of one ALT when it is an insertion or a deletion, 0-based and half-open;
-    None for a SNP or a complex ALT.
+def _find_indel_span(
+    start: int, ref: str, alt: str, stretch: str, stretch_start: int, contig_length: int
+) -> Span | None:
+    """The span of one ALT when it is an insertion or a deletion, 0-based and half-open,
+    as far as the stretch shows it (see _find_span); None for a SNP or a complex ALT.
 
     The ALT is an indel when, without the bases it shares with REF at both ends, one of
     the two is empty, whichever side the shared bases were on.
@@ -571,36 +659,31 @@ def _find_indel_span(start: int, ref: str, alt: str, contig_sequence: str) -> Sp
     event = deleted or inserted
     # The event is the deletion of [position, after), or an insertion before position,
     # where after is position too.
-    position = start + num_prefix
+    # Positions in the stretch, not in the contig.
+    position = start + num_prefix - stretch_start
     after = position + len(deleted)
-    # A slide this long reaches more than MAX_SPAN_REACH beyond the REF, whatever the REF,
-    # so sliding stops there and the caller cuts the span; a satellite of megabases is
-    # not walked for each record in it.
-    max_slide = MAX_SPAN_REACH + len(ref) + 1
     # The event slides left while the base before it equals its last base, and right
     # while the base after it equals its first; each slide turns the event round by one
     # base, so its bases are read round from the end it slid from.
     num_left = 0
     while (
-        num_left < max_slide
-        and position - num_left > 0
-        and contig_sequence[position - num_left - 1] == event[(-1 - num_left) % len(event)]
+        position - num_left > 0
+        and stretch[position - num_left - 1] == event[(-1 - num_left) % len(event)]
     ):
         num_left += 1
     num_right = 0
     while (
-        num_right < max_slide
-        and after + num_right < len(contig_sequence)
-        and contig_sequence[after + num_right] == event[num_right % len(event)]
+        after + num_right < len(stretch)
+        and stretch[after + num_right] == event[num_right % len(event)]
     ):
         num_right += 1
     # The anchor is the base before the left-aligned event; an event slid to the first
     # base of the contig has none, and its span starts there. An insertion's span holds
     # the base after its point (§5.2: so that C -> CT at 10 overlaps a record at 11),
     # unless it is inserted after the last base of the contig.
-    span_start = max(position - num_left - 1, 0)
-    span_end = after + num_right + (1 if inserted else 0)
-    return span_start, min(span_end, len(contig_sequence))
+    span_start = max(stretch_start + position - num_left - 1, 0)
+    span_end = stretch_start + after + num_right + (1 if inserted else 0)
+    return span_start, min(span_end, contig_length)
 
 
 def _count_shared(first: str, second: str) -> int:

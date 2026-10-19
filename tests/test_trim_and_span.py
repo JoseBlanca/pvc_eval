@@ -71,7 +71,7 @@ CASE_3 = "N" * 9 + "CG"  # 1-based 10 to 11
 def test_spans_of_the_three_cases_of_the_spec(
     contig: str, start: int, alleles: tuple[str, ...], expected: tuple[int, int]
 ) -> None:
-    assert _find_span(start, alleles, contig) == expected
+    assert _find_span(start, alleles, contig, 0, len(contig)) == expected
 
 
 @pytest.mark.parametrize(
@@ -124,37 +124,38 @@ def test_spans_of_the_three_cases_of_the_spec(
 def test_span_covers_every_place_the_record_could_be_written(
     contig: str, start: int, alleles: tuple[str, ...], expected: tuple[int, int]
 ) -> None:
-    assert _find_span(start, alleles, contig) == expected
+    assert _find_span(start, alleles, contig, 0, len(contig)) == expected
 
 
 @pytest.mark.parametrize(
-    ("contig", "start", "alleles", "expected"),
+    ("stretch", "contig_length", "start", "alleles", "expected"),
     [
-        # The deletion of the last A of 10002 slides to the first: its anchor would be
-        # 10001 bases left of its REF.
-        ("G" + "A" * 10002 + "T", 10001, ("AA", "A"), None),
-        # Of 10001 As, 10000 bases: the most a span may reach.
-        ("G" + "A" * 10001 + "T", 10000, ("AA", "A"), (0, 10002)),
-        # An A inserted after the G slides right past 10001 As, to the T.
-        ("G" + "A" * 10001 + "T", 0, ("G", "GA"), None),
-        ("G" + "A" * 9999 + "T", 0, ("G", "GA"), (0, 10001)),
-        # The A at 10003, deleted after two shared As, slides 10002 bases left to 1, and
-        # its anchor, the G at 0, is 10001 bases left of the REF: a slide counted from
-        # the REF's start, without the shared bases, would stop one base short of it.
-        ("G" + "A" * 10003 + "CT", 10001, ("AAAC", "AAC", "TAAG"), None),
+        # The stretch holds 10 to 14 of a contig of 30. The deletion of the A at 13
+        # slides left to the start of the stretch, and its span starts one base before.
+        ("AAAAT", 30, 12, ("AA", "A"), (9, 14)),
+        # An A inserted after the G at 10 slides right to the end of the stretch, and its
+        # span ends one base after.
+        ("GAAAA", 30, 10, ("G", "GA"), (10, 16)),
+        # When the contig ends where the stretch does, the span ends there.
+        ("GAAAA", 15, 10, ("G", "GA"), (10, 15)),
+        # A slide that stops inside the stretch gives the span it gives on the contig.
+        ("CGAAT", 30, 12, ("AA", "A"), (11, 14)),
     ],
     ids=[
-        "deletion_beyond_10_kb",
-        "deletion_at_10_kb",
-        "insertion_beyond_10_kb",
-        "insertion_at_10_kb",
-        "deletion_beyond_10_kb_of_a_long_ref",
+        "slide_to_the_start_of_the_stretch",
+        "slide_to_the_end_of_the_stretch",
+        "slide_to_the_end_of_the_contig",
+        "slide_inside_the_stretch",
     ],
 )
-def test_span_that_reaches_more_than_10_kb_beyond_its_ref_is_none(
-    contig: str, start: int, alleles: tuple[str, ...], expected: tuple[int, int] | None
+def test_span_in_a_stretch_says_when_a_slide_reaches_its_end(
+    stretch: str,
+    contig_length: int,
+    start: int,
+    alleles: tuple[str, ...],
+    expected: tuple[int, int],
 ) -> None:
-    assert _find_span(start, alleles, contig) == expected
+    assert _find_span(start, alleles, stretch, 10, contig_length) == expected
 
 
 def make_haplotype(contig: str, start: int, ref: str, alt: str) -> str:
@@ -199,9 +200,8 @@ def test_span_contains_the_trimmed_ref(case: tuple[str, int, tuple[str, ...]]) -
     contig, start, alleles = case
     trimmed_start, trimmed = _trim(start, alleles)
 
-    span = _find_span(trimmed_start, trimmed, contig)
+    span = _find_span(trimmed_start, trimmed, contig, 0, len(contig))
 
-    assert span is not None
     assert span[0] <= trimmed_start
     assert span[1] >= trimmed_start + len(trimmed[0])
 
@@ -255,7 +255,10 @@ def test_every_spelling_of_one_indel_spans_from_the_first_to_the_last(
     is_deletion = size < 0
     expected_end = last_start + len(last_ref) if is_deletion else min(last_start + 2, len(contig))
 
-    spans = {_find_span(*_trim(start, (ref, alt)), contig) for start, ref, alt in spellings}
+    spans = {
+        _find_span(*_trim(start, (ref, alt)), contig, 0, len(contig))
+        for start, ref, alt in spellings
+    }
 
     assert spans == {(expected_start, expected_end)}
 
