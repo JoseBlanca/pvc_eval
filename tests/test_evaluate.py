@@ -165,6 +165,23 @@ REPORTED_PAIR_CASES: dict[str, tuple[SampleResult, SampleResult, PairEvaluation]
         ((1, 2), (0, 1)),
         PairEvaluation(Outcome.SAME_GENOTYPE, (0, 1), (0, 1)),
     ),
+    # A rule that names no pair reports the first genotype of each, here where each
+    # sample has two.
+    "different-first-of-each": (
+        ((0, 1), (0, 2)),
+        ((1, 2), (2, 3)),
+        PairEvaluation(Outcome.DIFFERENT, (0, 1), (1, 2)),
+    ),
+    "only-in-b-first-of-each": (
+        ((0, 0),),
+        ((0, 1), (0, 2)),
+        PairEvaluation(Outcome.ONLY_IN_B, (0, 0), (0, 1)),
+    ),
+    "missing-in-a-first-of-each": (
+        ((1, MISSING), (2, MISSING)),
+        ((1, 2),),
+        PairEvaluation(Outcome.MISSING_IN_A, (1, MISSING), (1, 2)),
+    ),
 }
 
 
