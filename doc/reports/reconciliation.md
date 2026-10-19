@@ -39,3 +39,34 @@ in `vcf.py` reached the GT parser through its own branch, now through the GT par
 `pvc_eval.segments` was written first by the STR finder session, in 90a3c39 on its branch, as
 `doc/spec.md` §4 gives it. It is picked into this branch as 6bbc7bc, and milestone 3 writes only
 `pvc_eval.locus`.
+
+## Milestone 2: sample pairs
+
+Done in adc88a9 and fixed in f5c0cff to 085d259, built on the branch `reconciliation-samples` so
+that it could run beside milestone 1, and merged here. `make_sample_pairs` pairs the samples of
+two files by name or by a `--sample-map`, with the errors and the warning of the spec's §3.
+
+- `uv run pytest tests/test_samples.py` gives "32 passed"; the plan asked for at least 10. The
+  whole suite gave "257 passed" on 085d259.
+- The five checks pass on 085d259.
+
+Changed in the spec: the implementer found six small cases §3 left open, and the review six
+more; the session wrote them into §3 before the code (90f493a, effc30d). Among them: a map that
+is missing or not UTF-8 stops the run with a message, not a traceback; a byte-order mark is
+ignored; a line of only spaces and tabs is blank; a name missing from its file is quoted, so a
+space in it shows.
+
+The review found no blocker. Fixed: the unreadable map; the byte-order mark, which the fix strips
+itself, since decoding with `utf-8-sig` put a bad byte on the wrong line; three behaviours no test
+could fail on (the cap of 10 names at exactly 10, an empty first field, a last line with no
+newline); pairing by map took time quadratic in the samples, 5.28 s for a map of 30,000 lines,
+now 0.035 s; and the count of a noun in a message, `format_count`, is now one function in
+`errors.py` that the VCF reader and the sample pairs share. Not taken: a lone carriage return
+inside a map line splits the line; Windows line ends read correctly, and nothing else writes it.
+
+For the owner: a VCF that does not exist stops the run with a traceback in `vcf.py`, which the
+sample pairs meet first since they read the headers; and a `#CHROM` line that ends in a tab gives
+a sample named "". Both are older than this plan and belong to the VCF reader.
+
+Changed in the plan: milestone 3 stands on milestone 2 too, since `reconcile` takes the `SamplePair`
+of milestone 2; the plan first named milestone 1 alone, and milestone 3's implementer found it.

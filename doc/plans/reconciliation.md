@@ -58,7 +58,7 @@ Milestones 1 and 2 touch different files and can run side by side. The others ru
   `vcf.py`. The milestone touches only the GT parsing and the constants, to keep a merge small,
   and the report says which lines changed.
 
-- [ ] **2. Sample pairs**
+- [x] **2. Sample pairs**
 
   What it gives: `make_sample_pairs` pairs the samples of two files by name or by a
   `--sample-map` file, with the errors and the warning of the spec.
@@ -100,7 +100,9 @@ Milestones 1 and 2 touch different files and can run side by side. The others ru
   - The verb `reconcile` in the verb table of `.claude/skills/coding/python.md`, with the meaning
     §7 gives it, in the commit of the code that first uses it.
 
-  Stands on: milestone 1, whose `OTHER_PLOIDY_GT` the tests of the invalid reason `ploidy mismatch` read.
+  Stands on: milestone 1, whose `OTHER_PLOIDY_GT` the tests of the invalid reason `ploidy mismatch` read,
+  and milestone 2, whose `SamplePair` `reconcile` takes (corrected on 19 October 2026: the plan
+  first named milestone 1 alone).
 
   What could go wrong, and what guards it: a wrong rule here gives a plausible wrong genotype, and
   no later check sees it. The rules most likely to be built wrong are the `*` coverage of §4.2,
