@@ -30,7 +30,7 @@ def locus_kind(locus: Locus) -> Kind:
     """
     if locus.str_regions:
         return Kind.STR
-    edit_kinds = set(_find_edit_kinds(locus))
+    edit_kinds = set(_get_edit_kinds(locus))
     if edit_kinds == {Kind.SNP}:
         return Kind.SNP
     if edit_kinds == {Kind.INDEL}:
@@ -40,17 +40,17 @@ def locus_kind(locus: Locus) -> Kind:
     return Kind.COMPLEX
 
 
-def _find_edit_kinds(locus: Locus) -> Iterator[Kind]:
+def _get_edit_kinds(locus: Locus) -> Iterator[Kind]:
     """The kind of each edit of the locus: SNP, INDEL or COMPLEX."""
     for vcf_record in (*locus.records_a, *locus.records_b):
         ref = vcf_record.alleles[0]
         for alt in vcf_record.alleles[1:]:
             if alt in ("*", ref):
                 continue
-            yield _find_edit_kind(ref, alt)
+            yield _get_edit_kind(ref, alt)
 
 
-def _find_edit_kind(ref: str, alt: str) -> Kind:
+def _get_edit_kind(ref: str, alt: str) -> Kind:
     """The kind of the edit ALT makes on REF, once the bases they share are trimmed."""
     prefix = 0
     while prefix < min(len(ref), len(alt)) and ref[prefix] == alt[prefix]:

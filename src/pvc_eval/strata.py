@@ -32,7 +32,7 @@ def pvc_stratum(locus: Locus) -> str:
     nothing, so the error comes at the first locus that holds one (decided by the owner
     on 19 October 2026).
     """
-    region_types = set()
+    region_types: set[RegionType] = set()
     for str_region in locus.str_regions:
         if str_region.region_type is None:
             contig, start, end = str_region.contig, str_region.start, str_region.end
