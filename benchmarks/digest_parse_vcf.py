@@ -5,7 +5,8 @@ since the count alone would not change if a span or a genotype did.
     uv run --no-sync python benchmarks/digest_parse_vcf.py VCF FASTA [SPAN_LIMIT] [--threads N]
 
 SPAN_LIMIT is a whole number of 1 or more, or `none` for no limit; without it,
-parse_vcf's default, DEFAULT_SPAN_LIMIT. N is parse_vcf's num_threads, 1 by default. Not timed: the hashing adds to the run.
+parse_vcf's default, DEFAULT_SPAN_LIMIT. N is parse_vcf's num_threads; without it,
+parse_vcf's default, DEFAULT_NUM_THREADS. Not timed: the hashing adds to the run.
 """
 
 import argparse
@@ -13,7 +14,7 @@ import hashlib
 from pathlib import Path
 
 from pvc_eval.fasta import IndexedFasta
-from pvc_eval.vcf import DEFAULT_SPAN_LIMIT, parse_vcf
+from pvc_eval.vcf import DEFAULT_NUM_THREADS, DEFAULT_SPAN_LIMIT, parse_vcf
 
 
 def main() -> None:
@@ -42,7 +43,10 @@ def _parse_args() -> argparse.Namespace:
         help=f"a whole number, or none (default {DEFAULT_SPAN_LIMIT})",
     )
     parser.add_argument(
-        "--threads", type=int, default=1, help="the threads that parse the samples (default 1)"
+        "--threads",
+        type=int,
+        default=DEFAULT_NUM_THREADS,
+        help=f"the threads that parse the samples (default {DEFAULT_NUM_THREADS})",
     )
     return parser.parse_args()
 

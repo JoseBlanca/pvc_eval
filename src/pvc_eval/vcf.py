@@ -8,8 +8,8 @@ converted here, and nowhere else.
 
 Public: parse_vcf, which gives the VCF records; parse_vcf_samples, which gives the sample
 names; VcfRecord and VcfGenotype; Span, the type of VcfRecord.span; the sentinels a
-genotype is compared with, MISSING, MALFORMED_GT and HAPLOID_GT; and the constants PLOIDY
-and DEFAULT_SPAN_LIMIT.
+genotype is compared with, MISSING, MALFORMED_GT and HAPLOID_GT; and the constants PLOIDY,
+DEFAULT_SPAN_LIMIT and DEFAULT_NUM_THREADS.
 """
 
 import functools
@@ -53,6 +53,13 @@ _NUM_FIXED_COLUMNS = 9  # CHROM to FORMAT
 # further than the limit beyond its REF, on either side, is cut to the REF, which bounds
 # how long the reader holds a record and how many bases it holds of the reference.
 DEFAULT_SPAN_LIMIT = 10_000
+# The threads that parse the sample columns when the caller sets no number: the owner's
+# choice of 19 October 2026, where the speed stopped growing. On the 64 Mb, 200-sample
+# benchmark input at the default span limit, parse_vcf took 13.1 s with 1 thread, 3.9 s
+# with 4 and 4.4 s with 8, the rest being the calling thread's own work; at 8 threads the
+# peak memory was 64 MB against 37 MB, the same as on a 5 Mb input, so it does not grow
+# with the file.
+DEFAULT_NUM_THREADS = 4
 # How many bases on each side of a REF its span is first looked for in. A slide that runs
 # into the end of them looks again in twice as many, up to one more than the span limit, so
 # the bases a record asks the window for are a few times its slide, whatever the limit,
@@ -134,7 +141,7 @@ def parse_vcf(
     reference: IndexedFasta,
     *,
     span_limit: int | None = DEFAULT_SPAN_LIMIT,
-    num_threads: int = 1,
+    num_threads: int = DEFAULT_NUM_THREADS,
 ) -> Iterator[VcfRecord]:
     """The VCF records of a file, plain or bgzipped, normalised and given their spans
     (§5.2), in order of span start, and in the file's order where two spans start at one
@@ -147,8 +154,9 @@ def parse_vcf(
         number of 1 or more, or None for no limit (§5.2). A record whose span would reach further is given its REF as
         its span, and the number of those is logged as a warning at the end.
     num_threads: how many threads parse the sample columns, a whole number of 1 or more.
-        The calling thread reads the lines, checks them and gives them their spans; with 1
-        it parses the sample columns too, and no pool is made. The records are the same
+        The calling thread reads the lines, checks them and gives them their spans. With 1
+        it parses the sample columns too, and no pool is made: the run is serial, as a
+        test or a profile may want. The records are the same
         whatever the number.
 
     With a limit, a record is held only until no later record of its contig can have a
