@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TextIO
 
 from pvc_eval.errors import PvcEvalInputError
-from pvc_eval.fasta import FastaWindow
+from pvc_eval.fasta import BLOCK_BASES, FastaWindow, IndexedFasta
 
 _logger = logging.getLogger(__name__)
 
@@ -126,26 +126,27 @@ def parse_vcf_samples(path: Path) -> tuple[str, ...]:
 
 
 def parse_vcf(
-    path: Path, reference_window: FastaWindow, *, span_limit: int | None = DEFAULT_SPAN_LIMIT
+    path: Path, reference: IndexedFasta, *, span_limit: int | None = DEFAULT_SPAN_LIMIT
 ) -> Iterator[VcfRecord]:
     """The VCF records of a file, plain or bgzipped, normalised and given their spans
     (§5.2), in order of span start, and in the file's order where two spans start at one
     position.
 
-    reference_window: the reference, read through a window the caller owns. The contigs,
-        their order and their lengths are those of its IndexedFasta's `.fai`. Its bases
-        come in upper case, so a soft-masked reference gives no REF mismatch (§5.2).
+    reference: the reference. The contigs, their order and their lengths are those of its
+        `.fai`. The reader reads it through a FastaWindow of its own, which gives the bases
+        in upper case, so a soft-masked reference gives no REF mismatch (§5.2).
     span_limit: the most bases a span may reach beyond its REF on either side, or None
         for no limit (§5.2). A record whose span would reach further is given its REF as
         its span, and the number of those is logged as a warning at the end.
 
     With a limit, a record is held only until no later record of its contig can have a
     span that starts before its own: a span starts at most span_limit bases before its
-    REF, and the file is sorted by POS. The reader evicts from the window the bases no
-    record still to come can need, so the window holds about span_limit bases behind the
-    last record read and a block ahead of it. With no limit, the records of a contig are
-    held until the next contig begins, and the reader never evicts: the caller does, with
-    evict_before, or the window keeps the bases it reads along the contig.
+    REF, and the file is sorted by POS. With no limit, the records of a contig are held
+    until the next contig begins.
+
+    The window holds the bases from span_limit + 1 before the last record read, or with
+    no limit from BLOCK_BASES before it, to a block after the furthest base read, and
+    once a slide reaches further back, up to a block more behind.
 
     A record whose REF differs from the reference, or runs past the end of its contig, is
     marked ref_mismatch and given its trimmed REF as its span: such a record makes its
@@ -163,7 +164,7 @@ def parse_vcf(
     """
     if span_limit is not None and span_limit < 0:
         raise ValueError(f"span_limit must be 0 or more, not {span_limit}")
-    with closing(_parse_records_in_file_order(path, reference_window, span_limit)) as records:
+    with closing(_parse_records_in_file_order(path, reference, span_limit)) as records:
         yield from _sort_by_span_start(records, span_limit)
 
 
@@ -197,13 +198,14 @@ def _sort_by_span_start(
 
 
 def _parse_records_in_file_order(
-    path: Path, reference_window: FastaWindow, span_limit: int | None
+    path: Path, reference: IndexedFasta, span_limit: int | None
 ) -> Generator[tuple[int, VcfRecord]]:
     """The records of parse_vcf in the file's order, each with the 0-based
     position of its POS."""
-    contig_rank = {
-        contig: rank for rank, contig in enumerate(reference_window.indexed_fasta.contigs)
-    }
+    contig_rank = {contig: rank for rank, contig in enumerate(reference.contigs)}
+    # A window of the stream's own, so that two streams over one reference do not drop
+    # each other's buffer.
+    reference_window = FastaWindow(reference)
     # The (contig rank, POS) of the previous record, which this one must not come before,
     # and where that record is, for the message.
     previous_order: tuple[int, int] | None = None
@@ -241,15 +243,17 @@ def _parse_records_in_file_order(
             if pos_1based == 0:
                 raise _make_pos_error(fields[1], path, line_number)
             pos = pos_1based - 1
-            if span_limit is not None:
-                # §5.2: no base before pos - span_limit - 1 is needed again. This record and
-                # every later one of the contig have their POS at pos or after (the file is
-                # sorted), their trimmed REF too, and their span is looked for at most
-                # span_limit + 1 bases before it; the records held for their order need no
-                # more bases. A record on the next contig makes the window drop the buffer.
-                reference_window.evict_before(pos - span_limit - 1)
+            # §5.2: with a limit, no base before pos - span_limit - 1 is needed again. This
+            # record and every later one of the contig have their POS at pos or after (the
+            # file is sorted), their trimmed REF too, and their span is looked for at most
+            # span_limit + 1 bases before it; the records held for their order need no more
+            # bases. With no limit no distance bounds a slide, so the window keeps a block
+            # behind, and reads again what a longer slide asks for. A record on the next
+            # contig makes the window drop the buffer.
+            evict_distance = BLOCK_BASES if span_limit is None else span_limit + 1
+            reference_window.evict_before(pos - evict_distance)
             record, num_record_not_numbers, is_beyond_reach = _parse_record(
-                fields, contig, pos, alts, line_number, reference_window, span_limit
+                fields, contig, pos, alts, line_number, reference, reference_window, span_limit
             )
             num_not_numbers += num_record_not_numbers
             if is_beyond_reach:
@@ -452,6 +456,7 @@ def _parse_record(
     pos: int,
     alts: tuple[str, ...],
     line_number: int,
+    reference: IndexedFasta,
     reference_window: FastaWindow,
     span_limit: int | None,
 ) -> tuple[VcfRecord, int, bool]:
@@ -463,7 +468,7 @@ def _parse_record(
     """
     # VCF bases are case-insensitive, and the window gives the reference in upper case.
     alleles = (fields[3].upper(), *(alt.upper() for alt in alts))
-    contig_length = reference_window.indexed_fasta.get_length(contig)
+    contig_length = reference.get_length(contig)
     # A REF that runs past the end of the contig gets fewer bases, and differs.
     ref_end = min(pos + len(alleles[0]), contig_length)
     ref_bases = reference_window.get_bases(contig, min(pos, ref_end), ref_end)

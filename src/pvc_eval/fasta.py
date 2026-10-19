@@ -6,8 +6,9 @@ memory. An IndexedFasta is shared by threads; a FastaWindow, one per thread, kee
 bases around a walk along a contig in a buffer the walk shrinks behind it. Positions are
 0-based and half-open, as in the `.fai`.
 
-Public: IndexedFasta, which reads any region of the FASTA; and FastaWindow, which reads
-through a buffer one thread walks along a contig.
+Public: IndexedFasta, which reads any region of the FASTA; FastaWindow, which reads
+through a buffer one thread walks along a contig; and BLOCK_BASES, the bases a window
+reads at least at a time unless it is given another number.
 """
 
 import os
@@ -278,7 +279,7 @@ def _drop_line_ends(
     return region
 
 
-_BLOCK_BASES = 65536  # bases read at least at a time by a FastaWindow; see its docstring
+BLOCK_BASES = 65536  # bases read at least at a time by a FastaWindow; see its docstring
 
 
 class FastaWindow:
@@ -311,7 +312,7 @@ class FastaWindow:
     is small at 64 Ki.
     """
 
-    def __init__(self, indexed_fasta: IndexedFasta, *, block_bases: int = _BLOCK_BASES) -> None:
+    def __init__(self, indexed_fasta: IndexedFasta, *, block_bases: int = BLOCK_BASES) -> None:
         if block_bases < 1:
             raise ValueError(f"block_bases must be 1 or more, not {block_bases}")
         self._indexed_fasta = indexed_fasta
@@ -322,11 +323,6 @@ class FastaWindow:
         # The span of the requests the buffer has served, from which a gap is measured.
         self._requested_start = 0
         self._requested_end = 0
-
-    @property
-    def indexed_fasta(self) -> IndexedFasta:
-        """The IndexedFasta the window reads, which gives the contigs and their lengths."""
-        return self._indexed_fasta
 
     def get_bases(self, contig: str, start: int, end: int) -> str:
         """The bases of a region of a contig, 0-based and half-open, in upper case.

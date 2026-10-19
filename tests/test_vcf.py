@@ -8,8 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from pvc_eval import vcf
 from pvc_eval.errors import PvcEvalInputError
-from pvc_eval.fasta import FastaWindow, IndexedFasta
+from pvc_eval.fasta import BLOCK_BASES, FastaWindow, IndexedFasta
 from pvc_eval.vcf import (
     HAPLOID_GT,
     MALFORMED_GT,
@@ -29,29 +30,73 @@ HEADER = (
     "##fileformat=VCFv4.3\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tHG002\tHG003\n"
 )
 
-type MakeWindow = Callable[..., FastaWindow]
+type MakeReference = Callable[[str, str], IndexedFasta]
 
 
 @pytest.fixture
-def make_window(tmp_path: Path) -> Iterator[MakeWindow]:
-    """Makes a FastaWindow over a FASTA and its .fai, written in tmp_path, and closes the
-    FASTA at the end of the test."""
+def make_reference(tmp_path: Path) -> Iterator[MakeReference]:
+    """Makes an IndexedFasta of a FASTA and its .fai, written in tmp_path, and closes it at
+    the end of the test."""
     numbers = itertools.count()
     with ExitStack() as stack:
 
-        def make(fasta: str, fai: str, *, block_bases: int = 65_536) -> FastaWindow:
+        def make(fasta: str, fai: str) -> IndexedFasta:
             path = tmp_path / f"ref{next(numbers)}.fa"
             path.write_text(fasta, encoding="utf-8")
             Path(f"{path}.fai").write_text(fai, encoding="utf-8")
-            indexed_fasta = stack.enter_context(IndexedFasta(path))
-            return FastaWindow(indexed_fasta, block_bases=block_bases)
+            return stack.enter_context(IndexedFasta(path))
 
         yield make
 
 
 @pytest.fixture
-def window(make_window: MakeWindow) -> FastaWindow:
-    return make_window(REFERENCE_FA, REFERENCE_FAI)
+def reference(make_reference: MakeReference) -> IndexedFasta:
+    return make_reference(REFERENCE_FA, REFERENCE_FAI)
+
+
+# A request to the window that a reader stuck in a loop would reach; the most the tests
+# make is about 3,000.
+MAX_WINDOW_REQUESTS = 100_000
+
+
+class RecordingWindow(FastaWindow):
+    """A FastaWindow that keeps where it was asked to evict before and the most bases it
+    held after a request, and stops a reader that asks for more than MAX_WINDOW_REQUESTS
+    regions."""
+
+    def __init__(self, indexed_fasta: IndexedFasta) -> None:
+        super().__init__(indexed_fasta)
+        self.evicted_before: list[int] = []
+        self.most_held = 0
+        self.num_requests = 0
+
+    def get_bases(self, contig: str, start: int, end: int) -> str:
+        self.num_requests += 1
+        if self.num_requests > MAX_WINDOW_REQUESTS:
+            raise RuntimeError(f"the reader asked for more than {MAX_WINDOW_REQUESTS} regions")
+        bases = super().get_bases(contig, start, end)
+        held_region = self.held_region
+        if held_region is not None:
+            self.most_held = max(self.most_held, held_region[2] - held_region[1])
+        return bases
+
+    def evict_before(self, position: int) -> None:
+        self.evicted_before.append(position)
+        super().evict_before(position)
+
+
+@pytest.fixture
+def windows(monkeypatch: pytest.MonkeyPatch) -> list[RecordingWindow]:
+    """The windows parse_vcf makes during the test, each a RecordingWindow."""
+    made: list[RecordingWindow] = []
+
+    def make_window(indexed_fasta: IndexedFasta) -> RecordingWindow:
+        window = RecordingWindow(indexed_fasta)
+        made.append(window)
+        return window
+
+    monkeypatch.setattr(vcf, "FastaWindow", make_window)
+    return made
 
 
 def make_fasta(contigs: dict[str, str]) -> tuple[str, str]:
@@ -125,7 +170,7 @@ def test_gt_gives_its_alleles_or_its_case(
 
 @pytest.mark.parametrize("gzipped", [False, True], ids=["plain", "bgzipped"])
 def test_records_are_read_with_0_based_starts(
-    tmp_path: Path, window: FastaWindow, gzipped: bool
+    tmp_path: Path, reference: IndexedFasta, gzipped: bool
 ) -> None:
     path = write_vcf(
         tmp_path,
@@ -134,7 +179,7 @@ def test_records_are_read_with_0_based_starts(
         gzipped=gzipped,
     )
 
-    first, second = parse_vcf(path, window)
+    first, second = parse_vcf(path, reference)
 
     assert (first.contig, first.start, first.end, first.alleles) == (
         "chr1",
@@ -158,7 +203,9 @@ def test_samples_are_read_from_the_header(tmp_path: Path) -> None:
     assert parse_vcf_samples(write_vcf(tmp_path, "")) == ("HG002", "HG003")
 
 
-def test_unsorted_file_stops_the_run_naming_both_lines(tmp_path: Path, window: FastaWindow) -> None:
+def test_unsorted_file_stops_the_run_naming_both_lines(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
     path = write_vcf(
         tmp_path,
         "chr1\t20\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t15\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
@@ -167,11 +214,11 @@ def test_unsorted_file_stops_the_run_naming_both_lines(tmp_path: Path, window: F
     with pytest.raises(
         PvcEvalInputError, match=r"chr1:15 \(line 4\) comes after chr1:20 \(line 3\)"
     ):
-        list(parse_vcf(path, window))
+        list(parse_vcf(path, reference))
 
 
 def test_contigs_out_of_the_reference_order_stop_the_run(
-    tmp_path: Path, window: FastaWindow
+    tmp_path: Path, reference: IndexedFasta
 ) -> None:
     path = write_vcf(
         tmp_path,
@@ -179,16 +226,16 @@ def test_contigs_out_of_the_reference_order_stop_the_run(
     )
 
     with pytest.raises(PvcEvalInputError, match="not sorted"):
-        list(parse_vcf(path, window))
+        list(parse_vcf(path, reference))
 
 
 def test_contig_missing_from_the_reference_stops_the_run(
-    tmp_path: Path, window: FastaWindow
+    tmp_path: Path, reference: IndexedFasta
 ) -> None:
     path = write_vcf(tmp_path, "chrUn\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n")
 
     with pytest.raises(PvcEvalInputError, match="contig chrUn is not in the reference"):
-        list(parse_vcf(path, window))
+        list(parse_vcf(path, reference))
 
 
 @pytest.mark.parametrize(
@@ -203,7 +250,7 @@ def test_contig_missing_from_the_reference_stops_the_run(
     ],
 )
 def test_symbolic_alleles_are_skipped_and_counted(
-    tmp_path: Path, window: FastaWindow, caplog: pytest.LogCaptureFixture, alt: str
+    tmp_path: Path, reference: IndexedFasta, caplog: pytest.LogCaptureFixture, alt: str
 ) -> None:
     path = write_vcf(
         tmp_path,
@@ -211,7 +258,7 @@ def test_symbolic_alleles_are_skipped_and_counted(
     )
 
     with caplog.at_level(logging.WARNING):
-        records = list(parse_vcf(path, window))
+        records = list(parse_vcf(path, reference))
 
     assert [(record.start, record.alleles) for record in records] == [(6, ("A", "T"))]
     assert "skipped 1 VCF record with symbolic alleles" in caplog.text
@@ -239,12 +286,12 @@ def test_symbolic_alleles_are_skipped_and_counted(
     ],
 )
 def test_line_that_is_not_a_vcf_record_stops_the_run(
-    tmp_path: Path, window: FastaWindow, line: str, message: str
+    tmp_path: Path, reference: IndexedFasta, line: str, message: str
 ) -> None:
     path = write_vcf(tmp_path, line)
 
     with pytest.raises(PvcEvalInputError, match=message):
-        list(parse_vcf(path, window))
+        list(parse_vcf(path, reference))
 
 
 @pytest.mark.parametrize(
@@ -257,18 +304,18 @@ def test_line_that_is_not_a_vcf_record_stops_the_run(
     ids=["one_sample_fewer", "one_sample_more", "no_format_column"],
 )
 def test_line_with_other_samples_than_the_header_stops_the_run(
-    tmp_path: Path, window: FastaWindow, line: str, found: str
+    tmp_path: Path, reference: IndexedFasta, line: str, found: str
 ) -> None:
     path = write_vcf(tmp_path, line)
 
     with pytest.raises(
         PvcEvalInputError, match=rf"a.vcf, line 3: the line has {found} .* names 2 samples\."
     ):
-        list(parse_vcf(path, window))
+        list(parse_vcf(path, reference))
 
 
 def test_sites_only_file_gives_records_without_genotypes(
-    tmp_path: Path, window: FastaWindow
+    tmp_path: Path, reference: IndexedFasta
 ) -> None:
     path = tmp_path / "a.vcf"
     path.write_text(
@@ -277,12 +324,12 @@ def test_sites_only_file_gives_records_without_genotypes(
         encoding="utf-8",
     )
 
-    (record,) = parse_vcf(path, window)
+    (record,) = parse_vcf(path, reference)
 
     assert (record.start, record.alleles, record.genotypes) == (4, ("A", "T"), ())
 
 
-def test_blank_lines_are_skipped(tmp_path: Path, window: FastaWindow) -> None:
+def test_blank_lines_are_skipped(tmp_path: Path, reference: IndexedFasta) -> None:
     path = write_vcf(
         tmp_path,
         "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n"
@@ -291,7 +338,7 @@ def test_blank_lines_are_skipped(tmp_path: Path, window: FastaWindow) -> None:
         "chr1\t7\t.\tA\tG\t.\t.\t.\tGT\t0/1\t0/1\n",
     )
 
-    assert [record.start for record in parse_vcf(path, window)] == [
+    assert [record.start for record in parse_vcf(path, reference)] == [
         4,
         6,
     ]
@@ -306,7 +353,7 @@ def test_blank_lines_are_skipped(tmp_path: Path, window: FastaWindow) -> None:
     ids=["record_before_chrom_line", "only_meta_lines"],
 )
 def test_file_without_chrom_line_stops_the_run(
-    tmp_path: Path, window: FastaWindow, text: str, message: str
+    tmp_path: Path, reference: IndexedFasta, text: str, message: str
 ) -> None:
     path = tmp_path / "a.vcf"
     path.write_text(text, encoding="utf-8")
@@ -314,11 +361,11 @@ def test_file_without_chrom_line_stops_the_run(
     with pytest.raises(PvcEvalInputError, match=message):
         parse_vcf_samples(path)
     with pytest.raises(PvcEvalInputError, match=message):
-        list(parse_vcf(path, window))
+        list(parse_vcf(path, reference))
 
 
 def test_lower_case_alleles_are_read_in_upper_case_and_normalise_alike(
-    tmp_path: Path, window: FastaWindow
+    tmp_path: Path, reference: IndexedFasta
 ) -> None:
     # VCF bases are case-insensitive; the reference is upper case.
     path = write_vcf(
@@ -326,12 +373,12 @@ def test_lower_case_alleles_are_read_in_upper_case_and_normalise_alike(
         "chr1\t4\t.\taa\ta\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t4\t.\tAA\tA\t.\t.\t.\tGT\t0/1\t0/1\n",
     )
 
-    lower, upper = parse_vcf(path, window)
+    lower, upper = parse_vcf(path, reference)
 
     assert get_placement(lower) == get_placement(upper) == (3, ("AA", "A"), (2, 5), False)
 
 
-def test_file_that_is_not_utf8_text_stops_the_run(tmp_path: Path, window: FastaWindow) -> None:
+def test_file_that_is_not_utf8_text_stops_the_run(tmp_path: Path, reference: IndexedFasta) -> None:
     path = tmp_path / "a.vcf"
     # A Latin-1 é in a sample name.
     path.write_bytes(HEADER.replace("HG003", "HG003-\xe9").encode("latin-1"))
@@ -339,16 +386,16 @@ def test_file_that_is_not_utf8_text_stops_the_run(tmp_path: Path, window: FastaW
     with pytest.raises(PvcEvalInputError, match=r"a.vcf .*not UTF-8.*bcftools view -Oz"):
         parse_vcf_samples(path)
     with pytest.raises(PvcEvalInputError, match=r"a.vcf .*not UTF-8.*bcftools view -Oz"):
-        list(parse_vcf(path, window))
+        list(parse_vcf(path, reference))
 
 
-def test_truncated_gzip_file_stops_the_run(tmp_path: Path, window: FastaWindow) -> None:
+def test_truncated_gzip_file_stops_the_run(tmp_path: Path, reference: IndexedFasta) -> None:
     whole = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n" * 50, gzipped=True)
     path = tmp_path / "cut.vcf.gz"
     path.write_bytes(whole.read_bytes()[:-20])
 
     with pytest.raises(PvcEvalInputError, match=r"cut.vcf.gz .*gzip"):
-        list(parse_vcf(path, window))
+        list(parse_vcf(path, reference))
 
 
 @pytest.mark.parametrize(
@@ -366,7 +413,7 @@ def test_truncated_gzip_file_stops_the_run(tmp_path: Path, window: FastaWindow) 
 )
 def test_qual_or_gq_that_is_not_a_number_is_absent_and_counted(
     tmp_path: Path,
-    window: FastaWindow,
+    reference: IndexedFasta,
     caplog: pytest.LogCaptureFixture,
     qual: str,
     gq: str,
@@ -377,7 +424,7 @@ def test_qual_or_gq_that_is_not_a_number_is_absent_and_counted(
     path = write_vcf(tmp_path, f"chr1\t5\t.\tA\tT\t{qual}\t.\t.\tGT:GQ\t0/1:{gq}\t0/1\n")
 
     with caplog.at_level(logging.WARNING):
-        (record,) = parse_vcf(path, window)
+        (record,) = parse_vcf(path, reference)
 
     genotype = record.genotypes[0]
     assert isinstance(genotype, VcfGenotype)
@@ -388,10 +435,12 @@ def test_qual_or_gq_that_is_not_a_number_is_absent_and_counted(
         assert "QUAL or GQ" not in caplog.text
 
 
-def test_sample_without_gt_has_both_haplotypes_missing(tmp_path: Path, window: FastaWindow) -> None:
+def test_sample_without_gt_has_both_haplotypes_missing(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
     path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGQ:PS\t30:7\t.:.\n")
 
-    (record,) = parse_vcf(path, window)
+    (record,) = parse_vcf(path, reference)
 
     assert record.genotypes == (
         VcfGenotype(alleles=(MISSING, MISSING), phased=False, phase_set="7", quality=30),
@@ -399,10 +448,10 @@ def test_sample_without_gt_has_both_haplotypes_missing(tmp_path: Path, window: F
     )
 
 
-def test_phase_set_dot_is_none(tmp_path: Path, window: FastaWindow) -> None:
+def test_phase_set_dot_is_none(tmp_path: Path, reference: IndexedFasta) -> None:
     path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGT:PS\t0|1:.\t1|0:12\n")
 
-    (record,) = parse_vcf(path, window)
+    (record,) = parse_vcf(path, reference)
 
     assert record.genotypes == (
         VcfGenotype(alleles=(0, 1), phased=True, phase_set=None, quality=None),
@@ -410,21 +459,21 @@ def test_phase_set_dot_is_none(tmp_path: Path, window: FastaWindow) -> None:
     )
 
 
-def test_alt_dot_gives_a_record_with_ref_only(tmp_path: Path, window: FastaWindow) -> None:
+def test_alt_dot_gives_a_record_with_ref_only(tmp_path: Path, reference: IndexedFasta) -> None:
     path = write_vcf(tmp_path, "chr1\t5\t.\tA\t.\t.\t.\t.\tGT\t0/0\t0/0\n")
 
-    (record,) = parse_vcf(path, window)
+    (record,) = parse_vcf(path, reference)
 
     assert (record.start, record.alleles) == (4, ("A",))
 
 
-def test_records_at_the_same_pos_both_come_out(tmp_path: Path, window: FastaWindow) -> None:
+def test_records_at_the_same_pos_both_come_out(tmp_path: Path, reference: IndexedFasta) -> None:
     path = write_vcf(
         tmp_path,
         "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/0\nchr1\t5\t.\tA\tAC\t.\t.\t.\tGT\t0/0\t0/1\n",
     )
 
-    records = list(parse_vcf(path, window))
+    records = list(parse_vcf(path, reference))
 
     assert [get_placement(record) for record in records] == [
         (4, ("A", "T"), (4, 5), False),
@@ -433,7 +482,7 @@ def test_records_at_the_same_pos_both_come_out(tmp_path: Path, window: FastaWind
 
 
 def test_bgzipped_file_of_several_gzip_members_is_read_whole(
-    tmp_path: Path, window: FastaWindow
+    tmp_path: Path, reference: IndexedFasta
 ) -> None:
     # bgzip writes a file as a series of gzip members; gzip reads them as one stream.
     path = tmp_path / "a.vcf.gz"
@@ -442,7 +491,7 @@ def test_bgzipped_file_of_several_gzip_members_is_read_whole(
         + gzip.compress(b"chr1\t7\t.\tA\tG\t.\t.\t.\tGT\t0/1\t0/1\n")
     )
 
-    records = list(parse_vcf(path, window))
+    records = list(parse_vcf(path, reference))
 
     assert [(record.start, record.alleles) for record in records] == [
         (4, ("A", "T")),
@@ -451,7 +500,7 @@ def test_bgzipped_file_of_several_gzip_members_is_read_whole(
 
 
 def test_telomeric_breakend_at_pos_0_is_skipped_and_counted(
-    tmp_path: Path, window: FastaWindow, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, reference: IndexedFasta, caplog: pytest.LogCaptureFixture
 ) -> None:
     # VCF 4.3 writes a breakend before the first base of a contig at POS 0.
     path = write_vcf(
@@ -461,23 +510,25 @@ def test_telomeric_breakend_at_pos_0_is_skipped_and_counted(
     )
 
     with caplog.at_level(logging.WARNING):
-        records = list(parse_vcf(path, window))
+        records = list(parse_vcf(path, reference))
 
     assert [(record.start, record.alleles) for record in records] == [(6, ("A", "T"))]
     assert "skipped 1 VCF record with symbolic alleles" in caplog.text
 
 
-def test_message_names_the_file_by_the_path_given(tmp_path: Path, window: FastaWindow) -> None:
+def test_message_names_the_file_by_the_path_given(tmp_path: Path, reference: IndexedFasta) -> None:
     (tmp_path / "calls").mkdir()
     path = write_vcf(tmp_path / "calls", "chrUn\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n")
 
     with pytest.raises(PvcEvalInputError) as raised:
-        list(parse_vcf(path, window))
+        list(parse_vcf(path, reference))
 
     assert str(raised.value).startswith(f"{path}, line 3:")
 
 
-def test_header_of_one_sample_is_named_in_the_singular(tmp_path: Path, window: FastaWindow) -> None:
+def test_header_of_one_sample_is_named_in_the_singular(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
     path = tmp_path / "a.vcf"
     path.write_text(
         "##fileformat=VCFv4.3\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tHG002\n"
@@ -488,11 +539,11 @@ def test_header_of_one_sample_is_named_in_the_singular(tmp_path: Path, window: F
     with pytest.raises(
         PvcEvalInputError, match=r"0 sample columns, and the #CHROM line names 1 sample\."
     ):
-        list(parse_vcf(path, window))
+        list(parse_vcf(path, reference))
 
 
 def test_ref_that_differs_from_the_reference_is_marked_and_spans_its_ref(
-    tmp_path: Path, window: FastaWindow
+    tmp_path: Path, reference: IndexedFasta
 ) -> None:
     # The reference has AG at 0-based 4 and 5, and the deletion CA -> C cannot be placed.
     path = write_vcf(
@@ -500,23 +551,25 @@ def test_ref_that_differs_from_the_reference_is_marked_and_spans_its_ref(
         "chr1\t5\t.\tCA\tC\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t5\t.\tAG\tA\t.\t.\t.\tGT\t0/1\t0/1\n",
     )
 
-    mismatch, match = parse_vcf(path, window)
+    mismatch, match = parse_vcf(path, reference)
 
     assert get_placement(mismatch) == (4, ("CA", "C"), (4, 6), True)
     assert get_placement(match) == (4, ("AG", "A"), (4, 6), False)
 
 
-def test_records_are_trimmed_and_never_moved(tmp_path: Path, window: FastaWindow) -> None:
+def test_records_are_trimmed_and_never_moved(tmp_path: Path, reference: IndexedFasta) -> None:
     # chr1 is GGGAAGAGG...: the deletion of the A at 4, written with shared bases on both
     # sides, is trimmed to AA -> A at 3 and not slid to its left-aligned place.
     path = write_vcf(tmp_path, "chr1\t4\t.\tAAGA\tAGA\t.\t.\t.\tGT\t0/1\t0/1\n")
 
-    (record,) = parse_vcf(path, window)
+    (record,) = parse_vcf(path, reference)
 
     assert get_placement(record) == (3, ("AA", "A"), (2, 5), False)
 
 
-def test_records_come_out_in_order_of_span_start(tmp_path: Path, make_window: MakeWindow) -> None:
+def test_records_come_out_in_order_of_span_start(
+    tmp_path: Path, make_reference: MakeReference
+) -> None:
     # On GAAAAT, the SNP at 0-based 2 spans 2; the deletion of the A at 4, on the line
     # after it, slides to 1 and spans from 0. Two records with one span start keep the
     # order of the file.
@@ -527,9 +580,9 @@ def test_records_come_out_in_order_of_span_start(tmp_path: Path, make_window: Ma
         "chr1\t4\t.\tA\tAA\t.\t.\t.\tGT\t0/1\t0/1\n",
     )
     # The .fai is what `samtools faidx` (samtools 1.24) wrote for this FASTA.
-    window = make_window(">chr1\nGAAAAT\n", "chr1\t6\t6\t6\t7\n")
+    reference = make_reference(">chr1\nGAAAAT\n", "chr1\t6\t6\t6\t7\n")
 
-    records = parse_vcf(path, window)
+    records = parse_vcf(path, reference)
 
     assert [get_placement(record) for record in records] == [
         (3, ("AA", "A"), (0, 5), False),
@@ -554,7 +607,7 @@ LONG_REFERENCE = make_fasta({"chr1": "C" * 20000, "chr2": "C" * 10})
     ids=["default_10_kb", "limit_5"],
 )
 def test_record_comes_out_once_no_later_record_can_start_before_it(
-    tmp_path: Path, make_window: MakeWindow, limit: dict[str, int], second_pos_1based: int
+    tmp_path: Path, make_reference: MakeReference, limit: dict[str, int], second_pos_1based: int
 ) -> None:
     # The SNP spans 99. A record at 0-based 10099 or after cannot span from before 99,
     # since a span reaches at most 10 kb left of its REF; with a limit of 5, one at 104.
@@ -563,7 +616,7 @@ def test_record_comes_out_once_no_later_record_can_start_before_it(
         make_snp_line("chr1", 100) + make_snp_line("chr1", second_pos_1based) + NOT_A_RECORD,
     )
 
-    records = parse_vcf(path, make_window(*LONG_REFERENCE), **limit)
+    records = parse_vcf(path, make_reference(*LONG_REFERENCE), **limit)
 
     assert get_placement(next(records)) == (99, ("C", "T"), (99, 100), False)
 
@@ -575,7 +628,7 @@ def test_record_comes_out_once_no_later_record_can_start_before_it(
 )
 def test_record_is_held_while_a_later_record_could_start_before_it(
     tmp_path: Path,
-    make_window: MakeWindow,
+    make_reference: MakeReference,
     limit: dict[str, int | None],
     second_pos_1based: int,
 ) -> None:
@@ -586,7 +639,7 @@ def test_record_is_held_while_a_later_record_could_start_before_it(
         make_snp_line("chr1", 100) + make_snp_line("chr1", second_pos_1based) + NOT_A_RECORD,
     )
 
-    records = parse_vcf(path, make_window(*LONG_REFERENCE), **limit)
+    records = parse_vcf(path, make_reference(*LONG_REFERENCE), **limit)
 
     with pytest.raises(PvcEvalInputError, match="POS is 'five'"):
         next(records)
@@ -594,17 +647,17 @@ def test_record_is_held_while_a_later_record_could_start_before_it(
 
 @pytest.mark.parametrize("limit", [{}, {"span_limit": None}], ids=["default_10_kb", "no_limit"])
 def test_records_held_come_out_at_the_next_contig(
-    tmp_path: Path, make_window: MakeWindow, limit: dict[str, None]
+    tmp_path: Path, make_reference: MakeReference, limit: dict[str, None]
 ) -> None:
     path = write_vcf(tmp_path, make_snp_line("chr1", 100) + make_snp_line("chr2", 1) + NOT_A_RECORD)
 
-    records = parse_vcf(path, make_window(*LONG_REFERENCE), **limit)
+    records = parse_vcf(path, make_reference(*LONG_REFERENCE), **limit)
 
     assert get_placement(next(records)) == (99, ("C", "T"), (99, 100), False)
 
 
 def test_span_beyond_10_kb_is_the_ref_and_counted(
-    tmp_path: Path, make_window: MakeWindow, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, make_reference: MakeReference, caplog: pytest.LogCaptureFixture
 ) -> None:
     # The deletion of the last A of 10002 would span from the G before the first, 10001
     # bases left of its REF; the one of 10001 As in chr2 reaches 10000, the most allowed.
@@ -616,7 +669,7 @@ def test_span_beyond_10_kb_is_the_ref_and_counted(
     )
 
     with caplog.at_level(logging.WARNING):
-        beyond, within = parse_vcf(path, make_window(*reference))
+        beyond, within = parse_vcf(path, make_reference(*reference))
 
     assert get_placement(beyond) == (10001, ("AA", "A"), (10001, 10003), False)
     assert get_placement(within) == (10000, ("AA", "A"), (0, 10002), False)
@@ -627,7 +680,7 @@ def test_span_beyond_10_kb_is_the_ref_and_counted(
 
 
 def test_spans_beyond_10_kb_are_counted_in_one_warning_from_the_first(
-    tmp_path: Path, make_window: MakeWindow, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, make_reference: MakeReference, caplog: pytest.LogCaptureFixture
 ) -> None:
     homopolymer = "G" + "A" * 10002 + "T"
     reference = make_fasta({"chr1": homopolymer, "chr2": homopolymer})
@@ -638,7 +691,7 @@ def test_spans_beyond_10_kb_are_counted_in_one_warning_from_the_first(
     )
 
     with caplog.at_level(logging.WARNING):
-        records = list(parse_vcf(path, make_window(*reference)))
+        records = list(parse_vcf(path, make_reference(*reference)))
 
     assert [get_placement(record)[2] for record in records] == [(10001, 10003), (10001, 10003)]
     assert len(caplog.records) == 1
@@ -667,14 +720,14 @@ def test_spans_beyond_10_kb_are_counted_in_one_warning_from_the_first(
 )
 def test_span_that_reaches_more_than_10_kb_beyond_its_ref_is_the_ref(
     tmp_path: Path,
-    make_window: MakeWindow,
+    make_reference: MakeReference,
     contig: str,
     line: str,
     expected: tuple[int, tuple[str, ...], tuple[int, int], bool],
 ) -> None:
     path = write_vcf(tmp_path, f"{line}\t.\t.\t.\tGT\t0/1\t0/1\n")
 
-    (record,) = parse_vcf(path, make_window(*make_fasta({"chr1": contig})))
+    (record,) = parse_vcf(path, make_reference(*make_fasta({"chr1": contig})))
 
     assert get_placement(record) == expected
 
@@ -704,22 +757,22 @@ UNCUT_PLACEMENTS = [
 
 @pytest.mark.parametrize("limit", [{}, {"span_limit": None}], ids=["default_10_kb", "no_limit"])
 def test_spans_within_the_limit_are_not_cut(
-    tmp_path: Path, make_window: MakeWindow, limit: dict[str, None]
+    tmp_path: Path, make_reference: MakeReference, limit: dict[str, None]
 ) -> None:
     path = write_vcf(tmp_path, LIMIT_LINES)
 
-    records = parse_vcf(path, make_window(*LIMIT_REFERENCE), **limit)
+    records = parse_vcf(path, make_reference(*LIMIT_REFERENCE), **limit)
 
     assert [get_placement(record) for record in records] == UNCUT_PLACEMENTS
 
 
 def test_span_beyond_a_limit_set_by_the_caller_is_the_ref(
-    tmp_path: Path, make_window: MakeWindow, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, make_reference: MakeReference, caplog: pytest.LogCaptureFixture
 ) -> None:
     path = write_vcf(tmp_path, LIMIT_LINES)
 
     with caplog.at_level(logging.WARNING):
-        records = list(parse_vcf(path, make_window(*LIMIT_REFERENCE), span_limit=5))
+        records = list(parse_vcf(path, make_reference(*LIMIT_REFERENCE), span_limit=5))
 
     assert [get_placement(record) for record in records] == [
         (105, ("AA", "A"), (100, 107), False),
@@ -733,78 +786,89 @@ def test_span_beyond_a_limit_set_by_the_caller_is_the_ref(
 
 
 def test_with_no_limit_a_span_is_never_cut(
-    tmp_path: Path, make_window: MakeWindow, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, make_reference: MakeReference, caplog: pytest.LogCaptureFixture
 ) -> None:
     # The deletion of the last A of 20002 slides 20001 bases left, to the G at 0.
     reference = make_fasta({"chr1": "G" + "A" * 20002 + "T"})
     path = write_vcf(tmp_path, "chr1\t20002\t.\tAA\tA\t.\t.\t.\tGT\t0/1\t0/1\n")
 
     with caplog.at_level(logging.WARNING):
-        (record,) = parse_vcf(path, make_window(*reference), span_limit=None)
+        (record,) = parse_vcf(path, make_reference(*reference), span_limit=None)
 
     assert get_placement(record) == (20001, ("AA", "A"), (0, 20003), False)
     assert not caplog.text
 
 
-def test_a_negative_span_limit_is_a_value_error(tmp_path: Path, window: FastaWindow) -> None:
+def test_a_negative_span_limit_is_a_value_error(tmp_path: Path, reference: IndexedFasta) -> None:
     path = write_vcf(tmp_path, make_snp_line("chr1", 1))
 
     with pytest.raises(ValueError, match="span_limit must be 0 or more, not -1"):
-        list(parse_vcf(path, window, span_limit=-1))
+        list(parse_vcf(path, reference, span_limit=-1))
 
 
-def make_walk(tmp_path: Path) -> tuple[Path, tuple[str, str]]:
-    """A contig of 1 Mb, and a VCF of a SNP or a deletion of one base every 997 bases."""
+def make_walk(tmp_path: Path) -> tuple[Path, tuple[str, str], list[int]]:
+    """A contig of 1 Mb, a VCF of a SNP or a deletion of one base every 997 bases, and the
+    0-based POS of each record."""
     rng = random.Random(20261019)
     contig = "".join(rng.choices("ACGT", k=1_000_000))
+    positions = list(range(500, len(contig) - 500, 997))
     lines = []
-    for pos in range(500, len(contig) - 500, 997):
+    for pos in positions:
         if pos % 2:
             lines.append(f"chr1\t{pos + 1}\t.\t{contig[pos : pos + 2]}\t{contig[pos]}")
         else:
             alt = "A" if contig[pos] != "A" else "C"
             lines.append(f"chr1\t{pos + 1}\t.\t{contig[pos]}\t{alt}")
     body = "".join(f"{line}\t.\t.\t.\tGT\t0/1\t0/1\n" for line in lines)
-    return write_vcf(tmp_path, body), make_fasta({"chr1": contig})
+    return write_vcf(tmp_path, body), make_fasta({"chr1": contig}), positions
 
 
-def test_with_a_limit_the_window_holds_about_the_limit_and_a_block(
-    tmp_path: Path, make_window: MakeWindow
+def test_with_a_limit_the_window_holds_the_limit_behind_and_a_block_ahead(
+    tmp_path: Path, make_reference: MakeReference, windows: list[RecordingWindow]
 ) -> None:
-    path, reference = make_walk(tmp_path)
-    window = make_window(*reference, block_bases=1000)
-    most_held = 0
-    num_records = 0
-    for _ in parse_vcf(path, window, span_limit=2000):
-        held_region = window.held_region
-        assert held_region is not None
-        most_held = max(most_held, held_region[2] - held_region[1])
-        num_records += 1
+    path, fasta, positions = make_walk(tmp_path)
 
-    assert num_records == 1003
-    # What the next records can need, 2001 bases behind the last one read, and the block
-    # read ahead of it.
-    assert most_held <= 2000 + 2 * 1000
+    records = list(parse_vcf(path, make_reference(*fasta), span_limit=2000))
+
+    assert len(records) == len(positions) == 1003
+    (window,) = windows
+    # Before each record, the bases no record from its POS on can need: its span is
+    # looked for at most span_limit + 1 bases before its POS.
+    assert window.evicted_before == [pos - 2001 for pos in positions]
+    # The 2001 bases behind the last record read, the record, and a block read ahead.
+    assert window.most_held <= 2001 + 100 + BLOCK_BASES
 
 
-def test_with_no_limit_the_reader_never_evicts_and_cuts_no_span(
-    tmp_path: Path, make_window: MakeWindow
+def test_with_no_limit_the_window_holds_a_block_behind_and_a_block_ahead(
+    tmp_path: Path, make_reference: MakeReference, windows: list[RecordingWindow]
 ) -> None:
-    path, reference = make_walk(tmp_path)
-    window = make_window(*reference)
-    # The caller's window holds the first base, and only the caller evicts it.
-    window.get_bases("chr1", 0, 1)
+    path, fasta, positions = make_walk(tmp_path)
+    reference = make_reference(*fasta)
 
-    records = list(parse_vcf(path, window, span_limit=None))
+    records = list(parse_vcf(path, reference, span_limit=None))
 
-    held_region = window.held_region
-    assert held_region is not None
-    assert held_region[:2] == ("chr1", 0)
-    assert records == list(parse_vcf(path, make_window(*reference), span_limit=10**9))
+    window = windows[0]
+    # Before each record, a block behind its POS; a slide that reaches further is read
+    # again.
+    assert window.evicted_before == [pos - BLOCK_BASES for pos in positions]
+    assert window.most_held <= 2 * BLOCK_BASES + 100
+    assert records == list(parse_vcf(path, reference, span_limit=10**9))
+
+
+def test_each_stream_reads_through_a_window_of_its_own(
+    tmp_path: Path, make_reference: MakeReference, windows: list[RecordingWindow]
+) -> None:
+    path, fasta, _ = make_walk(tmp_path)
+    reference = make_reference(*fasta)
+
+    pairs = list(zip(parse_vcf(path, reference), parse_vcf(path, reference), strict=True))
+
+    assert len(windows) == 2
+    assert all(first == second for first, second in pairs)
 
 
 def test_ref_past_the_end_of_its_contig_differs_from_the_reference(
-    tmp_path: Path, window: FastaWindow
+    tmp_path: Path, reference: IndexedFasta
 ) -> None:
     # chr2 has 8 bases: the first REF runs one base past its end, the second starts after.
     path = write_vcf(
@@ -812,7 +876,7 @@ def test_ref_past_the_end_of_its_contig_differs_from_the_reference(
         "chr2\t8\t.\tGG\tG\t.\t.\t.\tGT\t0/1\t0/1\nchr2\t12\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
     )
 
-    records = parse_vcf(path, window)
+    records = parse_vcf(path, reference)
 
     assert [get_placement(record) for record in records] == [
         (7, ("GG", "G"), (7, 9), True),
@@ -821,7 +885,7 @@ def test_ref_past_the_end_of_its_contig_differs_from_the_reference(
 
 
 def test_soft_masked_reference_gives_no_mismatch_and_the_same_spans(
-    tmp_path: Path, make_window: MakeWindow
+    tmp_path: Path, make_reference: MakeReference
 ) -> None:
     # The window gives soft-masked bases in upper case; §5.2 compares REF without regard
     # to case. The .fai is the one of the reference in upper case.
@@ -829,9 +893,9 @@ def test_soft_masked_reference_gives_no_mismatch_and_the_same_spans(
         tmp_path,
         "chr1\t4\t.\tAA\tA\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
     )
-    window = make_window(">chr1\nGGGaagAGGCAGGGGG\n>chr2\nGGGGGGGG\n", REFERENCE_FAI)
+    reference = make_reference(">chr1\nGGGaagAGGCAGGGGG\n>chr2\nGGGGGGGG\n", REFERENCE_FAI)
 
-    records = parse_vcf(path, window)
+    records = parse_vcf(path, reference)
 
     assert [get_placement(record) for record in records] == [
         (3, ("AA", "A"), (2, 5), False),
@@ -841,11 +905,11 @@ def test_soft_masked_reference_gives_no_mismatch_and_the_same_spans(
 
 def test_gt_with_an_index_the_record_lacks_or_one_allele_is_kept_as_its_case(
     tmp_path: Path,
-    window: FastaWindow,
+    reference: IndexedFasta,
 ) -> None:
     # The record has one ALT, so 2 is no allele of it.
     path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/2\t1\n")
 
-    (record,) = parse_vcf(path, window)
+    (record,) = parse_vcf(path, reference)
 
     assert record.genotypes == (MALFORMED_GT, HAPLOID_GT)
