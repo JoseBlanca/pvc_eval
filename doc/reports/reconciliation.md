@@ -1,7 +1,55 @@
 # Work report: reconciliation and evaluation
 
-*Under way, started 19 October 2026. The plan is `doc/plans/reconciliation.md`, built from
-`doc/specs/reconciliation.md`, on the branch `reconciliation`.*
+*Done, 19 October 2026. The plan is `doc/plans/reconciliation.md`, built from
+`doc/specs/reconciliation.md`, on the branch `reconciliation`; the last commit of code is f3490f2.
+Nothing is merged into `main` or pushed.*
+
+## For the owner
+
+The plan is done: its five milestones are built, reviewed and fixed. The five checks of
+`.claude/skills/coding/python.md` pass on f3490f2, the last commit of code: `uv sync --locked`,
+`ruff format --check`, `ruff check`, `ty check`, and `pytest -q` with "389 passed" (213 when the
+work started). pvc_eval now has, on this branch:
+
+- `parse_vcf` reading each file with a ploidy, 1 or 2 for the comparison, 2 by default; a GT of
+  another ploidy makes a sample invalid with the reason `ploidy mismatch`;
+- the sample pairs, by name or from `--sample-map`, with the errors and the warning of the spec;
+- `reconcile` and `reconcile_loci`: for a `Locus`, its locus alleles and each paired sample's
+  possible genotypes, *too complex*, or *invalid* with its reason;
+- `evaluate_pair` and `make_outcome_rows`: each sample pair's outcome and its `OutcomeRow`, every
+  column of `doc/spec.md` §6 filled;
+- a property: a file against its decomposition into one-base and one-indel records gives, sample
+  by sample, the same results as the file itself; 300 generated examples in the suite, 10,000
+  more outside it, no failure.
+
+What is asked of you is the order of two merges. `main` has moved since this branch began: it
+holds the loci (e573fc3) and the first of the parser's speed changes. The branch `perf/threads`
+of the session working on the parser rewrites the same GT parsing again, with threads, and is
+reviewed and waiting.
+
+- **`perf/threads` first, then this branch (recommended, and what that session and this one
+  agreed).** This branch is then brought onto `main` once, the ploidy added to the threaded GT
+  parsing, its tests run again, and handed to you for its own merge. One conflict, resolved once.
+- **This branch first.** `perf/threads` is then rebased onto it and adds the ploidy to its
+  threads; the same conflict, resolved by the other session.
+
+Nothing needs deciding in two results, but you may want to know them, each in its section below:
+across ploidies a haploid `1` against a diploid `0/1` is *same alleles, other genotype*, since
+only genotypes all REF count as equal (milestone 4); and where two edits of one haplotype touch,
+the outcome can follow the spelling, as your amendment of milestone 5 wrote into `doc/spec.md`
+§7.4.
+
+How sure the outcomes are: every worked case of the spec is a test with its result as a literal;
+reviewers broke the code on purpose in each milestone and every break they made now fails a test;
+a prototype of the rules, written apart from the code, agreed with `reconcile` on 20,000 random
+loci; a reading of §5 written apart agreed with `evaluate_pair` on 4,225 combinations of sample
+results; and the decomposition property held on 10,000 generated files. All of it is on hand-built
+loci of up to four records; nothing has run on a real VCF yet.
+
+Left open: the property runs on loci built by hand. The other re-spellings of `doc/spec.md`
+§7.4, which merge records or shift indels and so change the loci, and a file against itself over
+a real region, need the loci; they wait for a plan that runs the stages one after another through
+`build_loci`, now on `main`. The table writer, `compare()` and the command line have no spec yet.
 
 The checks on the commit the work starts from, 76d14dc: `uv sync --locked` clean, `ruff format
 --check` and `ruff check` pass, `ty check` passes, `uv run pytest -q` gives "213 passed".
@@ -31,8 +79,8 @@ that `doc/spec.md` §5.4 still describes a haploid GT, which is not so on this b
 
 For the owner: the reader gives `MALFORMED_GT` for a GT with a phase mark before its first
 allele, `|1`, which VCF 4.4 allows for a phased haploid call. pvc_eval reads VCF 4.2 and 4.3,
-where it is not allowed; it is later work if 4.4 files are to be compared. A sample with no GT
-in `vcf.py` reached the GT parser through its own branch, now through the GT parser itself.
+where it is not allowed; it is later work if 4.4 files are to be compared. Both faults were passed to the session working on the parser, which fixed them on its branch
+`perf/threads` (eee0046).
 
 ## Changes to the plan before milestone 3
 
@@ -146,7 +194,7 @@ For the owner: across ploidies, only genotypes all REF count as equal, as you de
 haploid `1` against a diploid `0/1`, like a haploid `1` against `1/1`, is *same alleles, other
 genotype*, by the ALT sets alone.
 
-## Milestone 5: stopped for the owner
+## Milestone 5: a file against its decomposition
 
 The decomposition the property needs is built and checked on four hand-worked cases (7ca0a93).
 The property itself, over 300 generated cases, found that the collision rules of the spec's §4.2
@@ -159,5 +207,64 @@ give a file and its decomposition different outcomes when two records of one hap
   an insertion at the end of the stretch, at the same point as the other record's insertion, so
   B's sample is invalid and A's valid.
 
-Where the records of A do not touch, no row failed in 6,290 generated cases. The property is not
-committed; it waits on the owner's answer.
+Where the records of A do not touch, no row failed in 6,290 generated cases. The property waited,
+uncommitted, for the owner's answer, which follows.
+
+The owner chose, on 19 October 2026, to limit the property rather than change the collision
+rules: a record is decomposed only where none of its edits on a haplotype touches an edit of
+another record on the same haplotype, edits compared with edits (`doc/spec.md` §7.4 and the
+spec's §9, 00ecccf and fb698a9). The two examples above are fixed tests (3c0ece1).
+
+Done in 7ca0a93, 3c0ece1 and 9b40a58, and fixed in 019b569 to f3490f2.
+
+- `uv run pytest tests/test_reconcile_property.py` gives "13 passed": the property, 300
+  examples in 0.80 s, and hand cases of the decomposition (a complex record, `1/2`, `./1`, two
+  records, indels at the first base of the contig, two contigs, and records kept whole). The
+  whole suite gives "389 passed" on f3490f2.
+- The five checks pass on f3490f2.
+- In a 5,000-example run outside the suite, B's sample results equalled A's in every example,
+  over 7,550 rows: *same genotype* 39%, *missing in both* 29%, *invalid in both* 13%, *too
+  complex* 12%, *reference in both* 7%.
+
+The review found no wrong outcome. Fixed: the property checked only the outcome, so a rule that
+lost phase assignments in B alone passed; it now also asks that each sample's result in B equal
+A's, written into §9 first (432b695). The generator gave missing haplotypes in half the rows and
+a cap of 1 or 2 in two draws of three; it now draws `.` in one allele of ten and the default cap
+in three draws of five. An indel at the first base of a contig could not be decomposed and was
+never generated. The decomposition read its anchor base from a fixed contig and wrote no CHROM,
+which a later plan reusing it over two contigs would have found as a wrong file B without an
+error. Not taken: the touch check costs the square of the records, 0.96 s for 2,000; it is to be
+made linear when a later plan runs the decomposition over a real region.
+
+What the property cannot catch, as the tests reviewer showed: a defect that changes A and B
+alike, such as the order of the locus alleles or the cap's boundary, and the `*` rule, since a
+`*` always touches its covering edit and is kept whole. Hand cases in `tests/test_reconcile.py`
+catch each of those.
+
+## For whoever next revises the skills
+
+The owner can stop here.
+
+- **A dependency missed by the plan.** Milestone 3 was planned on milestone 1 alone, but its
+  interface takes milestone 2's `SamplePair`; its implementer stopped half committed. A plan
+  should check each milestone's signatures in the spec's interface against the milestones it
+  stands on.
+- **Side-by-side milestones in one repository** worked through a worktree each and a merge; a
+  subagent was refused the merge, which the session made. The planning skill's "able to run side
+  by side" could say how.
+- **Reviewers that run code** found what reading did not: the wrong `*` coverage (two of five
+  reviewers, from two sides), and in every milestone tests that no plausible wrong rule could
+  fail. The tests category found the most findings that held, in every milestone.
+- **A spec rule written two ways by its reviewers** ("touches" against a record or an edit, in
+  milestone 5) came from a sentence the session added under time; two reviewers asked, and the
+  spec was corrected. Sentences added to a spec after its review deserve the first-reader too.
+- **Tokens per milestone**, from the `Agent` tool's results. Implementation and fixes were made
+  by one subagent each, so their tokens cannot be told apart; second looks are in the reviewers'.
+
+| milestone | implementation and fixes | review (5 categories, 4 for milestone 5) |
+|---|---|---|
+| 1, ploidy | 102,000 | 185,000 |
+| 2, sample pairs | 125,000 | 197,000 |
+| 3, reconciliation | 231,000 | 439,000 |
+| 4, evaluation | 152,000 | 248,000 |
+| 5, property | 200,000 | 289,000 |

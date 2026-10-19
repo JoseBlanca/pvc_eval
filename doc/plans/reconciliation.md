@@ -1,6 +1,6 @@
 # Plan: reconciliation and evaluation
 
-*Status: approved by the owner on 19 October 2026; under way. It builds `doc/specs/reconciliation.md`,
+*Status: approved by the owner on 19 October 2026; done on 19 October 2026. It builds `doc/specs/reconciliation.md`,
 approved by the owner on 19 October 2026, on the branch `reconciliation` in the worktree
 `.claude/worktrees/reconciliation`. The work report will be `doc/reports/reconciliation.md`.*
 
@@ -135,7 +135,7 @@ Milestones 1 and 2 touch different files and can run side by side. The others ru
   the equality of genotypes all REF across ploidies (E11); a fall-through order that tests E12 and
   E13 only by accident. The reviewers are pointed at these.
 
-- [ ] **5. A file against its decomposition**
+- [x] **5. A file against its decomposition**
 
   What it gives: the property of §9: for generated loci, file B made from file A by decomposing
   each record that no edit of another record of a haplotype carrying it touches into records of
