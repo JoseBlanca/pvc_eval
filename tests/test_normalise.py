@@ -66,18 +66,32 @@ def test_indel_slides_to_the_left_end_of_its_repeat(
 
 
 @pytest.mark.parametrize(
-    ("contig", "record"),
+    ("contig", "record", "expected"),
     [
-        (DINUCLEOTIDE, make_record(4, "ACA", "A", "ACG")),
+        (DINUCLEOTIDE, make_record(4, "ACA", "A", "ACG"), (4, ("ACA", "A", "ACG"))),
         # An A inserted after position 4 slides 4 bases, a CA inserted there slides 1.
-        ("GAAAACACT", make_record(4, "A", "AA", "ACA")),
-        (HOMOPOLYMER, make_record(3, "AA", "C")),
-        (HOMOPOLYMER, make_record(0, "GA", "G")),
+        ("GAAAACACT", make_record(4, "A", "AA", "ACA"), (4, ("A", "AA", "ACA"))),
+        (HOMOPOLYMER, make_record(3, "AA", "C"), (3, ("AA", "C"))),
+        (HOMOPOLYMER, make_record(0, "GA", "G"), (0, ("GA", "G"))),
+        ("ACGTA", make_record(0, "ACGT", "AGGT"), (1, ("C", "G"))),
+        (HOMOPOLYMER, make_record(2, "A"), (2, ("A",))),
+        # The A at 0 is deleted, and no base on its left can be the anchor.
+        ("ACGT", make_record(0, "AC", "C"), (0, ("AC", "C"))),
     ],
-    ids=["indel_and_snp", "two_indels_moving_apart", "complex", "already_left_aligned"],
+    ids=[
+        "indel_and_snp",
+        "two_indels_moving_apart",
+        "complex",
+        "already_left_aligned",
+        "snp_in_padding_is_trimmed",
+        "no_alt",
+        "deletion_of_the_first_base",
+    ],
 )
-def test_record_that_cannot_move_stays(contig: str, record: VcfRecord) -> None:
-    assert placed(normalise(record, contig)) == placed(trim(record))
+def test_record_that_cannot_move_stays(
+    contig: str, record: VcfRecord, expected: tuple[int, tuple[str, ...]]
+) -> None:
+    assert placed(normalise(record, contig)) == expected
 
 
 def test_ref_mismatch_is_marked_and_not_moved() -> None:
@@ -179,3 +193,15 @@ def test_normalised_indel_is_at_its_leftmost_anchored_place(
     contig, record, haplotype = case
 
     assert placed(normalise(record, contig)) == leftmost_anchored(contig, haplotype)
+
+
+@pytest.mark.parametrize(
+    ("start", "alleles", "message"),
+    [(-1, ("A", "T"), "start must be 0 or more"), (0, ("", "T"), "REF of at least one base")],
+    ids=["negative_start", "empty_ref"],
+)
+def test_record_that_breaks_its_invariants_is_refused(
+    start: int, alleles: tuple[str, ...], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        make_record(start, *alleles)

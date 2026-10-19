@@ -315,3 +315,63 @@ def test_qual_or_gq_that_is_not_a_number_is_absent_and_counted(
         assert warning in caplog.text
     else:
         assert "QUAL or GQ" not in caplog.text
+
+
+def test_sample_without_gt_has_both_haplotypes_missing(tmp_path: Path) -> None:
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGQ:PS\t30:7\t.:.\n")
+
+    (record,) = read_vcf_records(path, CONTIGS)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(MISSING, MISSING), phased=False, phase_set="7", quality=30),
+        VcfGenotype(alleles=(MISSING, MISSING), phased=False, phase_set=None, quality=None),
+    )
+
+
+def test_phase_set_dot_is_none(tmp_path: Path) -> None:
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGT:PS\t0|1:.\t1|0:12\n")
+
+    (record,) = read_vcf_records(path, CONTIGS)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(0, 1), phased=True, phase_set=None, quality=None),
+        VcfGenotype(alleles=(1, 0), phased=True, phase_set="12", quality=None),
+    )
+
+
+def test_alt_dot_gives_a_record_with_ref_only(tmp_path: Path) -> None:
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\t.\t.\t.\t.\tGT\t0/0\t0/0\n")
+
+    (record,) = read_vcf_records(path, CONTIGS)
+
+    assert (record.start, record.alleles) == (4, ("A",))
+
+
+def test_records_at_the_same_pos_both_come_out(tmp_path: Path) -> None:
+    path = write_vcf(
+        tmp_path,
+        "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/0\nchr1\t5\t.\tA\tAC\t.\t.\t.\tGT\t0/0\t0/1\n",
+    )
+
+    records = list(read_vcf_records(path, CONTIGS))
+
+    assert [(record.start, record.alleles) for record in records] == [
+        (4, ("A", "T")),
+        (4, ("A", "AC")),
+    ]
+
+
+def test_bgzipped_file_of_several_gzip_members_is_read_whole(tmp_path: Path) -> None:
+    # bgzip writes a file as a series of gzip members; gzip reads them as one stream.
+    path = tmp_path / "a.vcf.gz"
+    path.write_bytes(
+        gzip.compress((HEADER + "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n").encode())
+        + gzip.compress(b"chr1\t7\t.\tA\tG\t.\t.\t.\tGT\t0/1\t0/1\n")
+    )
+
+    records = list(read_vcf_records(path, CONTIGS))
+
+    assert [(record.start, record.alleles) for record in records] == [
+        (4, ("A", "T")),
+        (6, ("A", "G")),
+    ]
