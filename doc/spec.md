@@ -204,9 +204,10 @@ def build_loci(records_a: Iterator[VcfRecord], records_b: Iterator[VcfRecord],
 ```
 
 `build_loci` is in `pvc_eval.loci`, and the loci's own spec gives it in full. A `Locus` covers the
-spans of all its records and every STR region it holds (§5.3), so `start` and `end` hold every
-REF. Each file's records are in the order `parse_vcf` yields them, by span start; records with no
-ALT are among them. `str_regions` holds no `GENERIC` segment, in position order. Loci come
+spans of all its records with an ALT and every STR region it holds (§5.3), so `start` and `end`
+hold their REFs. Each file's records are in the order `parse_vcf` yields them, by span start.
+Records with no ALT are among them: one is in every locus its REF overlaps, and its REF may reach
+beyond the locus (§5.2). `str_regions` holds no `GENERIC` segment, in position order. Loci come
 contig by contig in the `.fai`'s order and by start, and do not overlap. The locus knows nothing
 of samples: each record's genotypes are in the order of its file's header (`parse_vcf_samples`),
 and the reference bases over the locus are read from the reference.
@@ -332,8 +333,8 @@ containing it is invalid for every sample of that file (§5.4).
 
 **Normalising.** Remove the bases all of a VCF record's alleles but `*` share at the right end,
 then at the left end, keeping at least one base in every allele (the VCF anchor convention). A
-record with no ALT, or whose only ALTs are `*`, is not trimmed. The record is never moved: its locus alleles are
-built from its VCF alleles where it was written (§5.4). Moving it, as `bcftools norm` does, would
+record with no ALT, or whose only ALTs are `*`, is not trimmed. The record is never moved: its
+locus alleles are built from its trimmed VCF alleles where it stands (§5.4). Moving it, as `bcftools norm` does, would
 break valid files: each record is left-aligned on its own, so a deletion can slide onto a SNP the
 same haplotype carries (the first case below), or past one, which changes the haplotype without
 any sign of it:
@@ -377,9 +378,9 @@ REF, which can reach one base further. So all spellings overlap and share a locu
 moved (decided by the owner on 19 October 2026).
 
 **Records with no ALT.** A VCF record whose ALT is `.`, as all-sites VCFs write, starts no locus
-and widens none: it takes no part in §5.3. Inside a locus that other records make, it gives its
-samples' VCF genotypes like any record: `0/0` is REF, `./.` is missing. It is left out of the kind
-(§5.6).
+and widens none: it takes no part in §5.3. It is in every locus its REF overlaps, and there it
+gives its samples' VCF genotypes like any record: `0/0` is REF, `./.` is missing. It is left out of
+the kind (§5.6) and of the `records_a`, `records_b` counts (§6).
 
 **Order.** A span can start before the record's POS, by as much as the deletion or insertion can
 slide left, so the stream holds VCF records until the reader is further right than the longest
@@ -484,10 +485,13 @@ For each locus, each file and each sample, pvc_eval builds the sample's possible
 expresses the possible genotypes of both files over one shared list of locus alleles.
 
 **Building a locus allele.** A locus allele is built for one haplotype from the reference over the
-locus and the VCF alleles that haplotype carries, each at the position it was written at (§5.2):
+locus and the VCF alleles that haplotype carries, each where its record stands after normalising
+(§5.2): trimmed, never moved, which is how `VcfRecord` holds it. "As written" below means that.
+So `p CAA → CA` is normalised to `p CA → C` and deletes position p+1, whichever A its caller
+meant; the two are the same haplotype unless another edit lies at p+1 or p+2.
 
-- Each VCF allele other than REF is an **edit**: after trimming the bases it shares with its record's
-  REF, first at the left end and then at the right, it replaces some reference positions (none, for
+- Each VCF allele of the normalised record other than REF is an **edit**: after trimming the bases
+  it still shares with REF, first at the left end and then at the right, it replaces some reference positions (none, for
   an insertion) with some bases (none, for a deletion). Trimming first matters: a VCF record widened
   over flank bases for one allele's sake spells the reference there in its other alleles, and that
   is no edit. The order matters too: `52 AG → A,AAG` trimmed from the left inserts its A after
@@ -495,7 +499,7 @@ locus and the VCF alleles that haplotype carries, each at the position it was wr
   Left first puts the insertion after the anchor, as VCF does.
 - A `*` allele makes no edit: it says the haplotype's bases here are removed by another VCF record,
   which carries that edit. The haplotype must carry a deletion, from another VCF record of the
-  locus, that deletes a position of the `*` record's REF as written, where it was written or at
+  locus, that deletes a position of the `*` record's normalised REF, where it was written or at
   any other placement its span allows (§5.2); if it does not, the haplotype is **impossible**.
   The placements count because `bcftools norm` moves the deletion and leaves the `*` record where
   it was. A deletion's anchor base is in its span but deleted by no placement, so a `*` on it
@@ -504,7 +508,9 @@ locus and the VCF alleles that haplotype carries, each at the position it was wr
   edits **collide** if they change the same reference position or are two insertions at the same
   point, as written. Colliding edits cannot both apply: the haplotype is **impossible**.
 - If any VCF genotype leaves the haplotype missing (`.`), the locus allele is missing, however many
-  other VCF records give it a definite allele.
+  other VCF records give it a definite allele. Impossibility is checked first: a haplotype whose
+  definite edits collide, or whose `*` is not covered, is impossible even when it is also
+  missing.
 
 **Possible genotypes.** A sample's VCF genotypes across the locus's VCF records say which VCF allele
 each haplotype carries, up to phase.
@@ -547,9 +553,11 @@ deletion `0/1` the same records are fine — one haplotype `C`, the other `CAAT`
 the second record as `G → A,*` with `1/2`, which says exactly that.
 
 **Shared locus alleles.** The locus's alleles are REF followed by every distinct non-missing locus
-allele appearing in any possible genotype of any sample of either file, in order of first appearance.
-Each possible genotype becomes a sorted tuple of indices into that list, with missing haplotypes
-written as missing. This is what lets §5.5 compare genotypes by number: two files that spelled one
+allele appearing in any possible genotype of any sample of either file, in order of first appearance,
+samples in header order, file A before file B. A locus allele whose sequence equals REF, because its
+edits cancel or an ALT spells the reference, is REF, index 0. Each possible genotype becomes a
+sorted tuple of indices into that list, with missing haplotypes written as missing and sorted after
+every index, and a sample's possible genotypes are in the order of those tuples. This is what lets §5.5 compare genotypes by number: two files that spelled one
 sequence differently now name it by the same index.
 
 ### 5.5 Evaluation
@@ -567,8 +575,12 @@ Each sample pair at each compared locus gets exactly one outcome. The first rule
 | **only in A**, **only in B** | one file gives the sample a non-reference locus allele, and the other's only possible genotype is all REF |
 | **different** | both give the sample non-reference locus alleles, and no pair of possible genotypes matches as above |
 
-When several possible genotypes exist, the pair reported in the table is the one that decided the
-outcome; for *different*, the first in order.
+When several possible genotypes exist, the pair reported in the table is the first, taking A's
+possible genotypes in order and, for each, B's in order, that meets the rule of the outcome. Where
+the rule names no pair (*missing*, *reference in both*, *only in*, *different*), it is the first
+possible genotype of each file. *Too complex* and *invalid* report none (§6). Rows come locus by
+locus, and within a locus in the order of the sample pairs: file A's header order, or the order of
+`--sample-map`.
 
 `./1` in both files is *missing in both*, not *same genotype*: half of each genotype is unknown,
 so nothing says the files agree there (decided by the owner on 19 October 2026).
@@ -642,8 +654,8 @@ Tab-separated, one row per sample pair and locus (without `--all-rows`, rows who
 | `possible_a`, `possible_b` | how many possible genotypes the sample had in each file; `.` for a *too complex* sample, 0 for an invalid one |
 | `quality_a`, `quality_b` | §2, *quality*; `.` when the file gives the sample no non-reference VCF allele |
 | `gq_a`, `gq_b` | the lowest GQ among the sample's VCF records in the locus that give it a non-reference VCF allele, `.` when absent |
-| `records_a`, `records_b` | how many VCF records of each file the locus holds |
-| `invalid_reason_a`, `invalid_reason_b` | for an invalid outcome: `contradicting records`, `REF mismatch`, `malformed GT` or `haploid GT`; `.` otherwise |
+| `records_a`, `records_b` | how many VCF records with an ALT of each file the locus holds |
+| `invalid_reason_a`, `invalid_reason_b` | for an invalid outcome, the first that applies: `REF mismatch`, `malformed GT`, `haploid GT`, `contradicting records`; `.` otherwise |
 
 The summary (`--summary`) counts rows by outcome, kind and stratum.
 
