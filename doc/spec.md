@@ -82,7 +82,8 @@ use for it.
 ```
 pvc_eval compare --reference ref.fa --a a.vcf.gz --b b.vcf.gz --output loci.tsv
                  [--regions regions.bed] [--strata strata.bed|pvc] [--str-regions str.bed]
-                 [--sample-map pairs.tsv] [--phasing-cap N] [--summary summary.tsv] [--all-rows]
+                 [--sample-map pairs.tsv] [--phasing-cap N] [--span-limit N|none]
+                 [--summary summary.tsv] [--all-rows]
                  [--evaluator pvc|vcfeval|happy|naive]
 ```
 
@@ -95,13 +96,15 @@ pvc_eval compare --reference ref.fa --a a.vcf.gz --b b.vcf.gz --output loci.tsv
 | `--str-regions` | BED of STR regions to use instead of running the STR finder. |
 | `--sample-map` | two columns: a sample of A, a sample of B. Without it, samples are paired by name. |
 | `--phasing-cap` | default 4096 (§5.4, **Open 2**). |
+| `--span-limit` | how far, in bases, a VCF record's span may reach beyond its REF before it is cut back to the REF (§5.2): a whole number of 1 or more, default 10000, or `none` for no limit. |
 | `--output` | the table of §6, one row per sample pair and locus. |
 | `--summary` | counts of outcomes by kind and stratum. |
 | `--all-rows` | also write the rows whose outcome is *reference in both* (§5.5). |
 | `--evaluator` | what decides each locus's outcome: `pvc`, pvc_eval's own rules (§5.4, §5.5), the default; or `vcfeval`, `happy` or `naive`, another evaluator wrapped behind the same interface (§8). |
 
 **Errors, which stop the run:** a VCF not sorted in the `.fai`'s contig order and by position; a
-contig in a VCF but not in the reference; no sample pairs; a sample named in `--sample-map` absent
+contig in a VCF but not in the reference; a VCF record whose REF reaches past the end of its
+contig; no sample pairs; a sample named in `--sample-map` absent
 from its file. Samples present in only one file and not mapped are listed as a warning and not
 compared.
 
@@ -249,15 +252,17 @@ is absent, and pvc_eval never needs pvc to run.
 
 ### 5.2 Reading and normalising VCF records
 
-**Checks.** Each VCF record's contig must be in the reference, and records must come in the `.fai`'s
-contig order and by position; otherwise the run stops with an error naming the file and line. A
+**Checks.** Each VCF record's contig must be in the reference, its REF must lie within the contig's
+length, and records must come in the `.fai`'s contig order and by position; otherwise the run stops
+with an error naming the file and line. A position past a contig's end means the VCF was made on
+another reference, as a contig the reference lacks does (decided by the owner on 19 October 2026). A
 VCF record whose REF differs from the reference at its position, compared without regard to case
 (references are often soft-masked in lower case), is kept and marked *REF mismatch*; every locus
 containing it is invalid for every sample of that file (§5.4).
 
 **Normalising.** Remove the bases all of a VCF record's alleles but `*` share at the right end,
 then at the left end, keeping at least one base in every allele (the VCF anchor convention). A
-record whose only ALTs are `*` is not trimmed. The record is never moved: its locus alleles are
+record with no ALT, or whose only ALTs are `*`, is not trimmed. The record is never moved: its locus alleles are
 built from its VCF alleles where it was written (§5.4). Moving it, as `bcftools norm` does, would
 break valid files: each record is left-aligned on its own, so a deletion can slide onto a SNP the
 same haplotype carries (the example below).
@@ -274,15 +279,23 @@ two spellings of one event always overlap (§5.3):
   it is inserted at when slid as far right as it goes. That last base is in the span even when the
   insertion cannot slide, so that `C → CT` at 10 overlaps a record at 11 (the third case below).
 - A record with several ALTs spans the union of its ALTs' spans.
+- A span always holds the record's trimmed REF, since its locus alleles are built where it was
+  written.
+- At the ends of a contig a span stops at the contig: an insertion after its last base has no base
+  after it in its span, and a deletion slid to its first base has no anchor before it.
 
-Every spelling of one indel has the same span, so they always share a locus and neither is moved.
+Every spelling of an indel with its shared base on the left has the same span. Any other spelling,
+such as a deletion written with its shared base on the right, spans that span and its own trimmed
+REF, which can reach one base further. So all spellings overlap and share a locus, and none is
+moved (decided by the owner on 19 October 2026).
 
 **Order.** A span can start before the record's POS, by as much as the deletion or insertion can
 slide left, so the stream holds VCF records until the reader is further right than the longest
 such distance and emits them in order of span start. A record whose span would reach more than
 the span limit beyond its REF is given its trimmed REF as its span and reported in a warning. The
-span limit is 10 kb unless the caller of the Python API sets another, or none (decided by the
-owner on 19 October 2026). With no limit no span is cut, and since no distance then bounds how far
+span limit is 10 kb unless the user sets another whole number of 1 or more, or none, with
+`--span-limit` or in the Python API (decided by the owner on 19 October 2026; a limit of 0 would
+cut every insertion, whose span always holds the base after it). With no limit no span is cut, and since no distance then bounds how far
 left a later record can start, the stream holds the records of a contig until the next contig
 begins.
 
