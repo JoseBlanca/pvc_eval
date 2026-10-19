@@ -38,6 +38,7 @@ from pvc_eval.segments import (
     _make_bundle_member,
     _make_clusters,
     _make_repeat_runs,
+    _make_runs,
     _Rejection,
     _Segment,
     _StrSegment,
@@ -1478,6 +1479,26 @@ def test_abutting_coverage_runs_merge_into_one() -> None:
     runs = _make_repeat_runs([_make_candidate(0, 600, 2, 1), _make_candidate(600, 1200, 2, 1)])
     assert len(runs) == 1
     assert runs[0][1] - runs[0][0] == 1200
+
+
+def test_a_run_holds_a_span_inside_another_without_ending_early() -> None:
+    assert _make_runs([(0, 50), (10, 20), (20, 30)]) == [(0, 50)]
+
+
+# A (GA) repeat with an (AAT) repeat after it whose candidates lie inside one another, at
+# bundle distance 10 and max_str_len 60. `pvc dev type-regions --min-copies 5,5,4,4,4,3
+# --flank-bp 10 --max-str-len 60`, pvc at bbcc9f4, makes it one satellite; a run cut short
+# at the inner candidate's end would leave a bundle.
+def test_a_candidate_inside_another_does_not_shorten_its_repeat_run(tmp_path: Path) -> None:
+    bases = (
+        _filler(40) + "AGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAATAATAATAATAATAAAAATAATAATAAT" + _filler(40)
+    )
+    parameters = StrFinderParameters(bundle_distance=10, max_str_len=60)
+    assert _find_segments_in_fasta("nested", bases, parameters, tmp_path) == [
+        (0, 40, "generic", None),
+        (40, 103, "satellite", None),
+        (103, 142, "generic", None),
+    ]
 
 
 def test_a_repeat_free_contig_is_one_generic_region() -> None:
