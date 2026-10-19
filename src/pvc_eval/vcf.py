@@ -1,17 +1,20 @@
-"""The VCF records of one file: stage 2 of doc/spec.md §4, read with the checks of §5.2
-and normalised, trimmed then left-aligned. A VCF record is never split or decomposed.
+"""The VCF records of one file: stage 2 of doc/spec.md §4, read with the checks of §5.2,
+normalised, given their spans and put in order of span start. Normalising trims the bases
+a record's alleles share and marks a REF that differs from the reference; a VCF record is
+never moved, split or decomposed.
 
 Positions are 0-based and half-open inside pvc_eval. The 1-based POS of a VCF line is
 converted here, and nowhere else.
 """
 
 import gzip
+import heapq
 import logging
 import math
 import re
-from collections.abc import Generator, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import closing
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
@@ -36,6 +39,12 @@ SPANNING_DELETION = "*"
 GZIP_MAGIC = b"\x1f\x8b"
 DECIMAL_NUMBER = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?")
 NUM_FIXED_COLUMNS = 9  # CHROM to FORMAT
+# doc/spec.md §5.2: a span that would reach further than this beyond its REF, on either
+# side, is cut to the REF, which bounds how long the reader holds a record.
+MAX_SPAN_REACH = 10_000
+
+type Span = tuple[int, int]
+"""A stretch of a contig, 0-based and half-open."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -60,13 +69,15 @@ class VcfRecord:
     """One line of a VCF file.
 
     start: the first position REF covers, 0-based; `end` is one past the last.
-    alleles: REF first, then the ALTs, as written but in upper case; `*` is a spanning
-        deletion.
+    alleles: REF first, then the ALTs, in upper case and trimmed (§5.2); `*` is a
+        spanning deletion.
     qual: QUAL, or None for `.`.
     genotypes: one per sample, in the order of the header; a MALFORMED_GT or HAPLOID_GT
         keeps no GQ.
     line_number: the 1-based line of the file, for messages.
-    ref_mismatch: REF differs from the reference (§5.2), set by normalising.
+    ref_mismatch: REF, as written, differs from the reference (§5.2).
+    span_start, span_end: the record's span (§5.2), 0-based and half-open; it always
+        contains the REF.
     """
 
     contig: str
@@ -75,13 +86,20 @@ class VcfRecord:
     qual: float | None
     genotypes: tuple[VcfGenotype | MALFORMED_GT | HAPLOID_GT, ...]
     line_number: int
-    ref_mismatch: bool = False
+    ref_mismatch: bool
+    span_start: int
+    span_end: int
 
     def __post_init__(self) -> None:
         if self.start < 0:
             raise ValueError(f"start must be 0 or more, not {self.start}")
         if not self.alleles or not self.alleles[0]:
             raise ValueError("a VCF record needs a REF of at least one base")
+        if self.span_start > self.start or self.span_end < self.end:
+            raise ValueError(
+                f"span {self.span_start}-{self.span_end} must contain the REF,"
+                f" {self.start}-{self.end}"
+            )
 
     @property
     def end(self) -> int:
@@ -97,10 +115,24 @@ def read_samples(path: Path) -> tuple[str, ...]:
         return _read_header(numbered_lines, path)
 
 
-def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
-    """The VCF records of a file, in the file's order, plain or bgzipped.
+def read_vcf_records(
+    path: Path, contigs: Sequence[str], contig_sequence: Callable[[str], str]
+) -> Iterator[VcfRecord]:
+    """The VCF records of a file, plain or bgzipped, normalised and given their spans
+    (§5.2), in order of span start, and in the file's order where two spans start at one
+    position.
 
     contigs: the contig names of the reference, in the order of its `.fai`.
+    contig_sequence: the sequence of a contig of the reference, by name, in upper case.
+        It is called once for each contig that has a VCF record.
+
+    A record is held only until no later record of its contig can have a span that
+    starts before its own: a span starts at most MAX_SPAN_REACH bases before its REF,
+    and the file is sorted by POS. A record whose span would reach further than that
+    beyond its REF is given its REF as its span, and the number of those is logged as a
+    warning at the end. A record whose REF differs from the reference is marked
+    ref_mismatch and given its REF as its span, since it cannot slide along a reference
+    it disagrees with.
 
     Raises PvcEvalInputError, when the stream reaches it, for a VCF record on a contig
     the reference lacks, for records out of the `.fai`'s contig order or out of position
@@ -111,6 +143,39 @@ def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
     QUAL or GQ that is not a number is taken as absent, and those are counted in a
     warning at the end too.
     """
+    with closing(_records_in_file_order(path, contigs, contig_sequence)) as records:
+        yield from _in_span_order(records)
+
+
+def _in_span_order(records: Iterable[tuple[int, VcfRecord]]) -> Iterator[VcfRecord]:
+    """The records in order of span start, and of the file where two spans start at one
+    position.
+
+    records: each record with the 0-based position of its POS, in the file's order.
+    """
+    # A heap of (span start, place in the file, record); the place keeps ties in the
+    # file's order and is never equal, so records are never compared.
+    held: list[tuple[int, int, VcfRecord]] = []
+    contig = ""
+    for place_in_file, (pos, vcf_record) in enumerate(records):
+        if vcf_record.contig != contig:
+            while held:
+                yield heapq.heappop(held)[2]
+            contig = vcf_record.contig
+        heapq.heappush(held, (vcf_record.span_start, place_in_file, vcf_record))
+        # Every later record of the contig has its POS at pos or after, and its REF,
+        # trimmed, too, so its span starts at pos - MAX_SPAN_REACH or after.
+        while held and held[0][0] <= pos - MAX_SPAN_REACH:
+            yield heapq.heappop(held)[2]
+    while held:
+        yield heapq.heappop(held)[2]
+
+
+def _records_in_file_order(
+    path: Path, contigs: Sequence[str], contig_sequence: Callable[[str], str]
+) -> Generator[tuple[int, VcfRecord]]:
+    """The records of read_vcf_records in the file's order, each with the 0-based
+    position of its POS."""
     contig_rank = {contig: rank for rank, contig in enumerate(contigs)}
     # The (contig rank, POS) of the previous record, which this one must not come before,
     # and where that record is, for the message.
@@ -118,6 +183,9 @@ def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
     previous_where = ""
     num_symbolic = 0
     num_not_numbers = 0
+    num_beyond_reach = 0
+    sequence_contig = ""
+    sequence = ""
     with closing(_numbered_lines(path)) as numbered_lines:
         num_samples = len(_read_header(numbered_lines, path))
         for line_number, line in numbered_lines:
@@ -146,11 +214,14 @@ def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
                 continue
             if pos_1based == 0:
                 raise _pos_error(fields[1], path, line_number)
-            record, num_record_not_numbers = _parse_record(
-                fields, contig, pos_1based - 1, alts, line_number
+            if contig != sequence_contig:
+                sequence_contig, sequence = contig, contig_sequence(contig)
+            record, num_record_not_numbers, is_beyond_reach = _parse_record(
+                fields, contig, pos_1based - 1, alts, line_number, sequence
             )
             num_not_numbers += num_record_not_numbers
-            yield record
+            num_beyond_reach += is_beyond_reach
+            yield pos_1based - 1, record
     if num_symbolic:
         logger.warning(
             "%s: skipped %s with symbolic alleles (<DEL>, breakends); pvc_eval does not"
@@ -164,6 +235,15 @@ def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
             " quality of the table.",
             path,
             _count(num_not_numbers, "QUAL or GQ value"),
+        )
+    if num_beyond_reach:
+        logger.warning(
+            "%s: %s could slide more than 10 kb along the reference, and %s given only"
+            " its REF as its span; another spelling of the same event further along may"
+            " fall into another locus and be compared apart.",
+            path,
+            _count(num_beyond_reach, "VCF record"),
+            "was" if num_beyond_reach == 1 else "were each",
         )
 
 
@@ -326,12 +406,28 @@ def _is_symbolic(alt: str) -> bool:
 
 
 def _parse_record(
-    fields: list[str], contig: str, start: int, alts: tuple[str, ...], line_number: int
-) -> tuple[VcfRecord, int]:
-    """The VCF record of a line, and how many of its QUAL and GQ values were taken as
-    absent for not being numbers."""
+    fields: list[str],
+    contig: str,
+    pos: int,
+    alts: tuple[str, ...],
+    line_number: int,
+    contig_sequence: str,
+) -> tuple[VcfRecord, int, bool]:
+    """The VCF record of a line, normalised and with its span; how many of its QUAL and
+    GQ values were taken as absent for not being numbers; and whether its span was cut
+    to its REF for reaching more than MAX_SPAN_REACH beyond it.
+
+    pos: the 0-based position of POS.
+    """
     # VCF bases are case-insensitive, and the reference is compared in upper case.
     alleles = (fields[3].upper(), *(alt.upper() for alt in alts))
+    ref_mismatch = contig_sequence[pos : pos + len(alleles[0])] != alleles[0]
+    start, trimmed = trim(pos, alleles)
+    ref_span = (start, start + len(trimmed[0]))
+    span = ref_span if ref_mismatch else vcf_record_span(start, trimmed, contig_sequence)
+    is_beyond_reach = span is None
+    if span is None:
+        span = ref_span
     genotypes: list[VcfGenotype | MALFORMED_GT | HAPLOID_GT] = []
     qual = _read_qual(fields[5])
     num_not_numbers = _is_not_a_number(fields[5], qual)
@@ -359,12 +455,15 @@ def _parse_record(
     record = VcfRecord(
         contig=contig,
         start=start,
-        alleles=alleles,
+        alleles=trimmed,
         qual=qual,
         genotypes=tuple(genotypes),
         line_number=line_number,
+        ref_mismatch=ref_mismatch,
+        span_start=span[0],
+        span_end=span[1],
     )
-    return record, num_not_numbers
+    return record, num_not_numbers, is_beyond_reach
 
 
 # QUAL and GQ only annotate a row of the table (§6), where an absent value is written `.`;
@@ -389,102 +488,93 @@ def _is_not_a_number(field: str | None, number: float | None) -> bool:
     return number is None and field not in (None, ".")
 
 
-def normalise(record: VcfRecord, contig_sequence: str) -> VcfRecord:
-    """The record trimmed and, when it is an indel, left-aligned.
-
-    contig_sequence: the record's contig in the reference, in upper case, as the
-        record's alleles are.
-
-    A record whose REF differs from the reference is returned unchanged and marked
-    ref_mismatch, since its alleles cannot be placed on the reference (§5.2).
-    """
-    if contig_sequence[record.start : record.end] != record.alleles[0]:
-        return replace(record, ref_mismatch=True)
-    return left_align(trim(record), contig_sequence)
-
-
-def trim(record: VcfRecord) -> VcfRecord:
-    """The record without the bases all its VCF alleles share, at the right end, then
-    at the left, keeping at least one base in each (the VCF anchor convention).
+def trim(start: int, alleles: Sequence[str]) -> tuple[int, tuple[str, ...]]:
+    """A record's start and alleles without the bases all its VCF alleles share, at the
+    right end, then at the left, keeping at least one base in each (the VCF anchor
+    convention); start is 0-based.
 
     A `*` allele has no bases and takes no part. A record with fewer than two other
     alleles is returned as it is.
     """
-    sequences = _sequences(record.alleles)
+    sequences = _sequences(alleles)
     if len(sequences) < 2:
-        return record
-    start, trimmed = _trim(record.start, sequences)
-    return replace(record, start=start, alleles=_put_back(record.alleles, trimmed))
+        return start, tuple(alleles)
+    start, trimmed = _trim(start, sequences)
+    return start, _put_back(alleles, trimmed)
 
 
-def left_align(record: VcfRecord, contig_sequence: str) -> VcfRecord:
-    """The record with its indel slid left while the base it uncovers equals the base it
-    drops, as `bcftools norm` and vt do, and written with one shared base on its left.
+def vcf_record_span(start: int, alleles: Sequence[str], contig_sequence: str) -> Span | None:
+    """The span of a trimmed record whose REF agrees with the reference (§5.2), or None
+    when it would reach more than MAX_SPAN_REACH bases beyond the REF.
 
-    An ALT is an indel when, without the bases it shares with REF at both ends, one of
-    the two is empty, whichever side the shared bases were on. A record moves only when
-    every ALT is an indel and every ALT ends at the same place; otherwise it stays where
-    it is: a SNP or a complex ALT cannot move, and ALTs that would move apart cannot be
-    written as one record (§5.2). An indel at the first base of the contig, with no base
-    left of it, stays too.
+    start: where REF starts, 0-based. contig_sequence: the record's contig, in upper case.
+
+    The span is the union of the REF and of the span of each ALT. An ALT that is an
+    insertion or a deletion spans from the anchor of its left-aligned form to the last
+    base it deletes, or the base after the point it is inserted at, when slid as far
+    right as it goes. A SNP, a complex ALT and a `*` add nothing to the REF.
     """
-    sequences = _sequences(record.alleles)
-    if len(sequences) < 2:
-        return record
-    ref = sequences[0]
-    alts = sequences[1:]
-    indels = [
-        indel
-        for alt in alts
-        if (indel := _leftmost_indel(record.start, ref, alt, contig_sequence)) is not None
-    ]
-    positions = {indel.position for indel in indels}
-    if len(indels) != len(alts) or len(positions) != 1:
-        return record
-    position = positions.pop()
-    if position == 0:
-        return record
-    # The anchor base is at position - 1, and REF covers the longest deletion.
-    end = position + max(indel.num_deleted for indel in indels)
-    anchor = contig_sequence[position - 1]
-    moved_alts = [
-        anchor + indel.inserted + contig_sequence[position + indel.num_deleted : end]
-        for indel in indels
-    ]
-    alleles = [contig_sequence[position - 1 : end], *moved_alts]
-    return replace(record, start=position - 1, alleles=_put_back(record.alleles, alleles))
+    end = start + len(alleles[0])
+    span_start, span_end = start, end
+    for alt in alleles[1:]:
+        if alt == SPANNING_DELETION:
+            continue
+        indel_span = _indel_span(start, alleles[0], alt, contig_sequence)
+        if indel_span is not None:
+            span_start = min(span_start, indel_span[0])
+            span_end = max(span_end, indel_span[1])
+    if start - span_start > MAX_SPAN_REACH or span_end - end > MAX_SPAN_REACH:
+        return None
+    return span_start, span_end
 
 
-@dataclass(frozen=True, slots=True)
-class _Indel:
-    """Bases inserted before, or deleted from, a 0-based position of the contig."""
+def _indel_span(start: int, ref: str, alt: str, contig_sequence: str) -> Span | None:
+    """The span of one ALT when it is an insertion or a deletion, 0-based and half-open;
+    None for a SNP or a complex ALT.
 
-    position: int
-    inserted: str
-    num_deleted: int
-
-
-def _leftmost_indel(start: int, ref: str, alt: str, contig_sequence: str) -> _Indel | None:
-    """The indel ref -> alt at its leftmost position that keeps a base on its left, or at
-    0 when it is at the first base and cannot move; None for a SNP or a complex ALT.
-
-    The shared bases are removed from the left first, so that the indel starts as far
-    right as the record allows, and sliding left reaches its leftmost place from there.
+    The ALT is an indel when, without the bases it shares with REF at both ends, one of
+    the two is empty, whichever side the shared bases were on.
     """
     num_prefix = _num_shared(ref, alt)
-    ref, alt = ref[num_prefix:], alt[num_prefix:]
-    num_suffix = _num_shared(ref[::-1], alt[::-1])
-    ref, alt = ref[: len(ref) - num_suffix], alt[: len(alt) - num_suffix]
-    if bool(ref) == bool(alt):
+    deleted, inserted = ref[num_prefix:], alt[num_prefix:]
+    num_suffix = _num_shared(deleted[::-1], inserted[::-1])
+    deleted = deleted[: len(deleted) - num_suffix]
+    inserted = inserted[: len(inserted) - num_suffix]
+    if bool(deleted) == bool(inserted):
         return None
-    event = ref or alt  # the inserted or deleted bases
+    event = deleted or inserted
+    # The event is the deletion of [position, after), or an insertion before position,
+    # where after is position too.
     position = start + num_prefix
-    while position > 1 and contig_sequence[position - 1] == event[-1]:
-        event = contig_sequence[position - 1] + event[:-1]
-        position -= 1
-    return _Indel(
-        position=position, inserted=event if alt else "", num_deleted=len(event) if ref else 0
-    )
+    after = position + len(deleted)
+    # A slide this long reaches more than MAX_SPAN_REACH beyond the REF, whatever the REF,
+    # so sliding stops there and the caller cuts the span; a satellite of megabases is
+    # not walked for each record in it.
+    max_slide = MAX_SPAN_REACH + len(ref) + 1
+    # The event slides left while the base before it equals its last base, and right
+    # while the base after it equals its first; each slide turns the event round by one
+    # base, so its bases are read round from the end it slid from.
+    num_left = 0
+    while (
+        num_left < max_slide
+        and position - num_left > 0
+        and contig_sequence[position - num_left - 1] == event[(-1 - num_left) % len(event)]
+    ):
+        num_left += 1
+    num_right = 0
+    while (
+        num_right < max_slide
+        and after + num_right < len(contig_sequence)
+        and contig_sequence[after + num_right] == event[num_right % len(event)]
+    ):
+        num_right += 1
+    # The anchor is the base before the left-aligned event; an event slid to the first
+    # base of the contig has none, and its span starts there. An insertion's span holds
+    # the base after its point (§5.2: so that C -> CT at 10 overlaps a record at 11),
+    # unless it is inserted after the last base of the contig.
+    span_start = max(position - num_left - 1, 0)
+    span_end = after + num_right + (1 if inserted else 0)
+    return span_start, min(span_end, len(contig_sequence))
 
 
 def _num_shared(first: str, second: str) -> int:
@@ -506,12 +596,12 @@ def _trim(start: int, alleles: Sequence[str]) -> tuple[int, list[str]]:
 
 
 def _sequences(alleles: Sequence[str]) -> list[str]:
-    """The alleles that are sequences. A `*` has no bases and takes no part in trimming or
-    left-aligning; _put_back returns it to its place."""
+    """The alleles that are sequences. A `*` has no bases and takes no part in trimming;
+    _put_back returns it to its place."""
     return [allele for allele in alleles if allele != SPANNING_DELETION]
 
 
-def _put_back(alleles: tuple[str, ...], sequences: list[str]) -> tuple[str, ...]:
+def _put_back(alleles: Sequence[str], sequences: list[str]) -> tuple[str, ...]:
     """The alleles with the sequences _sequences took out replaced, in order, by these."""
     replacements = iter(sequences)
     return tuple(
