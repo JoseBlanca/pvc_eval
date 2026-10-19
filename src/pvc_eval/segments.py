@@ -210,44 +210,50 @@ def _find_maximal_scoring_subsequences(
             before = total
             total += score
             index += 1
-            if score <= 0:
-                if stack and total <= lowest_before:
-                    final.extend(open_one.get_subsequence() for open_one in stack)
-                    stack.clear()
-                continue
-            stack.append(_make_open_subsequence(stack, before, total, index - 1))
-            # A merge takes the total before of a segment it cuts, and cuts none lower.
-            newest_before = stack[-1].before
-            lowest_before = newest_before if len(stack) == 1 else min(lowest_before, newest_before)
+            if score > 0:
+                open_one, staying = _make_open_subsequence(stack, before, total, index - 1)
+                del stack[staying:]
+                stack.append(open_one)
+                # It takes the total before of a subsequence it absorbs, and absorbs none lower.
+                lowest_before = (
+                    open_one.before if staying == 0 else min(lowest_before, open_one.before)
+                )
+            elif stack and total <= lowest_before:
+                final.extend(open_one.get_subsequence() for open_one in stack)
+                stack.clear()
         yield final, (stack[0].start if stack else index)
     yield [open_one.get_subsequence() for open_one in stack], None
 
 
 def _make_open_subsequence(
     stack: list[_OpenSubsequence], before: int, through: int, index: int
-) -> _OpenSubsequence:
-    """The open subsequence that a positive score at index makes, after it has absorbed the
-    open subsequences it reaches, which are cut from the stack. Rules 2 to 4 of Ruzzo and Tompa,
-    as pvc's maximal_scoring_subsequences gives them."""
+) -> tuple[_OpenSubsequence, int]:
+    """The open subsequence that a positive score at index makes, and how many of the open
+    subsequences under it stay on the stack: the ones above those it absorbs. Rules 2 to 4
+    of Ruzzo and Tompa, as pvc's maximal_scoring_subsequences gives them."""
     start = index
+    staying = len(stack)
     while True:
-        found = _find_smaller_before(stack, before)
+        found = _find_smaller_before(stack, before, staying)
         end = index + 1
         if found < 0:  # rule 2: no subsequence to reach
-            return _OpenSubsequence(before=before, through=through, start=start, end=end, link=0)
+            link = 0
+            break
         if stack[found].through >= through:  # rule 3: a separate subsequence
-            return _OpenSubsequence(
-                before=before, through=through, start=start, end=end, link=found + 1
-            )
-        # Rule 4: it takes in the subsequence found and every one above it, and looks again.
+            link = found + 1
+            break
+        # Rule 4: it absorbs the subsequence found and every one above it, and looks again.
         before, start = stack[found].before, stack[found].start
-        del stack[found:]
+        staying = found
+    open_one = _OpenSubsequence(before=before, through=through, start=start, end=end, link=link)
+    return open_one, staying
 
 
-def _find_smaller_before(stack: list[_OpenSubsequence], before: int) -> int:
-    """The index of the highest open subsequence whose total before is under before, or -1.
-    It hops down the links, past the subsequences whose total before is not."""
-    link = len(stack)
+def _find_smaller_before(stack: list[_OpenSubsequence], before: int, top: int) -> int:
+    """The index of the highest open subsequence under top whose total before is under
+    before, or -1. It hops down the links, past the subsequences whose total before is
+    not."""
+    link = top
     while link > 0:
         if stack[link - 1].before < before:
             return link - 1
@@ -321,6 +327,26 @@ def _is_covered_by_half(candidate: _Candidate, kept: list[_Candidate]) -> bool:
     return False
 
 
+def _drop_covered_candidates(
+    queue: deque[_Candidate], testable_to: int, kept_shorter: list[list[_Candidate]]
+) -> Iterator[_Candidate]:
+    """Take from the queue, in order, the candidates that end at or before testable_to, and
+    yield those that no kept candidate of kept_shorter overlaps by at least half (step 1's
+    drop rule). kept_shorter holds the kept candidates of each shorter period that divides
+    theirs."""
+    while queue and queue[0].end <= testable_to:
+        candidate = queue.popleft()
+        if not any(_is_covered_by_half(candidate, kept) for kept in kept_shorter):
+            yield candidate
+
+
+def _evict_unneeded(kept: list[_Candidate], still_needed_from: int) -> None:
+    """Remove from the kept candidates of one period those that end at or before
+    still_needed_from, where every candidate of a longer period still to be tested starts.
+    kept is in order of end."""
+    del kept[: bisect.bisect_right(kept, still_needed_from, key=lambda candidate: candidate.end)]
+
+
 def _find_candidates(
     bases: str, parameters: StrFinderParameters, *, block_bases: int = _BLOCK_BASES
 ) -> list[_Candidate]:
@@ -363,22 +389,21 @@ def _find_candidates(
             # A candidate is tested once every candidate of its divisors that starts before
             # its end is tested.
             testable_to = min((tested_to[q] for q in divisors[period]), default=len(canonical))
-            while queue and queue[0].end <= testable_to:
-                candidate = queue.popleft()
-                if any(_is_covered_by_half(candidate, kept[q]) for q in divisors[period]):
-                    continue
-                if multiples[period]:
-                    kept[period].append(candidate)
-                copies = (candidate.end - candidate.start) // period
-                if copies >= parameters.copy_floors[period - 1]:
-                    found[period].append(candidate)
+            kept_shorter = [kept[q] for q in divisors[period]]
+            # The queue's candidates that can be tested now: those of one block, and more
+            # only after a block in which a divisor could not be tested.
+            kept_now = list(_drop_covered_candidates(queue, testable_to, kept_shorter))
+            if multiples[period]:
+                kept[period].extend(kept_now)
+            floor = parameters.copy_floors[period - 1]
+            found[period].extend(
+                candidate
+                for candidate in kept_now
+                if (candidate.end - candidate.start) // period >= floor
+            )
             no_later_start = len(canonical) if open_from is None else open_from
             tested_to[period] = queue[0].start if queue else no_later_start
-        # A kept candidate is let go once it ends before every candidate of a multiple of
-        # its period that is still to be tested.
         for period in periods:
             if multiples[period]:
-                still_needed_from = min(tested_to[p] for p in multiples[period])
-                needed = kept[period]
-                del needed[: bisect.bisect_right(needed, still_needed_from, key=lambda c: c.end)]
+                _evict_unneeded(kept[period], min(tested_to[p] for p in multiples[period]))
     return [candidate for period in periods for candidate in found[period]]
