@@ -87,7 +87,7 @@ agreed with a brute force of §5.3 on 20,000 random cases, is
 `/private/tmp/claude-501/-Users-jose-devel-pvc-eval/28493737-955f-4f83-acc5-62de2bc6b142/scratchpad/model2.py`
 while that directory lasts; it is not part of the code.
 
-- [ ] 2. `build_loci` on the spans `parse_vcf` computes
+- [x] 2. `build_loci` on the spans `parse_vcf` computes
 
 **What it gives.** The loci tested on the spans `parse_vcf` gives, not on spans written by hand,
 so that a disagreement between the two stages shows here.
@@ -100,7 +100,8 @@ and third cases of `doc/spec.md` §5.2 run through `parse_vcf`, and "With the ST
 - `tests/test_loci_from_vcf.py`, writing VCF text and a FASTA with its `.fai` in `tmp_path`: the
   traded events of `doc/spec.md` §5.3 at chain distance 1 (one locus) and 0 (two), and the second
   and third cases of §5.2 (one locus each), each locus as a literal. Check: `uv run pytest
-  tests/test_loci_from_vcf.py -q` ends with 4 passed and 1 skipped.
+  tests/test_loci_from_vcf.py -q` ends with 5 passed and 1 skipped: the review of milestone 2 added a
+  case only the span joins, since the two of §5.2 share a locus by their REFs alone.
 - The test with the STR finder: `segment_contig` over a FASTA holding an AT repeat and a VCF
   inserting AT before it, one locus holding the repeat. It is skipped, with a message naming
   `segment_contig`, while `pvc_eval.segments` has no `segment_contig`. Check: the skipped test of

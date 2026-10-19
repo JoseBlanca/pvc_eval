@@ -62,3 +62,31 @@ STR finder session reported no harm; the other sessions were told.
 **Tokens**, from the Agent tool's results: implementation 134,000; review 347,000 (spec 77,000,
 tests 107,000, correctness 62,000, errors 36,000, design 65,000); fixes, two rounds, 58,000;
 second look 29,000.
+
+## Milestone 2: `build_loci` on the spans `parse_vcf` computes
+
+Done, from `ba5b9f9` to `a0f5162`, in `tests/test_loci_from_vcf.py` alone.
+
+**Deliverables.** `uv run pytest tests/test_loci_from_vcf.py -q -rs` gave "5 passed, 1 skipped",
+the skip being "segment_contig is not in pvc_eval.segments yet". Every span `parse_vcf` computed
+was the one the spec's case assumes. Run against the STR finder's `segments.py` of `6d179b0` in a
+scratch copy, the skipped test passed too, with one locus (24, 46) holding the AT repeat. The four
+checks on `a0f5162`: "15 files already formatted", "All checks passed!" twice, "288 passed, 1
+skipped".
+
+**Changed in the plan.** The check was 4 passed; it is 5, with the case the review added.
+
+**What the review found and is fixed.** Two reviewers found that the two cases of `doc/spec.md`
+§5.2 do not show the loci relying on the span: their REFs already touch, and touching spans chain
+at any chain distance, so a `build_loci` reading REFs instead of spans passed every active test. A
+case the span alone joins was added to the spec (`ab3c064`) and to the tests: over `GCAGAGAGTC`,
+`21 CAG C` in file A and `28 T C` in file B are one locus at chain distance 0. It fails when
+`build_loci` reads REFs. Two nits, the comments' coordinates and the reference helpers, are fixed.
+
+**What the owner should know.** `doc/spec.md` §5.2 says its second case would fall into two loci
+without the span. With the chain distance, touching spans always chain, so the sentence no longer
+holds, though it still does "by overlap alone", the phrase §5.3 uses for the traded events. That
+correction is the owner's: this session changes doc/spec.md only with the owner's agreement.
+
+**Tokens**: implementation 88,000; review 92,000 (spec and tests 40,000, correctness and design
+52,000); fixes 22,000.
