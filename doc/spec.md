@@ -108,13 +108,13 @@ pvc_eval compare --reference ref.fa --a a.vcf.gz --b b.vcf.gz --output loci.tsv
 
 **Errors, which stop the run:** a VCF not sorted in the `.fai`'s contig order and by position; a
 contig in a VCF but not in the reference; a VCF record whose REF reaches past the end of its
-contig; no sample pairs; a sample named in `--sample-map` absent
+contig, or whose REF differs from the reference (§5.2); no sample pairs; a sample named in `--sample-map` absent
 from its file; a line of `--sample-map` that is not two fields; a pair given twice; a sample name
 given twice in a header, when a pair needs it. Samples present in only one file and not mapped are listed as a warning and not
 compared.
 
-**Not errors:** everything about the content of a VCF record — a REF that disagrees with the
-reference, a malformed GT or one of another ploidy, contradicting VCF records. Those make the affected locus
+**Not errors:** everything else about the content of a VCF record — a malformed GT or one of
+another ploidy, contradicting VCF records. Those make the affected locus
 *invalid* for the affected sample (§5.4) and the run goes on.
 
 The Python API offers each stage of §4 as a function over iterators, so a user can, for example,
@@ -334,8 +334,10 @@ another reference, as a contig the reference lacks does, and so do contigs out o
 order: the VCFs, the FASTA and its `.fai` must agree (both decided by the owner on 19 October
 2026). A
 VCF record whose REF differs from the reference at its position, compared without regard to case
-(references are often soft-masked in lower case), is kept and marked *REF mismatch*; every locus
-containing it is invalid for every sample of that file (§5.4).
+(references are often soft-masked in lower case), stops the run too, with an error naming the file,
+the line, the position, the REF and the reference's bases there: a VCF that disagrees with its
+reference was made on another one, or is damaged, and no comparison over it can be trusted (decided
+by the owner on 19 October 2026, in place of marking the record and making its loci invalid).
 
 **Normalising.** Remove the bases all of a VCF record's alleles but `*` share at the right end,
 then at the left end, keeping at least one base in every allele (the VCF anchor convention). A
@@ -397,8 +399,6 @@ span limit is 10 kb unless the user sets another whole number of 1 or more, or n
 cut every insertion, whose span always holds the base after it). With no limit no span is cut, and since no distance then bounds how far
 left a later record can start, the stream holds the records of a contig until the next contig
 begins.
-
-A REF-mismatch record's span is its trimmed REF.
 
 **Threads.** The reader parses the sample columns of batches of VCF records on a pool of threads,
 4 by default, and 1 parses them in the calling thread with no pool; whatever the number, it gives
@@ -568,8 +568,7 @@ possible genotypes are the distinct locus genotypes that result. A sample whose 
 none is **invalid** at the locus.
 
 **A sample is also invalid** at a locus if any of its VCF genotypes there is malformed — an allele
-that is neither `.` nor an index of the VCF record's alleles — or if any VCF record of its file in
-the locus has a REF mismatch (§5.2). A VCF genotype with a number of alleles other than its file's
+that is neither `.` nor an index of the VCF record's alleles. A VCF genotype with a number of alleles other than its file's
 ploidy, such as `1` on chrX of a male sample in a file read with ploidy 2, is not malformed but
 makes the sample invalid too, with the reason `ploidy mismatch` (decided by the owner on 19
 October 2026). A VCF genotype whose alleles are all `.` is missing, whatever their number.
@@ -693,7 +692,7 @@ Tab-separated, one row per sample pair and locus (without `--all-rows`, rows who
 | `quality_a`, `quality_b` | §2, *quality*; `.` when the file gives the sample no non-reference VCF allele |
 | `gq_a`, `gq_b` | the lowest GQ among the sample's VCF records in the locus that give it a non-reference VCF allele, `.` when absent |
 | `records_a`, `records_b` | how many VCF records with an ALT of each file the locus holds |
-| `invalid_reason_a`, `invalid_reason_b` | for an invalid sample, whatever the outcome, the first that applies: `REF mismatch`, `malformed GT`, `ploidy mismatch`, `contradicting records`; `.` otherwise |
+| `invalid_reason_a`, `invalid_reason_b` | for an invalid sample, whatever the outcome, the first that applies: `malformed GT`, `ploidy mismatch`, `contradicting records`; `.` otherwise |
 
 The summary (`--summary`) counts rows by outcome, kind and stratum.
 
@@ -707,7 +706,8 @@ Nothing about pvc_eval is trusted until these pass.
 2. **Each stage on hand-written cases**, including:
    - normalising and spans: trimming at both ends; a `*`-only record, not trimmed; deletion and
      insertion spans in homopolymers and longer repeats; a multi-ALT record; a complex record; the
-     three cases of §5.2; a span cut at 10 kb;
+     three cases of §5.2; a span cut at 10 kb; a REF that differs from the reference, which stops
+     the run, and a lower-case reference, which is no difference;
    - loci: chaining across both files; the traded events of §5.3, one locus at chain distance 1
      and two at 0; adjacent SNPs, chained at 0; a record with no ALT, which starts no locus; an insertion next to a repeat pulling it in; two
      complex records at the two ends of a repeat; with `--regions`, a locus
@@ -716,8 +716,8 @@ Nothing about pvc_eval is trusted until these pass.
      on a haplotype with no deletion, and one on a deletion's anchor base only (impossible); the
      `bcftools norm` output of GATK's `*` form (valid), and of the first case of §5.2 (invalid); an insertion that slides with its bases rotated; the insertion of `52 AG → A,AAG` after the
      anchor; phase sets; the phasing cap at 13 blocks (reconciled) and 14 (*too complex*), and 14
-     heterozygous records in one phase set (one block, reconciled); `./1`; a REF mismatch, and a
-     lower-case reference that is no mismatch; malformed GT; ploidy mismatch, and a file of ploidy 1;
+     heterozygous records in one phase set (one block, reconciled); `./1`; malformed GT; ploidy
+     mismatch, and a file of ploidy 1;
    - kind: one locus of each kind, and a *too complex* locus, which still has one;
    - evaluation: one case per outcome;
    - strata with `--strata pvc`: the insertion of §5.7 (`str`), a locus with no STR region
