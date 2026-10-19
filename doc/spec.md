@@ -58,7 +58,8 @@ use for it.
 
 | term | meaning | not |
 |---|---|---|
-| **locus** | the unit compared: a stretch of reference holding VCF records of either file, chained by overlap and widened to every STR region a VCF record touches (§5.3) | any other use of "locus" |
+| **locus** | the unit compared: a stretch of reference holding VCF records of either file, chained by overlap or by the chain distance and widened to every STR region a VCF record touches (§5.3) | any other use of "locus" |
+| **chain distance** | the most reference positions that may lie between a locus and the span of a VCF record it still takes in (§5.3) | |
 | **touches** | overlaps, or lies immediately next to. The span of an insertion of a repeat unit can end on the base just before the repeat; without "next to" it would not pull the repeat in. | |
 | **phasing cap** | the most phase assignments (§5.4) pvc_eval tries for one sample at one locus | "record cap" |
 | **haplotype** | one of a sample's chromosomes; a sample has *ploidy* haplotypes | "copy", "strand", "phase" |
@@ -82,7 +83,7 @@ use for it.
 ```
 pvc_eval compare --reference ref.fa --a a.vcf.gz --b b.vcf.gz --output loci.tsv
                  [--regions regions.bed] [--strata strata.bed|pvc] [--str-regions str.bed]
-                 [--sample-map pairs.tsv] [--phasing-cap N] [--span-limit N|none]
+                 [--sample-map pairs.tsv] [--phasing-cap N] [--span-limit N|none] [--chain-distance N]
                  [--summary summary.tsv] [--all-rows]
                  [--evaluator pvc|vcfeval|happy|naive]
 ```
@@ -96,6 +97,7 @@ pvc_eval compare --reference ref.fa --a a.vcf.gz --b b.vcf.gz --output loci.tsv
 | `--str-regions` | BED of STR regions to use instead of running the STR finder. |
 | `--sample-map` | two columns: a sample of A, a sample of B. Without it, samples are paired by name. |
 | `--phasing-cap` | default 4096 (§5.4, **Open 2**). |
+| `--chain-distance` | default 10 (§5.3): a whole number of 0 or more. |
 | `--span-limit` | how far, in bases, a VCF record's span may reach beyond its REF before it is cut back to the REF (§5.2): a whole number of 1 or more, default 10000, or `none` for no limit. |
 | `--output` | the table of §6, one row per sample pair and locus. |
 | `--summary` | counts of outcomes by kind and stratum. |
@@ -124,8 +126,8 @@ def compare(a: Path, b: Path, reference: Path, config: CompareConfig,
             evaluator: Evaluator = PVC) -> Iterator[OutcomeRow]: ...
 ```
 
-`CompareConfig` holds `--regions`, `--strata`, `--str-regions`, `--sample-map` and
-`--phasing-cap`.
+`CompareConfig` holds `--regions`, `--strata`, `--str-regions`, `--sample-map`, `--phasing-cap`,
+`--span-limit` and `--chain-distance`.
 
 ## 4. The pipeline
 
@@ -150,6 +152,36 @@ file B ──► VCF records, normalised ──┘           └──► anothe
    its possible genotypes as indices into that list.
 5. **Evaluation** (§5.5): each sample pair at each locus gets an outcome.
 
+**What stage 1 yields.** The STR finder and the loci are built apart, so the type that passes
+between them is fixed here, in `pvc_eval.segments`, and changed only in this spec:
+
+```python
+class RegionType(Enum):
+    GENERIC = "generic"
+    STR = "str"
+    STR_BUNDLE = "str-bundle"
+    SATELLITE = "satellite"
+
+@dataclass(frozen=True, slots=True)
+class GenomeSegment:
+    contig: str
+    start: int                # 0-based
+    end: int                  # one past the last position; end > start
+    region_type: RegionType
+    motif: str | None         # an STR segment's motif, upper case; None for the other three
+
+def segment_contig(reference: IndexedFasta, contig: str,
+                   parameters: StrFinderParameters = ...) -> Iterator[GenomeSegment]: ...
+def read_str_regions(path: Path) -> Iterator[GenomeSegment]: ...
+```
+
+Coordinates are 0-based and half-open, as `VcfRecord.start` and `VcfRecord.span` are.
+`segment_contig` yields one contig's segments in position order, consecutive and non-overlapping,
+from 0 to the contig's length. `read_str_regions` reads a `--str-regions` BED (§5.1) and yields its
+STR regions only, sorted by contig in the `.fai`'s order and by start. The loci (§5.3) take an
+iterator of either: they ignore `GENERIC` segments and never rely on the segments covering a
+contig. `StrFinderParameters` holds the parameters of §5.1, and the finder's own spec gives it.
+
 Stages 1 to 3 are the same for every evaluator, so every evaluator reports on the same loci and
 their tables line up row by row. With another evaluator, stages 4 and 5 are replaced by its wrapper
 (§8).
@@ -172,14 +204,20 @@ header example, for one, is out of date).
    the candidates. A candidate is kept if it holds at least 2 copies of its period and its first
    period's bases are not themselves a repeat of a shorter unit; a candidate is dropped when a kept
    candidate of a shorter period that divides its period covers at least half of it.
-2. **Bundles, then STR segments** (pvc `region_typing/mod.rs` `BundleMember`, its
-   `typed_regions.md` §2.4; `repeat_catalog/row.rs`, `segment_criteria.rs`). A candidate with
-   another within 15 bases on either side is an STR bundle member; the bundle is the hull of its
-   members' detected spans, and its members go through none of the tests below. Any other candidate
-   is admitted as an **STR segment**, trimmed to whole motifs, unless it has fewer copies than the
-   floor for its period, its motif is compound, it has no clean whole-motif cut at both ends, its
-   purity after the cut is below the minimum, or it lies within 15 bases of a contig end; a rejected
-   candidate's bases stay in a generic region.
+2. **Filter, bundle, then admit STR segments** (pvc `region_typing/segment_criteria.rs`:
+   `prefilter`, the classification before `split_bundles`, then `finish_locus`). In this order:
+   - A candidate is dropped if its period is outside the range, its score is under the floor, it
+     has fewer copies than the floor for its period as detected, or its motif is compound.
+   - Of the candidates left, one with another within 15 bases on either side is an STR bundle
+     member. The bundle is the hull of its members' detected spans. Members go through none of
+     the tests below.
+   - Any other candidate is admitted as an **STR segment**, trimmed to whole motifs, unless it has
+     no clean whole-motif cut at both ends, fewer copies than the floor after the cut, purity after
+     the cut below the minimum, or lies within 15 bases of a contig end.
+
+   A dropped or rejected candidate's bases stay in a generic region. pvc's `typed_regions.md` §2.4
+   says bundle members skip the copy floor as well; its code applies the floor before bundling, and
+   the code is followed.
 3. **Satellites** (pvc `region_typing::resolve_features`). A run of repeat longer than 100 bases is a
    satellite, and swallows every STR segment or bundle member within 15 bases of it, growing to cover
    them. A bundle whose span exceeds 100 bases becomes a satellite. A bundle touching a contig end is
@@ -231,7 +269,7 @@ benchmark comparison. So:
   each region's type, `str`, `str-bundle` or `satellite`, which `--strata pvc` and the
   `str_regions` column (§6) read; its fifth is the motif of an STR segment, `.` for the other two.
   A `--str-regions` BED without those columns can be used for loci, and with `--strata pvc` it is
-  an error. pvc gives the same answer whether or not a region list is given (its `typed_regions.md`
+  an error; its regions are written in the `str_regions` column (§6) as `start-end` alone. pvc gives the same answer whether or not a region list is given (its `typed_regions.md`
   §2.5), because it always scans whole contigs; the port does the same, and a region list only
   limits what is written.
 - Without `--str-regions`, `compare` runs the finder itself over the contigs its VCFs touch.
@@ -276,8 +314,11 @@ two spellings of one event always overlap (§5.3):
   slides left while the base before it equals its last deleted base, and right while the base
   after it equals its first.
 - An insertion spans likewise from the anchor of its left-aligned form to the base after the point
-  it is inserted at when slid as far right as it goes. That last base is in the span even when the
-  insertion cannot slide, so that `C → CT` at 10 overlaps a record at 11 (the third case below).
+  it is inserted at when slid as far right as it goes. An insertion slides right while the base
+  after it equals its first inserted base, which then moves to its end (`CA` inserted before `C`
+  becomes `AC` inserted after it), and left while the base before it equals its last inserted
+  base, which moves to its start. The last base of the span is in it even when the insertion
+  cannot slide, so that `C → CT` at 10 overlaps a record at 11 (the third case below).
 - A record with several ALTs spans the union of its ALTs' spans.
 - A span always holds the record's trimmed REF, since its locus alleles are built where it was
   written.
@@ -288,6 +329,11 @@ Every spelling of an indel with its shared base on the left has the same span. A
 such as a deletion written with its shared base on the right, spans that span and its own trimmed
 REF, which can reach one base further. So all spellings overlap and share a locus, and none is
 moved (decided by the owner on 19 October 2026).
+
+**Records with no ALT.** A VCF record whose ALT is `.`, as all-sites VCFs write, starts no locus
+and widens none: it takes no part in §5.3. Inside a locus that other records make, it gives its
+samples' VCF genotypes like any record: `0/0` is REF, `./.` is missing. It is left out of the kind
+(§5.6).
 
 **Order.** A span can start before the record's POS, by as much as the deletion or insertion can
 slide left, so the stream holds VCF records until the reader is further right than the longest
@@ -336,14 +382,35 @@ Both files give `CTA`, in one locus because A's insertion spans the base after i
 **Building a locus.** Starting from the leftmost VCF record not yet in a locus, of either file:
 
 1. The locus is that record's span (§5.2).
-2. Add every VCF record, of either file, whose span overlaps the locus, and widen the locus to cover
-   its span. Repeat until no more records overlap. Overlap chains: if A overlaps B and B overlaps C,
-   all three are in the locus, whichever files they come from.
+2. Add every VCF record, of either file, whose span overlaps the locus or has at most the chain
+   distance of reference positions between it and the locus (default 10, so spans that touch
+   always chain), and widen the locus to cover its span. Repeat until no record is added. Chaining
+   is transitive: if A chains with B and B with C, all three are in the locus, whichever files they
+   come from.
 3. Widen the locus to cover every STR region a VCF record in it **touches** — overlaps or lies
    immediately next to. Go back to step 2, since the wider locus may now overlap more records. Stop
    when neither step adds anything.
 
 A locus is a run of reference positions, written 1-based and inclusive, as in VCF.
+
+**Why a chain distance** (decided by the owner on 19 October 2026). Two events can be traded
+between spellings: one file deletes a base and changes the next one, the other changes the first
+and deletes the second. Each event's spellings overlap, but the two files' records need not:
+
+```
+reference 5–10  AGAACA
+file A   5  AG  A   1/1                    deletes the G at 6
+file A   9  C   A   1/1
+file B   6  G   A   1/1
+file B   8  AC  A   1/1                    deletes the C at 9
+```
+
+Both files give `AAAAA`. The spans are 5–6 and 9 in A, and 6 and 8–9 in B. By overlap alone they
+make two loci, 5–6 and 8–9, each *different*. With one position between them, a chain distance of
+1 or more makes one locus, *same genotype*. No finite distance catches every such trade, since
+inside a repeat the events can lie any distance apart; 10 catches those within a few bases, at the
+cost of wider loci and, in dense unphased data, more blocks per locus (§5.4). The comparison with
+other evaluators (§8) shows what is left.
 
 **Why STR regions widen loci too.** The span (§5.2) makes the spellings of one indel overlap. A
 complex record — one that changes more than one base in an allele — has no span beyond its REF,
@@ -367,11 +434,21 @@ locus and the VCF alleles that haplotype carries, each at the position it was wr
   Left first puts the insertion after the anchor, as VCF does.
 - A `*` allele makes no edit: it says the haplotype's bases here are removed by another VCF record,
   which carries that edit. The haplotype must carry a deletion, from another VCF record of the
-  locus, covering a position of the `*` record's REF; if it does not, the haplotype is
-  **impossible**.
+  locus, whose span covers a position of the `*` record's REF as written; if it does not, the
+  haplotype is **impossible**. The span, not the deletion as written, is what counts, because
+  `bcftools norm` moves the deletion and leaves the `*` record where it was.
 - The edits of one haplotype are applied to the reference over the locus in position order. Two
-  edits that change the same reference position, or two insertions at the same point, cannot both
-  apply: the haplotype is **impossible**.
+  edits **collide** if they change the same reference position or are two insertions at the same
+  point. When edits collide, each indel among them is tried at every placement its span allows
+  (its slides, §5.2), all of which spell the same sequence. The haplotype is **impossible** only if
+  no choice of placements leaves the edits free of collisions; otherwise it is built with the first
+  such choice, leftmost placements first.
+
+  This is what makes a file already run through `bcftools norm` agree with the file it came from.
+  From the first case of §5.2, `bcftools norm` writes `21 CAG C 1|0` and keeps `22 A T 1|0`: as
+  written they collide at 22, but the deletion can be placed at 24–25, so the haplotype is `CTGT`,
+  as in the original. A file that truly contradicts itself, as in the example below, has no
+  placement that works.
 - If any VCF genotype leaves the haplotype missing (`.`), the locus allele is missing, however many
   other VCF records give it a definite allele.
 
@@ -382,12 +459,14 @@ each haplotype carries, up to phase.
   sample and contig) fix which VCF alleles go together on one haplotype.
 - Between unphased VCF records, or different phase sets, every assignment of VCF alleles to
   haplotypes is tried. A heterozygous unphased VCF record, or a phase set holding a heterozygous
-  VCF genotype, is one **block**; with ploidy 2 and *b* blocks there are 2^(b−1) assignments.
-  Homozygous VCF genotypes, and records of one phase set, add none.
+  VCF genotype, is one **block**; with ploidy 2 and *b* blocks there are 2^max(b−1, 0)
+  assignments. A VCF genotype is heterozygous here when its two alleles differ, `.` counting as an
+  allele, so `./1` is a block. Homozygous VCF genotypes, and records of one phase set, add none.
 
 **The phasing cap.** A sample whose assignments at a locus would exceed the phasing cap (default
 4096, that is 13 blocks; **Open 2**) is not reconciled there, and its sample pairs get the outcome
-*too complex* (§5.5). The count is made before any assignment is built. This bounds the work,
+*too complex* (§5.5). The count is made before any assignment is built, and a sample over the cap
+adds nothing to the shared locus alleles. This bounds the work,
 which doubles with every block, and only the work: a satellite holding hundreds of phased VCF
 records is reconciled, and a locus of a few bases with 14 unphased heterozygous records is not.
 
@@ -452,8 +531,8 @@ left out.
 | kind | when |
 |---|---|
 | **STR** | the locus contains an STR region |
-| **SNP** | every ALT of every record is one base replacing a one-base REF |
-| **indel** | every ALT of every record is one insertion or one deletion after the anchor base |
+| **SNP** | every ALT of every record, trimmed against REF as an edit is (§5.4), replaces one base with one base |
+| **indel** | every ALT of every record, trimmed so, is one insertion or one deletion |
 | **complex** | anything else: a complex record, or records of different kinds |
 
 ### 5.7 Strata from pvc's region types
@@ -502,8 +581,8 @@ Tab-separated, one row per sample pair and locus (without `--all-rows`, rows who
 | `sample_a`, `sample_b` | the sample pair |
 | `outcome` | §5.5 |
 | `alleles` | the locus alleles, REF first, joined with `,` (a deletion of the whole locus is written `-`) |
-| `genotype_a`, `genotype_b` | the reported possible genotypes, as indices into `alleles` joined with `/`, `.` for a missing haplotype |
-| `possible_a`, `possible_b` | how many possible genotypes the sample had in each file |
+| `genotype_a`, `genotype_b` | the reported possible genotypes, as indices into `alleles` joined with `/`, `.` for a missing haplotype; `.` for a *too complex* or invalid sample |
+| `possible_a`, `possible_b` | how many possible genotypes the sample had in each file; `.` for a *too complex* sample, 0 for an invalid one |
 | `quality_a`, `quality_b` | §2, *quality*; `.` when the file gives the sample no non-reference VCF allele |
 | `gq_a`, `gq_b` | the lowest GQ among the sample's VCF records in the locus that give it a non-reference VCF allele, `.` when absent |
 | `records_a`, `records_b` | how many VCF records of each file the locus holds |
@@ -522,11 +601,13 @@ Nothing about pvc_eval is trusted until these pass.
    - normalising and spans: trimming at both ends; a `*`-only record, not trimmed; deletion and
      insertion spans in homopolymers and longer repeats; a multi-ALT record; a complex record; the
      three cases of §5.2; a span cut at 10 kb;
-   - loci: chaining across both files; an insertion next to a repeat pulling it in; two
+   - loci: chaining across both files; the traded events of §5.3, one locus at chain distance 1
+     and two at 0; adjacent SNPs, chained at 0; a record with no ALT, which starts no locus; an insertion next to a repeat pulling it in; two
      complex records at the two ends of a repeat; with `--regions`, a locus
      sticking out of a region compared whole, and one sharing no position with any region skipped;
    - reconciliation: the invalid example of §5.4 and its valid variant; GATK's `*` form, and a `*`
-     on a haplotype with no deletion (impossible); the insertion of `52 AG → A,AAG` after the
+     on a haplotype with no deletion (impossible); the `bcftools norm` output of §5.4's collision
+     paragraph (valid), and of GATK's `*` form; an insertion that slides with its bases rotated; the insertion of `52 AG → A,AAG` after the
      anchor; phase sets; the phasing cap at 13 blocks (reconciled) and 14 (*too complex*), and 14
      heterozygous records in one phase set (one block, reconciled); `./1`; a REF mismatch, and a
      lower-case reference that is no mismatch; malformed GT; haploid GT;
@@ -541,9 +622,11 @@ Nothing about pvc_eval is trusted until these pass.
    haplotype, an invalid sample or a sample over the phasing cap.
 4. **A file against re-spellings of itself** — every VCF record decomposed into single-base and
    single-indel records with genotypes carried over; neighbouring records merged into complex ones;
-   indels shifted right within their repeats; GATK-style `*` records added — every row as for the
-   file against itself, with the same outcome at the same locus. The re-spelling program is part of
-   the tests.
+   indels shifted right within their repeats; GATK-style `*` records added; the file run through
+   `bcftools norm` — every row as for the file against itself. Records decomposed from one record
+   are written phased, in one phase set, so the re-spelling adds no blocks (§5.4). Re-spelling can
+   change the loci, so the outcomes are compared per sample and stretch of reference, not per
+   locus. The re-spelling program is part of the tests.
 5. **The hard cases from pvc's STR work:** the VCF records behind the cases recorded in pvc's
    reports (GIAB's split indel-plus-SNP truth records against pvc's single repeat record; GATK's
    overlapping records at STR edge deletions; HipSTR's whole-repeat records). They are copied into
