@@ -704,8 +704,9 @@ def _place_line(
 # share one alleles tuple. On the 5 Mb, 200-sample GATK-like benchmark input, of 3,625,400
 # genotypes one thread builds 515,559 and eight threads 604,124; a cache shared by the
 # threads, functools.lru_cache, would take a lock on every sample.
-# A thread starts them again once it holds more than this many genotypes, which bounds
-# them; a GT is kept only beside a genotype, so the GTs are bounded too.
+# A thread starts them again, genotypes and GTs, when a batch starts and it holds more
+# than this many genotypes, so it holds at most this many and one batch's, 64 lines times
+# the samples of a line; a GT is kept only beside a genotype, so the GTs are bounded too.
 _MAX_GENOTYPES_SEEN = 4096
 
 
