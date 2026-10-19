@@ -196,6 +196,19 @@ passed", the four checks "27 files already formatted", "All checks passed!" twic
 and a second mark on a block edge of the gzip stream is kept. This commit is on `loci`, not yet on
 main.
 
+## After milestone 5: the memory tests' bound
+
+The STR finder session saw `test_records_with_no_alt_are_not_kept_once_passed` fail once, under
+load on its own branch, with no assertion values kept. It could not be made to fail here: 0
+failures in 30 runs alone, 8 runs of the whole suite and 24 runs eight at a time. The bound was
+fragile all the same: peaks of about 3,600 and 4,800 bytes compared within 10%, about 360 bytes,
+where the faults the tests guard against add megabytes. Both memory tests now allow 4,096 bytes
+on top of the 10% (`f4e6b79`, `81b2ae6`). Under their faults they still fail on the first step:
+the STR regions held forever in 6.3 s, with peaks of 252,440 and 2,513,680 bytes; the records
+with no ALT held forever in 0.2 s, with 285,272 and 4,499,744. Taking the least of three
+measurements was tried and dropped: the peaks were the same at every size, and it doubled the
+suite's time, from 4.5 s to 9.1 s. The suite gives "371 passed, 1 skipped".
+
 ## The check of the whole plan
 
 `build_loci` over `chr20_5mb_200s.vcf.gz` (18,310 records, 200 samples) against itself, with no STR
