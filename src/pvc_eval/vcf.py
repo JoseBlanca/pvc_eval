@@ -109,7 +109,7 @@ def read_samples(path: Path) -> tuple[str, ...]:
 
     Raises PvcEvalInputError when the file has no #CHROM line after its ## lines.
     """
-    with closing(_numbered_lines(path)) as numbered_lines:
+    with closing(_read_numbered_lines(path)) as numbered_lines:
         return _read_header(numbered_lines, path)
 
 
@@ -142,11 +142,11 @@ def read_vcf_records(
     QUAL or GQ that is not a number is taken as absent, and those are counted in a
     warning at the end too.
     """
-    with closing(_records_in_file_order(path, contigs, contig_sequence_of)) as records:
-        yield from _in_span_order(records)
+    with closing(_read_records_in_file_order(path, contigs, contig_sequence_of)) as records:
+        yield from _sort_by_span_start(records)
 
 
-def _in_span_order(records: Iterable[tuple[int, VcfRecord]]) -> Iterator[VcfRecord]:
+def _sort_by_span_start(records: Iterable[tuple[int, VcfRecord]]) -> Iterator[VcfRecord]:
     """The records in order of span start, and of the file where two spans start at one
     position.
 
@@ -170,7 +170,7 @@ def _in_span_order(records: Iterable[tuple[int, VcfRecord]]) -> Iterator[VcfReco
         yield heapq.heappop(held)[2]
 
 
-def _records_in_file_order(
+def _read_records_in_file_order(
     path: Path, contigs: Sequence[str], contig_sequence_of: Callable[[str], str]
 ) -> Generator[tuple[int, VcfRecord]]:
     """The records of read_vcf_records in the file's order, each with the 0-based
@@ -186,7 +186,7 @@ def _records_in_file_order(
     first_beyond_reach_line = 0
     sequence_contig = ""
     sequence = ""
-    with closing(_numbered_lines(path)) as numbered_lines:
+    with closing(_read_numbered_lines(path)) as numbered_lines:
         num_samples = len(_read_header(numbered_lines, path))
         for line_number, line in numbered_lines:
             if line.startswith("#") or not line.strip():
@@ -213,7 +213,7 @@ def _records_in_file_order(
                 num_symbolic += 1
                 continue
             if pos_1based == 0:
-                raise _pos_error(fields[1], path, line_number)
+                raise _make_pos_error(fields[1], path, line_number)
             if contig != sequence_contig:
                 sequence_contig, sequence = contig, contig_sequence_of(contig).upper()
             record, num_record_not_numbers, is_beyond_reach = _parse_record(
@@ -229,14 +229,14 @@ def _records_in_file_order(
             "%s: skipped %s with symbolic alleles (<DEL>, breakends); pvc_eval does not"
             " compare structural variants.",
             path,
-            _count(num_symbolic, "VCF record"),
+            _format_count(num_symbolic, "VCF record"),
         )
     if num_not_numbers:
         logger.warning(
             "%s: took %s that could not be read as a number as absent, as `.` is, in the"
             " quality of the table.",
             path,
-            _count(num_not_numbers, "QUAL or GQ value"),
+            _format_count(num_not_numbers, "QUAL or GQ value"),
         )
     if num_beyond_reach:
         if num_beyond_reach == 1:
@@ -248,7 +248,7 @@ def _records_in_file_order(
             " its REF as its span; another spelling of the same event further along may"
             " fall into another locus and be compared apart.",
             path,
-            _count(num_beyond_reach, "VCF record"),
+            _format_count(num_beyond_reach, "VCF record"),
             which,
             f"{MAX_SPAN_REACH:,}",
             given,
@@ -292,7 +292,7 @@ def _is_allele_index(part: str, num_alleles: int) -> bool:
     return part.isascii() and part.isdecimal() and int(part) < num_alleles
 
 
-def _numbered_lines(path: Path) -> Generator[tuple[int, str]]:
+def _read_numbered_lines(path: Path) -> Generator[tuple[int, str]]:
     """The lines of a VCF file, plain or bgzipped, each with its 1-based number.
 
     Raises PvcEvalInputError for a file that is not UTF-8 text, a BCF among them, and
@@ -350,8 +350,8 @@ def _check_num_samples(fields: list[str], num_samples: int, path: Path, line_num
     num_found = max(len(fields) - NUM_FIXED_COLUMNS, 0)
     if num_found != num_samples:
         raise PvcEvalInputError(
-            f"{path}, line {line_number}: the line has {_count(num_found, 'sample column')},"
-            f" and the #CHROM line names {_count(num_samples, 'sample')}. A VCF record has a FORMAT column and"
+            f"{path}, line {line_number}: the line has {_format_count(num_found, 'sample column')},"
+            f" and the #CHROM line names {_format_count(num_samples, 'sample')}. A VCF record has a FORMAT column and"
             " then one column per sample; correct the line or remove it, and run again."
         )
 
@@ -362,7 +362,7 @@ def _read_position(fields: list[str], path: Path, line_number: int) -> tuple[str
     if len(fields) < NUM_FIXED_COLUMNS - 1:
         raise PvcEvalInputError(
             f"{path}, line {line_number}: the line has"
-            f" {_count(len(fields), 'tab-separated column')},"
+            f" {_format_count(len(fields), 'tab-separated column')},"
             " and a VCF record has at least 8, CHROM to INFO. Check that its columns are"
             " separated by tabs, correct the line or remove it, and run again."
         )
@@ -370,16 +370,16 @@ def _read_position(fields: list[str], path: Path, line_number: int) -> tuple[str
     # VCF 4.3 writes a telomeric breakend at POS 0, so 0 is refused only once the record
     # is known not to be symbolic.
     if not (pos.isascii() and pos.isdecimal()):
-        raise _pos_error(pos, path, line_number)
+        raise _make_pos_error(pos, path, line_number)
     return fields[0], int(pos)
 
 
-def _count(number: int, noun: str) -> str:
+def _format_count(number: int, noun: str) -> str:
     """A number and its noun, in the singular for 1: "1 sample", "3 samples"."""
     return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
 
 
-def _pos_error(pos: str, path: Path, line_number: int) -> PvcEvalInputError:
+def _make_pos_error(pos: str, path: Path, line_number: int) -> PvcEvalInputError:
     return PvcEvalInputError(
         f"{path}, line {line_number}: POS is '{pos}', and it must be a whole number"
         " of 1 or more. Correct the line or remove it, and run again."
@@ -432,7 +432,7 @@ def _parse_record(
     ref_mismatch = contig_sequence[pos : pos + len(alleles[0])] != alleles[0]
     start, trimmed = trim(pos, alleles)
     ref_span = (start, start + len(trimmed[0]))
-    span = ref_span if ref_mismatch else vcf_record_span(start, trimmed, contig_sequence)
+    span = ref_span if ref_mismatch else find_span(start, trimmed, contig_sequence)
     is_beyond_reach = span is None
     if span is None:
         span = ref_span
@@ -517,14 +517,14 @@ def trim(start: int, alleles: Sequence[str]) -> tuple[int, tuple[str, ...]]:
     A `*` allele has no bases and takes no part. A record with fewer than two other
     alleles is returned as it is.
     """
-    sequences = _sequences(alleles)
+    sequences = _drop_spanning_deletions(alleles)
     if len(sequences) < 2:
         return start, tuple(alleles)
     start, trimmed = _trim(start, sequences)
     return start, _put_back(alleles, trimmed)
 
 
-def vcf_record_span(start: int, alleles: Sequence[str], contig_sequence: str) -> Span | None:
+def find_span(start: int, alleles: Sequence[str], contig_sequence: str) -> Span | None:
     """The span of a trimmed record whose REF agrees with the reference (§5.2), or None
     when it would reach more than MAX_SPAN_REACH bases beyond the REF.
 
@@ -540,7 +540,7 @@ def vcf_record_span(start: int, alleles: Sequence[str], contig_sequence: str) ->
     for alt in alleles[1:]:
         if alt == SPANNING_DELETION:
             continue
-        indel_span = _indel_span(start, alleles[0], alt, contig_sequence)
+        indel_span = _find_indel_span(start, alleles[0], alt, contig_sequence)
         if indel_span is not None:
             span_start = min(span_start, indel_span[0])
             span_end = max(span_end, indel_span[1])
@@ -549,16 +549,16 @@ def vcf_record_span(start: int, alleles: Sequence[str], contig_sequence: str) ->
     return span_start, span_end
 
 
-def _indel_span(start: int, ref: str, alt: str, contig_sequence: str) -> Span | None:
+def _find_indel_span(start: int, ref: str, alt: str, contig_sequence: str) -> Span | None:
     """The span of one ALT when it is an insertion or a deletion, 0-based and half-open;
     None for a SNP or a complex ALT.
 
     The ALT is an indel when, without the bases it shares with REF at both ends, one of
     the two is empty, whichever side the shared bases were on.
     """
-    num_prefix = _num_shared(ref, alt)
+    num_prefix = _count_shared(ref, alt)
     deleted, inserted = ref[num_prefix:], alt[num_prefix:]
-    num_suffix = _num_shared(deleted[::-1], inserted[::-1])
+    num_suffix = _count_shared(deleted[::-1], inserted[::-1])
     deleted = deleted[: len(deleted) - num_suffix]
     inserted = inserted[: len(inserted) - num_suffix]
     if bool(deleted) == bool(inserted):
@@ -598,7 +598,7 @@ def _indel_span(start: int, ref: str, alt: str, contig_sequence: str) -> Span | 
     return span_start, min(span_end, len(contig_sequence))
 
 
-def _num_shared(first: str, second: str) -> int:
+def _count_shared(first: str, second: str) -> int:
     """How many bases two sequences share at their start."""
     for index, (base, other_base) in enumerate(zip(first, second, strict=False)):
         if base != other_base:
@@ -616,14 +616,14 @@ def _trim(start: int, alleles: Sequence[str]) -> tuple[int, list[str]]:
     return start, trimmed
 
 
-def _sequences(alleles: Sequence[str]) -> list[str]:
+def _drop_spanning_deletions(alleles: Sequence[str]) -> list[str]:
     """The alleles that are sequences. A `*` has no bases and takes no part in trimming;
     _put_back returns it to its place."""
     return [allele for allele in alleles if allele != SPANNING_DELETION]
 
 
 def _put_back(alleles: Sequence[str], sequences: list[str]) -> tuple[str, ...]:
-    """The alleles with the sequences _sequences took out replaced, in order, by these."""
+    """The alleles with the sequences _drop_spanning_deletions took out replaced, in order, by these."""
     replacements = iter(sequences)
     return tuple(
         allele if allele == SPANNING_DELETION else next(replacements) for allele in alleles

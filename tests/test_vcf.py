@@ -25,7 +25,7 @@ HEADER = (
 )
 
 
-def placed(record: VcfRecord) -> tuple[int, tuple[str, ...], tuple[int, int], bool]:
+def get_placement(record: VcfRecord) -> tuple[int, tuple[str, ...], tuple[int, int], bool]:
     return record.start, record.alleles, record.span, record.ref_mismatch
 
 
@@ -274,7 +274,7 @@ def test_lower_case_alleles_are_read_in_upper_case_and_normalise_alike(tmp_path:
 
     lower, upper = read_vcf_records(path, CONTIGS, REFERENCE.__getitem__)
 
-    assert placed(lower) == placed(upper) == (3, ("AA", "A"), (2, 5), False)
+    assert get_placement(lower) == get_placement(upper) == (3, ("AA", "A"), (2, 5), False)
 
 
 def test_file_that_is_not_utf8_text_stops_the_run(tmp_path: Path) -> None:
@@ -371,7 +371,7 @@ def test_records_at_the_same_pos_both_come_out(tmp_path: Path) -> None:
 
     records = list(read_vcf_records(path, CONTIGS, REFERENCE.__getitem__))
 
-    assert [placed(record) for record in records] == [
+    assert [get_placement(record) for record in records] == [
         (4, ("A", "T"), (4, 5), False),
         (4, ("A", "AC"), (4, 6), False),
     ]
@@ -443,8 +443,8 @@ def test_ref_that_differs_from_the_reference_is_marked_and_spans_its_ref(tmp_pat
 
     mismatch, match = read_vcf_records(path, CONTIGS, REFERENCE.__getitem__)
 
-    assert placed(mismatch) == (4, ("CA", "C"), (4, 6), True)
-    assert placed(match) == (4, ("AG", "A"), (4, 6), False)
+    assert get_placement(mismatch) == (4, ("CA", "C"), (4, 6), True)
+    assert get_placement(match) == (4, ("AG", "A"), (4, 6), False)
 
 
 def test_records_are_trimmed_and_never_moved(tmp_path: Path) -> None:
@@ -454,7 +454,7 @@ def test_records_are_trimmed_and_never_moved(tmp_path: Path) -> None:
 
     (record,) = read_vcf_records(path, CONTIGS, REFERENCE.__getitem__)
 
-    assert placed(record) == (3, ("AA", "A"), (2, 5), False)
+    assert get_placement(record) == (3, ("AA", "A"), (2, 5), False)
 
 
 def test_records_come_out_in_order_of_span_start(tmp_path: Path) -> None:
@@ -470,14 +470,14 @@ def test_records_come_out_in_order_of_span_start(tmp_path: Path) -> None:
 
     records = read_vcf_records(path, ("chr1",), {"chr1": "GAAAAT"}.__getitem__)
 
-    assert [placed(record) for record in records] == [
+    assert [get_placement(record) for record in records] == [
         (3, ("AA", "A"), (0, 5), False),
         (3, ("A", "AA"), (0, 6), False),
         (2, ("A", "T"), (2, 3), False),
     ]
 
 
-def snp_line(contig: str, pos_1based: int) -> str:
+def make_snp_line(contig: str, pos_1based: int) -> str:
     return f"{contig}\t{pos_1based}\t.\tC\tT\t.\t.\t.\tGT\t0/1\t0/1\n"
 
 
@@ -490,16 +490,20 @@ LONG_REFERENCE = {"chr1": "C" * 20000, "chr2": "C" * 10}
 def test_record_comes_out_once_no_later_record_can_start_before_it(tmp_path: Path) -> None:
     # The SNP spans 99. A record at 0-based 10099 or after cannot span from before 99,
     # since a span reaches at most 10 kb left of its REF.
-    path = write_vcf(tmp_path, snp_line("chr1", 100) + snp_line("chr1", 10100) + NOT_A_RECORD)
+    path = write_vcf(
+        tmp_path, make_snp_line("chr1", 100) + make_snp_line("chr1", 10100) + NOT_A_RECORD
+    )
 
     records = read_vcf_records(path, CONTIGS, LONG_REFERENCE.__getitem__)
 
-    assert placed(next(records)) == (99, ("C", "T"), (99, 100), False)
+    assert get_placement(next(records)) == (99, ("C", "T"), (99, 100), False)
 
 
 def test_record_is_held_while_a_later_record_could_start_before_it(tmp_path: Path) -> None:
     # A record at 0-based 10098 could span from 98, before the SNP's 99.
-    path = write_vcf(tmp_path, snp_line("chr1", 100) + snp_line("chr1", 10099) + NOT_A_RECORD)
+    path = write_vcf(
+        tmp_path, make_snp_line("chr1", 100) + make_snp_line("chr1", 10099) + NOT_A_RECORD
+    )
 
     records = read_vcf_records(path, CONTIGS, LONG_REFERENCE.__getitem__)
 
@@ -508,11 +512,11 @@ def test_record_is_held_while_a_later_record_could_start_before_it(tmp_path: Pat
 
 
 def test_records_held_come_out_at_the_next_contig(tmp_path: Path) -> None:
-    path = write_vcf(tmp_path, snp_line("chr1", 100) + snp_line("chr2", 1) + NOT_A_RECORD)
+    path = write_vcf(tmp_path, make_snp_line("chr1", 100) + make_snp_line("chr2", 1) + NOT_A_RECORD)
 
     records = read_vcf_records(path, CONTIGS, LONG_REFERENCE.__getitem__)
 
-    assert placed(next(records)) == (99, ("C", "T"), (99, 100), False)
+    assert get_placement(next(records)) == (99, ("C", "T"), (99, 100), False)
 
 
 def test_span_beyond_10_kb_is_the_ref_and_counted(
@@ -530,8 +534,8 @@ def test_span_beyond_10_kb_is_the_ref_and_counted(
     with caplog.at_level(logging.WARNING):
         beyond, within = read_vcf_records(path, CONTIGS, reference.__getitem__)
 
-    assert placed(beyond) == (10001, ("AA", "A"), (10001, 10003), False)
-    assert placed(within) == (10000, ("AA", "A"), (0, 10002), False)
+    assert get_placement(beyond) == (10001, ("AA", "A"), (10001, 10003), False)
+    assert get_placement(within) == (10000, ("AA", "A"), (0, 10002), False)
     assert (
         "a.vcf: 1 VCF record, at line 3, could slide more than 10,000 bases along the"
         " reference and was given only its REF as its span;"
@@ -552,7 +556,7 @@ def test_spans_beyond_10_kb_are_counted_in_one_warning_from_the_first(
     with caplog.at_level(logging.WARNING):
         records = list(read_vcf_records(path, CONTIGS, reference.__getitem__))
 
-    assert [placed(record)[2] for record in records] == [(10001, 10003), (10001, 10003)]
+    assert [get_placement(record)[2] for record in records] == [(10001, 10003), (10001, 10003)]
     assert len(caplog.records) == 1
     assert (
         "a.vcf: 2 VCF records, the first at line 3, could slide more than 10,000 bases along"
@@ -571,7 +575,7 @@ def test_soft_masked_reference_gives_no_mismatch_and_the_same_spans(tmp_path: Pa
 
     records = read_vcf_records(path, CONTIGS, soft_masked.__getitem__)
 
-    assert [placed(record) for record in records] == [
+    assert [get_placement(record) for record in records] == [
         (3, ("AA", "A"), (2, 5), False),
         (4, ("A", "T"), (4, 5), False),
     ]
@@ -587,10 +591,10 @@ def test_reference_is_asked_once_for_each_contig_with_records(tmp_path: Path) ->
     )
     contigs_asked: list[str] = []
 
-    def contig_sequence_of(contig: str) -> str:
+    def get_contig_sequence(contig: str) -> str:
         contigs_asked.append(contig)
         return REFERENCE[contig]
 
-    list(read_vcf_records(path, CONTIGS, contig_sequence_of))
+    list(read_vcf_records(path, CONTIGS, get_contig_sequence))
 
     assert contigs_asked == ["chr1", "chr2"]

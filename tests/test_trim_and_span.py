@@ -2,7 +2,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from pvc_eval.vcf import VcfRecord, trim, vcf_record_span
+from pvc_eval.vcf import VcfRecord, find_span, trim
 
 HOMOPOLYMER = "GAAAAT"  # G at 0, A at 1 to 4, T at 5
 DINUCLEOTIDE = "GCACACAT"  # G at 0, CA repeated from 1 to 6, T at 7
@@ -71,7 +71,7 @@ CASE_3 = "N" * 9 + "CG"  # 1-based 10 to 11
 def test_spans_of_the_three_cases_of_the_spec(
     contig: str, start: int, alleles: tuple[str, ...], expected: tuple[int, int]
 ) -> None:
-    assert vcf_record_span(start, alleles, contig) == expected
+    assert find_span(start, alleles, contig) == expected
 
 
 @pytest.mark.parametrize(
@@ -124,7 +124,7 @@ def test_spans_of_the_three_cases_of_the_spec(
 def test_span_covers_every_place_the_record_could_be_written(
     contig: str, start: int, alleles: tuple[str, ...], expected: tuple[int, int]
 ) -> None:
-    assert vcf_record_span(start, alleles, contig) == expected
+    assert find_span(start, alleles, contig) == expected
 
 
 @pytest.mark.parametrize(
@@ -154,15 +154,15 @@ def test_span_covers_every_place_the_record_could_be_written(
 def test_span_that_reaches_more_than_10_kb_beyond_its_ref_is_none(
     contig: str, start: int, alleles: tuple[str, ...], expected: tuple[int, int] | None
 ) -> None:
-    assert vcf_record_span(start, alleles, contig) == expected
+    assert find_span(start, alleles, contig) == expected
 
 
-def haplotype(contig: str, start: int, ref: str, alt: str) -> str:
+def build_haplotype(contig: str, start: int, ref: str, alt: str) -> str:
     return contig[:start] + alt + contig[start + len(ref) :]
 
 
 @st.composite
-def contig_and_record(draw: st.DrawFn) -> tuple[str, int, tuple[str, ...]]:
+def draw_contig_and_record(draw: st.DrawFn) -> tuple[str, int, tuple[str, ...]]:
     """A contig, and a record on it whose REF agrees with it: up to three ALTs, each of
     them any sequence or `*`."""
     # Two letters, so that repeats, where indels slide, are common.
@@ -179,7 +179,7 @@ def contig_and_record(draw: st.DrawFn) -> tuple[str, int, tuple[str, ...]]:
     return contig, start, (contig[start:end], *alts)
 
 
-@given(contig_and_record())
+@given(draw_contig_and_record())
 def test_trimming_keeps_the_sequence_each_alt_gives(
     case: tuple[str, int, tuple[str, ...]],
 ) -> None:
@@ -189,17 +189,17 @@ def test_trimming_keeps_the_sequence_each_alt_gives(
 
     for alt, trimmed_alt in zip(alleles[1:], trimmed[1:], strict=True):
         if alt != "*":
-            assert haplotype(contig, trimmed_start, trimmed[0], trimmed_alt) == haplotype(
-                contig, start, alleles[0], alt
-            )
+            assert build_haplotype(
+                contig, trimmed_start, trimmed[0], trimmed_alt
+            ) == build_haplotype(contig, start, alleles[0], alt)
 
 
-@given(contig_and_record())
+@given(draw_contig_and_record())
 def test_span_contains_the_trimmed_ref(case: tuple[str, int, tuple[str, ...]]) -> None:
     contig, start, alleles = case
     trimmed_start, trimmed = trim(start, alleles)
 
-    span = vcf_record_span(trimmed_start, trimmed, contig)
+    span = find_span(trimmed_start, trimmed, contig)
 
     assert span is not None
     assert span[0] <= trimmed_start
@@ -207,7 +207,7 @@ def test_span_contains_the_trimmed_ref(case: tuple[str, int, tuple[str, ...]]) -
 
 
 @st.composite
-def contig_and_indel(draw: st.DrawFn) -> tuple[str, str, int]:
+def draw_contig_and_indel(draw: st.DrawFn) -> tuple[str, str, int]:
     """A contig, the haplotype one indel gives on it, and the indel's size: the number of
     bases inserted, or minus the number deleted."""
     contig = draw(st.text(alphabet="AC", min_size=2, max_size=30))
@@ -221,7 +221,7 @@ def contig_and_indel(draw: st.DrawFn) -> tuple[str, str, int]:
     return contig, contig[:position] + contig[position + num_deleted :], -num_deleted
 
 
-def left_anchored_spellings(
+def find_left_anchored_spellings(
     contig: str, indel_haplotype: str, size: int
 ) -> list[tuple[int, str, str]]:
     """By brute force: the start, 0-based, REF and ALT of every record that writes the
@@ -233,17 +233,20 @@ def left_anchored_spellings(
         else:
             ref = contig[start]
             alt = ref + indel_haplotype[start + 1 : start + 1 + size]
-        if len(ref) == 1 - min(size, 0) and haplotype(contig, start, ref, alt) == indel_haplotype:
+        if (
+            len(ref) == 1 - min(size, 0)
+            and build_haplotype(contig, start, ref, alt) == indel_haplotype
+        ):
             spellings.append((start, ref, alt))
     return spellings
 
 
-@given(contig_and_indel())
+@given(draw_contig_and_indel())
 def test_every_spelling_of_one_indel_spans_from_the_first_to_the_last(
     case: tuple[str, str, int],
 ) -> None:
     contig, indel_haplotype, size = case
-    spellings = left_anchored_spellings(contig, indel_haplotype, size)
+    spellings = find_left_anchored_spellings(contig, indel_haplotype, size)
     # The span starts at the anchor of the leftmost spelling. It ends at the last base the
     # rightmost spelling deletes, or at the base after the rightmost insertion's anchor,
     # when the contig has one.
@@ -252,7 +255,7 @@ def test_every_spelling_of_one_indel_spans_from_the_first_to_the_last(
     is_deletion = size < 0
     expected_end = last_start + len(last_ref) if is_deletion else min(last_start + 2, len(contig))
 
-    spans = {vcf_record_span(*trim(start, (ref, alt)), contig) for start, ref, alt in spellings}
+    spans = {find_span(*trim(start, (ref, alt)), contig) for start, ref, alt in spellings}
 
     assert spans == {(expected_start, expected_end)}
 
