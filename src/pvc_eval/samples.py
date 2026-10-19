@@ -18,8 +18,8 @@ _logger = logging.getLogger(__name__)
 # The column of a VCF line, counted from 1, that holds the first sample: after the nine of
 # CHROM to FORMAT (VCF 4.3 §1.5).
 _FIRST_SAMPLE_COLUMN = 10
-# How many samples a warning of samples in no pair names before it counts the rest (§3).
-_NAMES_IN_WARNING = 10
+# How many samples a message names before it counts the rest (§3).
+_NAMES_IN_MESSAGE = 10
 _BYTE_ORDER_MARK = "\ufeff"  # U+FEFF, which UTF-8 writes as EF BB BF
 
 
@@ -192,9 +192,13 @@ def _check_in_file(
 ) -> None:
     if name in sample_names:
         return
+    if sample_names:
+        its_samples = f"whose samples are {_format_names(list(dict.fromkeys(sample_names)))}"
+    else:
+        its_samples = "which has no samples"
     raise PvcEvalInputError(
-        f"{sample_map}, line {line_number}: '{name}' is not a sample of {path}, whose samples"
-        f" are {', '.join(sample_names)}. Correct the name and run again."
+        f"{sample_map}, line {line_number}: '{name}' is not a sample of {path}, {its_samples}."
+        " Correct the name and run again."
     )
 
 
@@ -215,17 +219,16 @@ def _make_fields_error(
 def _make_unpaired_warning(
     path: Path, sample_names: Sequence[str], paired_indexes: set[int], sample_map: Path | None
 ) -> str | None:
-    """The warning that names the samples of a file in no pair, or None when every sample
-    is in one. Samples are named by their columns, so a name in two columns that no pair
-    needs is named twice."""
-    unpaired_names = [
-        name for index, name in enumerate(sample_names) if index not in paired_indexes
-    ]
+    """The warning that names the samples of a file in no pair, each name once, or None
+    when every sample is in one."""
+    # A dict, to name once a name that fills two columns, in the header's order.
+    unpaired_names = list(
+        dict.fromkeys(
+            name for index, name in enumerate(sample_names) if index not in paired_indexes
+        )
+    )
     if not unpaired_names:
         return None
-    names_text = ", ".join(unpaired_names[:_NAMES_IN_WARNING])
-    if len(unpaired_names) > _NAMES_IN_WARNING:
-        names_text += f" and {len(unpaired_names) - _NAMES_IN_WARNING} more"
     if len(unpaired_names) == 1:
         samples, verb, them = "1 sample", "is", "it"
     else:
@@ -236,5 +239,13 @@ def _make_unpaired_warning(
         advice = f"Add {them} to {sample_map} to compare {them}."
     return (
         f"{samples} of {path} {verb} in no sample pair and {verb} not compared:"
-        f" {names_text}. {advice}"
+        f" {_format_names(unpaired_names)}. {advice}"
     )
+
+
+def _format_names(names: Sequence[str]) -> str:
+    """The first 10 names, separated by commas, and how many more there are (§3)."""
+    names_text = ", ".join(names[:_NAMES_IN_MESSAGE])
+    if len(names) > _NAMES_IN_MESSAGE:
+        names_text += f" and {len(names) - _NAMES_IN_MESSAGE} more"
+    return names_text

@@ -214,18 +214,46 @@ def test_name_in_three_columns_of_file_b_names_every_column(tmp_path: Path) -> N
     )
 
 
-def test_name_in_two_columns_that_no_pair_needs_is_only_warned_of(
+def test_name_in_two_columns_that_no_pair_needs_is_warned_of_once(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    path_a, path_b = _write_files(tmp_path, ["HG003", "HG002", "HG003"], ["HG002"])
+    path_a, path_b = _write_files(tmp_path, ["HG003", "HG002", "HG003", "HG004"], ["HG002"])
 
     pairs = make_sample_pairs(path_a, path_b)
 
     assert pairs == (SamplePair(name_a="HG002", index_a=1, name_b="HG002", index_b=0),)
     assert _get_warnings(caplog) == [
-        f"2 samples of {path_a} are in no sample pair and are not compared: HG003, HG003."
+        f"2 samples of {path_a} are in no sample pair and are not compared: HG003, HG004."
         " Pair them with --sample-map to compare them."
     ]
+
+
+def test_map_sample_absent_from_file_names_its_first_ten_samples(tmp_path: Path) -> None:
+    samples_b = [f"S{number:02}" for number in range(1, 13)]
+    path_a, path_b = _write_files(tmp_path, ["HG002"], samples_b)
+    sample_map = _write_map(tmp_path, "HG002\tHG005\n")
+
+    with pytest.raises(PvcEvalInputError) as error:
+        make_sample_pairs(path_a, path_b, sample_map=sample_map)
+
+    assert str(error.value) == (
+        f"{sample_map}, line 1: 'HG005' is not a sample of {path_b}, whose samples are S01,"
+        " S02, S03, S04, S05, S06, S07, S08, S09, S10 and 2 more. Correct the name and run"
+        " again."
+    )
+
+
+def test_map_sample_of_file_with_no_samples_says_it_has_none(tmp_path: Path) -> None:
+    path_a, path_b = _write_files(tmp_path, ["HG002"], [])
+    sample_map = _write_map(tmp_path, "HG002\tHG005\n")
+
+    with pytest.raises(PvcEvalInputError) as error:
+        make_sample_pairs(path_a, path_b, sample_map=sample_map)
+
+    assert str(error.value) == (
+        f"{sample_map}, line 1: 'HG005' is not a sample of {path_b}, which has no samples."
+        " Correct the name and run again."
+    )
 
 
 def test_map_that_does_not_exist_stops_the_run(tmp_path: Path) -> None:
