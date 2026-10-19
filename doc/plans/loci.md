@@ -1,6 +1,6 @@
 # Plan: the loci
 
-*Status: draft, 19 October 2026, for the owner's approval. It builds `doc/specs/loci.md`,
+*Status: approved by the owner on 19 October 2026; under way. It builds `doc/specs/loci.md`,
 approved by the owner on 19 October 2026, on the branch `loci` in `.claude/worktrees/loci`; the
 owner's handoff named the branch `loci`, so it is not `plan/loci`. The work report will be
 `doc/reports/loci.md`.*
