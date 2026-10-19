@@ -377,7 +377,7 @@ of the row, and the run goes on.
   it, and `raise ... from err` when one is turned into another.
 - `assert` is for what the code itself guarantees and a test would catch,
   never for an input, since `python -O` removes it.
-- Logging in the library, `logger = logging.getLogger(__name__)`, set up
+- Logging in the library, `_logger = logging.getLogger(__name__)`, set up
   only in `cli.py`. `print` only in `cli.py`.
 
 ## Tests

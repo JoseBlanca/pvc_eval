@@ -25,7 +25,7 @@ from typing import TextIO
 
 from pvc_eval.errors import PvcEvalInputError
 
-logger = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 PLOIDY = 2  # doc/spec.md §2: a global constant
 
@@ -230,14 +230,14 @@ def _parse_records_in_file_order(
                 first_beyond_reach_line = first_beyond_reach_line or line_number
             yield pos_1based - 1, record
     if num_symbolic:
-        logger.warning(
+        _logger.warning(
             "%s: skipped %s with symbolic alleles (<DEL>, breakends); pvc_eval does not"
             " compare structural variants.",
             path,
             _format_count(num_symbolic, "VCF record"),
         )
     if num_not_numbers:
-        logger.warning(
+        _logger.warning(
             "%s: took %s that could not be read as a number as absent, as `.` is, in the"
             " quality of the table.",
             path,
@@ -248,7 +248,7 @@ def _parse_records_in_file_order(
             which, given = f"at line {first_beyond_reach_line}", "was given"
         else:
             which, given = f"the first at line {first_beyond_reach_line}", "each was given"
-        logger.warning(
+        _logger.warning(
             "%s: %s, %s, could slide more than %s bases along the reference and %s only"
             " its REF as its span; another spelling of the same event further along may"
             " fall into another locus and be compared apart.",
