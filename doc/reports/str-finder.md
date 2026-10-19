@@ -20,20 +20,36 @@ What exists now that did not:
 - `doc/port_provenance.md`.
 
 What is asked of the owner:
-- **The merge** of `str-finder` into main. Main was merged into the branch at d06e02c, so the merge
-  holds no conflict beyond what d06e02c resolved; the loci's test of `build_loci` on
-  `segment_contig`, skipped on main, runs and passes on the branch.
-- **The four sentences of `doc/spec.md` §5.1** that the spec reports as differing from pvc's code
-  (`doc/specs/str_finder.md`, "Reported, not changed here"), still unanswered.
+- **The merge** of `str-finder` into main. Main was merged into the branch at d06e02c, where the
+  only conflicts were the segment contract (main's copy was this branch's first commit, so the
+  branch's version stands) and one line of `pyproject.toml`. The loci's test of `build_loci` on
+  `segment_contig` is skipped on main because main has no `segment_contig` yet; it runs and passes
+  on the branch.
+- **Whether to reword four sentences of `doc/spec.md` §5.1**, which differ from pvc's code. The code
+  follows pvc either way, so they need not be settled before the merge
+  (`doc/specs/str_finder.md`, "Reported, not changed here"):
+  - step 2 lists "lies within 15 bases of a contig end" among the tests of an STR segment, where
+    pvc drops such a candidate before the copy floor and bundling;
+  - "within 15 bases" means "with fewer than 15 bases between them" in pvc's code;
+  - "two ways that give the same partition" and "the same answer whether or not a region list is
+    given" are true of pvc_eval and not of pvc, whose routes differ in two rules and whose
+    `dev type-regions --regions` can return a shorter satellite.
+
+Two behaviours a user meets that the spec changed during the build: an empty `--regions` BED stops
+the run, as it does for `compare`, because `str-regions` now reads it with the loci's shared reader;
+and nothing checks that the pvc binary of the whole-port check was built at bbcc9f4, since
+`pvc --version` names no commit.
 
 What is left open:
 - How long the finder takes on GRCh38, and whether it needs numpy: the next step, with the
-  `performance` skill. Two costs are known already (milestone 3): absorption is the plain fixed point
-  the brief asked for, which pvc measured at 9.3 billion comparisons on GRCh38 before it moved to a
-  sweep; and step 1 holds a queue that grows on long runs of one base (milestone 1).
+  `performance` skill. Two costs are known already. Absorption repeats its passes until one changes
+  nothing, as the brief for this port asked, comparing every feature with every satellite on each
+  pass; pvc counted 9.3 billion such comparisons on GRCh38 before it moved to a single sweep
+  (milestone 3). And step 1 holds a queue that grows by about one candidate per 500 bases on long runs
+  of one base (milestone 1).
 - The check over GRCh38 as a whole, after the performance work.
-- `pvc_eval.bed.parse_bed` refuses a BED that starts with a byte-order mark; the loci fixed it on
-  their branch (16eff9f), not yet on main.
+- `pvc_eval.bed.parse_bed`, already on main, refuses a BED that starts with a byte-order mark; the
+  loci fixed it on their branch (16eff9f), not yet on main. The merge neither adds nor fixes it.
 
 The plan started from commit bec2800, on which `uv sync --locked`, `ruff format --check`,
 `ruff check` and `ty check` pass and `pytest -q` gives "213 passed in 1.38s".
