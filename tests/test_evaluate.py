@@ -32,8 +32,6 @@ def make_record(
     alleles: tuple[str, ...],
     qual: float | None,
     genotypes: Sequence[VcfGenotype | MALFORMED_GT | OTHER_PLOIDY_GT],
-    *,
-    ref_mismatch: bool = False,
 ) -> VcfRecord:
     """A VCF record at a 0-based start, whose span is its REF."""
     return VcfRecord(
@@ -43,7 +41,6 @@ def make_record(
         qual=qual,
         genotypes=tuple(genotypes),
         line_number=start,
-        ref_mismatch=ref_mismatch,
         span=(start, start + len(alleles[0])),
     )
 
