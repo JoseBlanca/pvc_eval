@@ -151,20 +151,21 @@ def _find_like_pvc(bases: str, min_period: int, max_period: int) -> list[_Candid
     return _find_candidates(bases, parameters)
 
 
-def _find_rt_segments(scores: list[int], block_length: int) -> list[tuple[int, int, int]]:
+def _find_rt_subsequences(scores: list[int], block_length: int) -> list[tuple[int, int, int]]:
     """pvc's rt_segments (tandem_repeat.rs 1208), the scores fed in blocks of block_length."""
     blocks = [scores[i : i + block_length] for i in range(0, len(scores), block_length)]
-    segments = [
-        segment
+    subsequences = [
+        subsequence
         for found, _ in _find_maximal_scoring_subsequences(iter(blocks))
-        for segment in found
+        for subsequence in found
     ]
-    return sorted(segments)
+    return sorted(subsequences)
 
 
-def _find_brute_segments(scores: list[int]) -> list[tuple[int, int, int]]:
+def _find_brute_subsequences(scores: list[int]) -> list[tuple[int, int, int]]:
     """pvc's brute_segments (tandem_repeat.rs 1220): the maximal scoring subsequences from
-    Ruzzo and Tompa's definition, as (start, end, score) with start and end inclusive."""
+    Ruzzo and Tompa's definition, as (start, end, score), `[start, end)` the indices of
+    their scores. pvc's are inclusive; the end here is one past pvc's."""
     prefix = [0]
     for score in scores:
         prefix.append(prefix[-1] + score)
@@ -185,7 +186,7 @@ def _find_brute_segments(scores: list[int]) -> list[tuple[int, int, int]]:
             ):
                 optimal.append((i, j, total))
     maximal = [
-        (i, j, total)
+        (i, j + 1, total)
         for i, j, total in optimal
         if not any(a <= i and j <= b and (a, b) != (i, j) for a, b, _ in optimal)
     ]
@@ -251,9 +252,9 @@ _CRAFTED_SCORES = [
     [-7, -7, -7],
     [2, 2, 2, 2],
     [2, -7, 2],  # two singletons: the interruption is too costly to bridge
-    [2, -3, 2],  # one merged segment: the dip is bridged
-    [5, -10, 8],  # dip below the left L: two segments
-    [5, -3, 8],  # dip stays above: one segment
+    [2, -3, 2],  # one merged subsequence: the dip is bridged
+    [5, -10, 8],  # dip below the left L: two subsequences
+    [5, -3, 8],  # dip stays above: one subsequence
     [2, 2, -7, 2, 2],
     [-7, 2, 2, -7, 2, -7, 2, 2, -7],
     [1, 1, 1, -2, 1, 1, 1, -10, 5, 5],
@@ -262,9 +263,9 @@ _CRAFTED_SCORES = [
 
 @pytest.mark.parametrize("scores", _CRAFTED_SCORES, ids=[str(s) for s in _CRAFTED_SCORES])
 def test_ruzzo_tompa_matches_brute_force_on_crafted_cases(scores: list[int]) -> None:
-    expected = _find_brute_segments(scores)
-    assert _find_rt_segments(scores, block_length=max(len(scores), 1)) == expected
-    assert _find_rt_segments(scores, block_length=1) == expected
+    expected = _find_brute_subsequences(scores)
+    assert _find_rt_subsequences(scores, block_length=max(len(scores), 1)) == expected
+    assert _find_rt_subsequences(scores, block_length=1) == expected
 
 
 def test_ruzzo_tompa_matches_brute_force_on_pseudo_random() -> None:
@@ -279,9 +280,9 @@ def test_ruzzo_tompa_matches_brute_force_on_pseudo_random() -> None:
     for _ in range(2000):
         length = get_next() % 160
         scores = [2 if get_next() % 4 == 0 else -7 for _ in range(length)]  # 25% match-like
-        expected = _find_brute_segments(scores)
-        assert _find_rt_segments(scores, block_length=max(length, 1)) == expected, scores
-        assert _find_rt_segments(scores, block_length=7) == expected, scores
+        expected = _find_brute_subsequences(scores)
+        assert _find_rt_subsequences(scores, block_length=max(length, 1)) == expected, scores
+        assert _find_rt_subsequences(scores, block_length=7) == expected, scores
 
 
 def test_finds_a_clean_perfect_tract() -> None:
@@ -598,7 +599,7 @@ def test_the_candidates_come_by_period_then_start() -> None:
 def test_step_one_holds_far_fewer_than_every_candidate_of_four_million_bases() -> None:
     # The plan's bound. Measured with tracemalloc on CPython 3.15t, 19 October 2026: a peak
     # of 8.0 MB, 4 MB of it the bases as bytes, in 14 s. The same run in one block of the
-    # whole sequence, which holds every candidate and every segment of the scores until
+    # whole sequence, which holds every candidate and every subsequence of the scores until
     # the end, peaked at 804.5 MB.
     bases = _make_random_bases(seed=19, length=4_000_000, alphabet="ACGT")
     tracemalloc.start()

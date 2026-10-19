@@ -159,16 +159,17 @@ class _Candidate:
     score: int
 
 
-type _Segment = tuple[int, int, int]  # a maximal scoring subsequence: start, end, score
+# A maximal scoring subsequence: the indices of its scores, `[start, end)`, and its score.
+type _Subsequence = tuple[int, int, int]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class _OpenSegment:
-    """A segment that later scores can still change, on the stack of Ruzzo and Tompa.
+class _OpenSubsequence:
+    """A subsequence that later scores can still change, on the stack of Ruzzo and Tompa.
 
     before and through are the running totals before its first score and after its last;
-    start and end the indices of those scores. link is 1 + the index on the stack of the
-    nearest segment under it whose total before is smaller, or 0 when there is none.
+    `[start, end)` the indices of its scores. link is 1 + the index on the stack of the
+    nearest subsequence under it whose total before is smaller, or 0 when there is none.
     """
 
     before: int
@@ -177,73 +178,75 @@ class _OpenSegment:
     end: int
     link: int
 
-    def get_segment(self) -> _Segment:
-        """The segment as (start, end, score)."""
+    def get_subsequence(self) -> _Subsequence:
+        """The subsequence as (start, end, score)."""
         return (self.start, self.end, self.through - self.before)
 
 
 def _find_maximal_scoring_subsequences(
     score_blocks: Iterator[Iterable[int]],
-) -> Iterator[tuple[list[_Segment], int | None]]:
+) -> Iterator[tuple[list[_Subsequence], int | None]]:
     """Find the maximal scoring subsequences of a score sequence (Ruzzo and Tompa, 1999),
     given as consecutive blocks. pvc tandem_repeat.rs, maximal_scoring_subsequences.
 
-    A segment is (start, end, score), start and end the inclusive indices of its first and
-    last score in the whole sequence. After each block it yields the segments that no later
-    score can change, in order of start, and the index at which the first segment still
-    open starts, or the next index when none is open: every segment yielded later starts
-    there or after. After the last block it yields the segments left and None.
+    A subsequence is (start, end, score), `[start, end)` the indices of its scores in the
+    whole sequence, 0-based and half-open. After each block it yields the subsequences that
+    no later score can change, in order of start, and the index at which the first
+    subsequence still open starts, or the next index when none is open: every subsequence
+    yielded later starts there or after. After the last block it yields the subsequences
+    left and None.
 
-    pvc holds every open segment to the end. Here, when the running total falls to or under
-    the total before every open segment, those segments are final and are yielded: a later
-    segment starts from a total that low, so it can never reach back into them.
+    pvc holds every open subsequence to the end. Here, when the running total falls to or
+    under the total before every open subsequence, those are final and are yielded: a later
+    subsequence starts from a total that low, so it can never reach back into them.
     """
-    stack: list[_OpenSegment] = []
-    lowest_before = 0  # the least total before any open segment, when there is one
+    stack: list[_OpenSubsequence] = []
+    lowest_before = 0  # the least total before any open subsequence, when there is one
     total = 0
     index = 0
     for block in score_blocks:
-        final: list[_Segment] = []
+        final: list[_Subsequence] = []
         for score in block:
             before = total
             total += score
             index += 1
             if score <= 0:
                 if stack and total <= lowest_before:
-                    final.extend(open_segment.get_segment() for open_segment in stack)
+                    final.extend(open_one.get_subsequence() for open_one in stack)
                     stack.clear()
                 continue
-            stack.append(_make_open_segment(stack, before, total, index - 1))
+            stack.append(_make_open_subsequence(stack, before, total, index - 1))
             # A merge takes the total before of a segment it cuts, and cuts none lower.
             newest_before = stack[-1].before
             lowest_before = newest_before if len(stack) == 1 else min(lowest_before, newest_before)
         yield final, (stack[0].start if stack else index)
-    yield [open_segment.get_segment() for open_segment in stack], None
+    yield [open_one.get_subsequence() for open_one in stack], None
 
 
-def _make_open_segment(
-    stack: list[_OpenSegment], before: int, through: int, index: int
-) -> _OpenSegment:
-    """The open segment that a positive score at index makes, after it has absorbed the
-    open segments it reaches, which are cut from the stack. Rules 2 to 4 of Ruzzo and Tompa,
+def _make_open_subsequence(
+    stack: list[_OpenSubsequence], before: int, through: int, index: int
+) -> _OpenSubsequence:
+    """The open subsequence that a positive score at index makes, after it has absorbed the
+    open subsequences it reaches, which are cut from the stack. Rules 2 to 4 of Ruzzo and Tompa,
     as pvc's maximal_scoring_subsequences gives them."""
     start = index
     while True:
         found = _find_smaller_before(stack, before)
-        if found < 0:  # rule 2: no segment to reach
-            return _OpenSegment(before=before, through=through, start=start, end=index, link=0)
-        if stack[found].through >= through:  # rule 3: a separate segment
-            return _OpenSegment(
-                before=before, through=through, start=start, end=index, link=found + 1
+        end = index + 1
+        if found < 0:  # rule 2: no subsequence to reach
+            return _OpenSubsequence(before=before, through=through, start=start, end=end, link=0)
+        if stack[found].through >= through:  # rule 3: a separate subsequence
+            return _OpenSubsequence(
+                before=before, through=through, start=start, end=end, link=found + 1
             )
-        # Rule 4: it takes in the segment found and every one above it, and looks again.
+        # Rule 4: it takes in the subsequence found and every one above it, and looks again.
         before, start = stack[found].before, stack[found].start
         del stack[found:]
 
 
-def _find_smaller_before(stack: list[_OpenSegment], before: int) -> int:
-    """The index of the highest open segment whose total before is under before, or -1.
-    It hops down the links, past the segments whose total before is not."""
+def _find_smaller_before(stack: list[_OpenSubsequence], before: int) -> int:
+    """The index of the highest open subsequence whose total before is under before, or -1.
+    It hops down the links, past the subsequences whose total before is not."""
     link = len(stack)
     while link > 0:
         if stack[link - 1].before < before:
@@ -286,14 +289,17 @@ def _is_primitive_motif(motif: bytes) -> bool:
 
 
 def _make_candidates(
-    canonical: bytes, period: int, segments: Iterable[_Segment], parameters: StrFinderParameters
+    canonical: bytes,
+    period: int,
+    subsequences: Iterable[_Subsequence],
+    parameters: StrFinderParameters,
 ) -> Iterator[_Candidate]:
-    """The candidates of one period's segments: the segment of scores k0 to k1 is the
-    stretch `[k0, k1 + period + 1)`, kept when it has scan_min_copies copies and its motif
-    is primitive."""
-    for first_score, last_score, score in segments:
-        start = first_score
-        end = last_score + period + 1
+    """The candidates of one period's subsequences: the scores `[k0, k1)` are the bases
+    `[k0, k1 + period)`, since score k is the base at k + period and compares it with the
+    base at k. A candidate is kept when it has scan_min_copies copies and its motif is
+    primitive."""
+    for start, last_score_end, score in subsequences:
+        end = last_score_end + period
         if (end - start) // period < parameters.scan_min_copies:
             continue
         if _is_primitive_motif(canonical[start : start + period]):
@@ -351,9 +357,9 @@ def _find_candidates(
     ]
     for steps in zip(*streams, strict=True):
         # The periods in increasing order, so that a period's divisors are tested first.
-        for period, (segments, open_from) in zip(periods, steps, strict=True):
+        for period, (subsequences, open_from) in zip(periods, steps, strict=True):
             queue = untested[period]
-            queue.extend(_make_candidates(canonical, period, segments, parameters))
+            queue.extend(_make_candidates(canonical, period, subsequences, parameters))
             # A candidate is tested once every candidate of its divisors that starts before
             # its end is tested.
             testable_to = min((tested_to[q] for q in divisors[period]), default=len(canonical))
