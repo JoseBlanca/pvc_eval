@@ -143,13 +143,19 @@ def _make_pieces(edit: _Edit, reference: IndexedFasta) -> Iterator[tuple[int, st
     for offset in range(num_aligned):
         if ref[offset] != alt[offset]:
             yield start + offset + 1, ref[offset], alt[offset]
+    if len(alt) == len(ref):
+        return
     # The anchor is the last aligned position, or the base before the edit when none is.
     anchor = start + num_aligned - 1  # 0-based
+    inserted, deleted = alt[num_aligned:], ref[num_aligned:]
+    if anchor < 0:
+        # At the contig's first base, VCF anchors on the base after the indel, at POS 1.
+        after = len(deleted)
+        after_base = reference.get_bases(CONTIG, after, after + 1)
+        yield 1, deleted + after_base, inserted + after_base
+        return
     anchor_base = reference.get_bases(CONTIG, anchor, anchor + 1)
-    if len(alt) > num_aligned:
-        yield anchor + 1, anchor_base, anchor_base + alt[num_aligned:]
-    elif len(ref) > num_aligned:
-        yield anchor + 1, anchor_base + ref[num_aligned:], anchor_base
+    yield anchor + 1, anchor_base + deleted, anchor_base + inserted
 
 
 def _count_shared(first: str, second: str) -> int:
@@ -215,6 +221,10 @@ def case_files(tmp_path: Path) -> Iterator[CaseFiles]:
         # An insertion inside the stretch a deletion-and-SNP replaces, in a homopolymer:
         # doc/specs/reconciliation.md §9's first example, kept whole.
         ("TAAC", ["3 AC G,AA 0/1", "3 A G,AA 1/2"], ["3 A G,AA 1/2", "3 AC G,AA 0/1"]),
+        # An indel at the contig's first base has no base before it, and is written, as
+        # VCF writes it at POS 1, with the base after it.
+        ("ACGT", ["1 AC C 0/1"], ["1 AC C 0|1:1"]),
+        ("ACGT", ["1 A CA 0/1"], ["1 A CA 0|1:1"]),
     ],
     ids=[
         "complex",
@@ -226,6 +236,8 @@ def case_files(tmp_path: Path) -> Iterator[CaseFiles]:
         "touching-but-not-carried",
         "touching-on-other-samples",
         "touching-insertion-kept-whole",
+        "deletion-at-first-base",
+        "insertion-at-first-base",
     ],
 )
 def test_make_decomposed_lines_decomposes_each_record_nothing_touches(
@@ -252,13 +264,13 @@ def _make_case(draw: st.DrawFn) -> tuple[str, list[str], int, int]:
     """A reference of 4 to 12 bases, from position 1; 1 to 4 VCF lines of file A, sorted by
     POS, each with 1 or 2 ALTs and an unphased GT per sample, `.` in about one allele of
     ten; the number of samples, 1 or 2; and a phasing cap, 4096 in three cases of five, 1
-    or 2 in the others, so that most rows compare sequences. Every POS is 2 or later, so the base before every edit, the anchor
-    of its pieces, is one of the reference's."""
+    or 2 in the others, so that most rows compare sequences. POS may be 1, so an
+    indel may start at the contig's first base."""
     bases = draw(st.text(_BASES, min_size=4, max_size=12))
     num_samples = draw(st.integers(1, 2))
     lines = []
     for _ in range(draw(st.integers(1, 4))):
-        pos = draw(st.integers(2, len(bases)))
+        pos = draw(st.integers(1, len(bases)))
         ref_length = draw(st.integers(1, min(4, len(bases) - pos + 1)))
         ref = bases[pos - 1 : pos - 1 + ref_length]
         alt_strategy = st.one_of(
