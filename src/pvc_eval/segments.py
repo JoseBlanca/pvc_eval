@@ -5,7 +5,8 @@ here are named after. Positions are 0-based and half-open, as VcfRecord.start an
 VcfRecord.span are.
 
 Public: RegionType, the four types of a segment; GenomeSegment, one segment of a contig;
-StrFinderParameters, the parameters of the finder.
+StrFinderParameters, the parameters of the finder; segment_contig, the segmented genome of
+one contig.
 """
 
 import bisect
@@ -13,6 +14,8 @@ from collections import deque
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, fields
 from enum import Enum
+
+from pvc_eval.fasta import IndexedFasta
 
 
 class RegionType(Enum):
@@ -657,3 +660,207 @@ def _make_str_segment(
     if start == 0 or end == len(bases):
         return _Rejection.CONTIG_END
     return _StrSegment(start=start, end=end, motif=motif, purity=purity)
+
+
+# A stretch of a contig, `[start, end)`, 0-based and half-open.
+type _Span = tuple[int, int]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Segment:
+    """A segment of a contig as step 8 makes it, `[start, end)`, 0-based and half-open,
+    with its type, an STR segment's motif, and an STR bundle's members, which
+    GenomeSegment does not carry. pvc's TypedRegion."""
+
+    start: int
+    end: int
+    region_type: RegionType
+    motif: str | None = None
+    members: tuple[_BundleMember, ...] = ()
+
+
+_DEFAULT_PARAMETERS = StrFinderParameters()  # doc/specs/str_finder.md, "Parameters"
+
+
+def segment_contig(
+    reference: IndexedFasta, contig: str, parameters: StrFinderParameters = _DEFAULT_PARAMETERS
+) -> Iterator[GenomeSegment]:
+    """The segmented genome of one contig: its segments in position order, consecutive and
+    non-overlapping from 0 to the contig's length, 0-based and half-open
+    (doc/specs/str_finder.md, steps 1 to 8). A contig of no bases has none.
+
+    It reads the whole contig once and resolves all of it before the first segment comes
+    out, since step 7 can grow a satellite to either side by any length. It keeps no state
+    between calls, so threads can segment contigs of one IndexedFasta at once.
+
+    Raises ValueError for a contig the .fai lacks, and PvcEvalInputError for a byte of the
+    FASTA that is not a letter, as IndexedFasta.get_bases does.
+    """
+    bases = reference.get_bases(contig, 0, reference.get_length(contig))
+    for segment in _find_segments(bases, parameters):
+        yield GenomeSegment(contig, segment.start, segment.end, segment.region_type, segment.motif)
+
+
+def _find_segments(bases: str, parameters: StrFinderParameters) -> list[_Segment]:
+    """Steps 1 to 8 of doc/specs/str_finder.md over the bases of a whole contig: its
+    segments, consecutive from 0 to its length, 0-based and half-open (pvc
+    region_typing/mod.rs, partition_resident_in, over the whole contig)."""
+    candidates = list(
+        _drop_near_contig_ends(_find_candidates(bases, parameters), bases, parameters)
+    )
+    classification = _find_str_segments(candidates, bases, parameters)
+    features = _find_features(candidates, classification, bases, parameters)
+    return _make_segments(features, len(bases))
+
+
+def _find_features(
+    candidates: Sequence[_Candidate],
+    classification: _Classification,
+    bases: str,
+    parameters: StrFinderParameters,
+) -> list[_Segment]:
+    """Step 7 of doc/specs/str_finder.md: the satellites, STR segments and STR bundles of a
+    contig, by start (pvc region_typing/mod.rs, resolve_features). candidates are those
+    left after step 3, and bases the whole contig; positions are 0-based and half-open."""
+    distance = parameters.bundle_distance
+    satellites = [
+        run for run in _make_repeat_runs(candidates) if run[1] - run[0] > parameters.max_str_len
+    ]
+    satellites, members, str_segments = _drop_absorbed_features(
+        satellites, classification.bundle_members, classification.str_segments, distance
+    )
+    features = [
+        _Segment(start=start, end=end, region_type=RegionType.SATELLITE)
+        for start, end in satellites
+    ]
+    features.extend(
+        _Segment(
+            start=segment.start, end=segment.end, region_type=RegionType.STR, motif=segment.motif
+        )
+        for segment in str_segments
+    )
+    for cluster in _make_clusters(members, distance):
+        # The hull runs over the detected spans, from the first member's start.
+        start, end = cluster[0].start, max(member.end for member in cluster)
+        if end - start > parameters.max_bundle_len:
+            features.append(_Segment(start=start, end=end, region_type=RegionType.SATELLITE))
+        elif start != 0 and end != len(bases):
+            members_found = tuple(_make_bundle_member(member, bases) for member in cluster)
+            features.append(
+                _Segment(
+                    start=start, end=end, region_type=RegionType.STR_BUNDLE, members=members_found
+                )
+            )
+    features.sort(key=lambda feature: feature.start)
+    return features
+
+
+def _make_runs(spans: Iterable[_Span]) -> list[_Span]:
+    """The spans, those that overlap or abut joined into one, by start; 0-based and
+    half-open (pvc region_typing/mod.rs, merge_runs)."""
+    runs: list[_Span] = []
+    for start, end in sorted(spans):
+        if runs and start <= runs[-1][1]:
+            runs[-1] = (runs[-1][0], max(runs[-1][1], end))
+        else:
+            runs.append((start, end))
+    return runs
+
+
+def _make_repeat_runs(candidates: Iterable[_Candidate]) -> list[_Span]:
+    """The repeat runs of doc/specs/str_finder.md step 7: the detected spans of the
+    candidates, those that overlap or abut joined into one, by start; 0-based and
+    half-open (pvc region_typing/mod.rs, coverage_runs)."""
+    return _make_runs(
+        (candidate.start, candidate.end)
+        for candidate in candidates
+        if candidate.end > candidate.start
+    )
+
+
+def _make_grown_satellites(
+    satellites: Sequence[_Span], span: _Span, bundle_distance: int
+) -> list[_Span] | None:
+    """The satellites once a feature's span is absorbed, or None when no satellite reaches
+    it: one overlapping it, or with fewer than bundle_distance bases between them. The
+    span and the satellites it reaches become one satellite over all of them, which is then
+    joined with any it overlaps or abuts (pvc region_typing/mod.rs, absorb_into).
+    Positions are 0-based and half-open."""
+    start, end = span
+    reached = [
+        satellite
+        for satellite in satellites
+        if start - satellite[1] < bundle_distance and satellite[0] - end < bundle_distance
+    ]
+    if not reached:
+        return None
+    grown = (min(start, *(s[0] for s in reached)), max(end, *(s[1] for s in reached)))
+    return _make_runs([*(s for s in satellites if s not in reached), grown])
+
+
+def _drop_absorbed_features(
+    satellites: Sequence[_Span],
+    members: Sequence[_Candidate],
+    str_segments: Sequence[_StrSegment],
+    bundle_distance: int,
+) -> tuple[list[_Span], list[_Candidate], list[_StrSegment]]:
+    """Absorption, doc/specs/str_finder.md step 7: the satellites grown over every bundle
+    member, by its detected span, and every STR segment, by its cut, that one reaches,
+    repeated until a pass absorbs nothing; and the members and STR segments left, in their
+    order (pvc's plain fixed point, its test helper absorb_by_iteration). Positions are
+    0-based and half-open."""
+    grown = list(satellites)
+    members_left = list(members)
+    str_segments_left = list(str_segments)
+    while True:
+        is_absorbed = False
+        kept_members: list[_Candidate] = []
+        for member in members_left:
+            after = _make_grown_satellites(grown, (member.start, member.end), bundle_distance)
+            if after is None:
+                kept_members.append(member)
+            else:
+                grown, is_absorbed = after, True
+        kept_str_segments: list[_StrSegment] = []
+        for segment in str_segments_left:
+            after = _make_grown_satellites(grown, (segment.start, segment.end), bundle_distance)
+            if after is None:
+                kept_str_segments.append(segment)
+            else:
+                grown, is_absorbed = after, True
+        members_left, str_segments_left = kept_members, kept_str_segments
+        if not is_absorbed:
+            return grown, members_left, str_segments_left
+
+
+def _make_segments(features: Iterable[_Segment], length: int) -> list[_Segment]:
+    """Step 8 of doc/specs/str_finder.md: the features, sorted by start and not
+    overlapping, with one generic region over each stretch between them and before the
+    first and after the last, up to the contig's length (pvc region_typing/mod.rs,
+    fill_generic_gaps). Positions are 0-based and half-open."""
+    segments: list[_Segment] = []
+    covered_to = 0
+    for feature in features:
+        if feature.start > covered_to:
+            segments.append(
+                _Segment(start=covered_to, end=feature.start, region_type=RegionType.GENERIC)
+            )
+        segments.append(feature)
+        covered_to = feature.end
+    if covered_to < length:
+        segments.append(_Segment(start=covered_to, end=length, region_type=RegionType.GENERIC))
+    return segments
+
+
+def _find_requested_str_regions(
+    segments: Iterable[_Segment], requested: Sequence[_Span]
+) -> Iterator[_Segment]:
+    """The STR regions of one contig's segments that overlap a requested span by at least
+    one base, each whole, as `str-regions --regions` writes them (doc/specs/str_finder.md,
+    "The str-regions command"; pvc region_typing/mod.rs, emit_into). Positions are 0-based
+    and half-open."""
+    for segment in segments:
+        if segment.region_type is RegionType.GENERIC:
+            continue
+        if any(start < segment.end and segment.start < end for start, end in requested):
+            yield segment

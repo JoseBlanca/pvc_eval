@@ -1,5 +1,10 @@
+import gzip
+import itertools
 import random
+import sys
 import tracemalloc
+from collections.abc import Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
@@ -15,12 +20,15 @@ from pvc_eval.segments import (
     StrFinderParameters,
     _BundleMember,
     _Candidate,
+    _drop_absorbed_features,
     _drop_near_contig_ends,
     _drop_under_copy_floor,
     _find_bundles,
     _find_candidates,
     _find_cut,
     _find_maximal_scoring_subsequences,
+    _find_requested_str_regions,
+    _find_segments,
     _find_str_segments,
     _get_copy_floor,
     _get_purity,
@@ -28,8 +36,11 @@ from pvc_eval.segments import (
     _is_in_cluster,
     _make_bundle_member,
     _make_clusters,
+    _make_repeat_runs,
     _Rejection,
+    _Segment,
     _StrSegment,
+    segment_contig,
 )
 
 
@@ -1331,3 +1342,869 @@ def test_an_empty_candidate_is_passed_over_by_step_four_without_a_reason() -> No
     assert classification.str_segments == ()
     assert classification.bundle_members == ()
     assert classification.rejected == ()
+
+
+# ---- Steps 7 and 8, ported from pvc's region_typing/mod.rs at bbcc9f4 ------------------------
+#
+# pvc's partition tests run its scanning route: a contig-end flank of 0 and the periods
+# scanned equal to the periods admitted. pvc's regions are 1-based and inclusive, so its
+# [s, e] is [s - 1, e) here; its RepeatInterval is already 0-based and half-open.
+
+# pvc's catalog_config() (mod.rs 1824).
+_CATALOG_CONFIG = StrFinderParameters(
+    scan_min_period=2,
+    scan_max_period=6,
+    min_period=2,
+    max_period=6,
+    match_reward=2,
+    mismatch_penalty=7,
+    scan_min_copies=2,
+    copy_floors=(10, 5, 4, 3, 3, 3),
+    min_purity=0.8,
+    min_score=0,
+    bundle_distance=50,
+    contig_end_flank=0,
+    max_str_len=1000,
+    max_bundle_len=sys.maxsize,  # pvc's u64::MAX: no bundle cap
+)
+# pvc's TypedRegionConfig::default() at bbcc9f4, which pvc_eval's defaults are not.
+_PVC_DEFAULT_CONFIG = StrFinderParameters(
+    scan_min_period=1,
+    scan_max_period=6,
+    min_period=1,
+    max_period=6,
+    match_reward=2,
+    mismatch_penalty=7,
+    scan_min_copies=2,
+    copy_floors=(8, 6, 6, 6, 5, 4),
+    min_purity=0.8,
+    min_score=0,
+    bundle_distance=15,
+    contig_end_flank=0,
+    max_str_len=100,
+    max_bundle_len=100,
+)
+
+
+def _filler(length: int) -> str:
+    """pvc's filler (mod.rs 2203): aperiodic bases, no repeat of any period from 1 to 6."""
+    return ("ACGTTGCAAGCTTGCA" * (length // 16 + 1))[:length]
+
+
+def _put(bases: str, start: int, insert: str) -> str:
+    """bases with insert written over it from start, as pvc's copy_from_slice does."""
+    return bases[:start] + insert + bases[start + len(insert) :]
+
+
+def _check_partition(segments: Sequence[_Segment], length: int) -> None:
+    """pvc's assert_partitions (mod.rs 1982): the segments run from 0 to the contig's
+    length, each starting where the one before ends, with no two of one type in a row."""
+    assert segments, "a contig of one base or more has segments"
+    expected_start = 0
+    previous_type = None
+    for segment in segments:
+        assert segment.start == expected_start, segments
+        assert segment.end > segment.start, segment
+        assert segment.region_type is not previous_type, segments
+        previous_type = segment.region_type
+        expected_start = segment.end
+    assert expected_start == length
+
+
+def _partition(bases: str, parameters: StrFinderParameters) -> list[_Segment]:
+    """pvc's partition_resident followed by assert_partitions."""
+    segments = _find_segments(bases, parameters)
+    _check_partition(segments, len(bases))
+    return segments
+
+
+def _get_types(segments: Iterable[_Segment]) -> list[str]:
+    """pvc's kinds_of: the types of the segments, in order."""
+    return [segment.region_type.value for segment in segments]
+
+
+def _get_of_type(segments: Iterable[_Segment], region_type: RegionType) -> list[_Segment]:
+    return [segment for segment in segments if segment.region_type is region_type]
+
+
+def test_absorption_by_sweep_joins_satellites_that_abut_after_growing_at_radius_zero() -> None:
+    # pvc's satellites 22..=86 and 88..=88 and member [86, 88), at a bundle distance of 0,
+    # which StrFinderParameters refuses and the absorption step takes as a plain number.
+    # The member overlaps only the second satellite; grown, it abuts the first, and the two
+    # merge. pvc's half that runs the sweep is dropped: the port has only the fixed point.
+    satellites, members, str_segments = _drop_absorbed_features(
+        [(21, 86), (87, 88)], [_make_candidate(86, 88, 2, 10)], [], 0
+    )
+    assert satellites == [(21, 88)]
+    assert members == []
+    assert str_segments == []
+
+
+def test_a_lone_tract_partitions_as_generic_locus_generic() -> None:
+    bases = (
+        "ACGTTGCAAGCTCCTAGGATCGATTGCACGGTACCTGAAGCTTGCACTGATCCGTAGGCA"
+        + "ATATATATATATATAT"
+        + "TGCATTGGACCTAAGCGTTCAGGCTTACGATCCAGGTTACGATCCAAGTGCTTAGCATCG"
+    )
+    segments = _partition(bases, _CATALOG_CONFIG)
+    assert _get_types(segments) == ["generic", "str", "generic"]
+    assert segments[1].start == 60
+    assert segments[1].motif == "AT"
+
+
+def test_a_long_array_is_one_satellite_and_swallows_the_locus_inside_it() -> None:
+    bases = _filler(60) + "AT" * 1000 + _filler(60)
+    segments = _partition(bases, _PVC_DEFAULT_CONFIG)
+    satellites = _get_of_type(segments, RegionType.SATELLITE)
+    assert len(satellites) == 1
+    assert satellites[0].end - satellites[0].start >= 2000
+    assert not _get_of_type(segments, RegionType.STR)
+
+    # The control: above the cap, the same tract is an STR segment.
+    segments = _partition(bases, replace(_PVC_DEFAULT_CONFIG, max_str_len=10_000))
+    assert len(_get_of_type(segments, RegionType.STR)) == 1
+    assert not _get_of_type(segments, RegionType.SATELLITE)
+
+
+def test_abutting_coverage_runs_merge_into_one() -> None:
+    runs = _make_repeat_runs(
+        [_make_candidate(0, 10, 2, 1), _make_candidate(10, 20, 3, 1), _make_candidate(29, 40, 2, 1)]
+    )
+    assert runs == [(0, 20), (29, 40)]
+    assert runs[0][1] - runs[0][0] == 20
+
+    # Two 600-base candidates that touch are one run of 1200, over the satellite cap.
+    runs = _make_repeat_runs([_make_candidate(0, 600, 2, 1), _make_candidate(600, 1200, 2, 1)])
+    assert len(runs) == 1
+    assert runs[0][1] - runs[0][0] == 1200
+
+
+def test_a_repeat_free_contig_is_one_generic_region() -> None:
+    bases = "ACGTTGCAAGCTTGCAACGTTGCAAGCTTGCAACGTTGCAAGCTTGCA" * 3
+    segments = _partition(bases, _PVC_DEFAULT_CONFIG)
+    assert segments == [_Segment(start=0, end=len(bases), region_type=RegionType.GENERIC)]
+
+
+def test_an_impure_tract_is_generic_when_its_pieces_fall_under_the_copy_floor() -> None:
+    bases = _put(_filler(240), 100, "ATATATATGGGGGGGGGGATATATAT")
+    segments = _partition(bases, _CATALOG_CONFIG)
+    assert not _get_of_type(segments, RegionType.STR)
+    assert len(segments) == 1
+
+    # The control: without the interruption the same span is an STR segment.
+    bases = _put(_filler(240), 100, "ATATATATATATATATATATATATAT")
+    assert _get_types(_partition(bases, _CATALOG_CONFIG)) == ["generic", "str", "generic"]
+
+
+def test_a_homopolymer_is_generic_and_does_not_take_its_neighbour_with_it() -> None:
+    # pvc's last assertion, on the counts of rejections, is dropped: the port keeps none.
+    bases = _put(_put(_filler(300), 100, "A" * 20), 180, "CAG" * 8)
+    segments = _partition(bases, _CATALOG_CONFIG)
+    str_segments = _get_of_type(segments, RegionType.STR)
+    assert len(str_segments) == 1
+    assert str_segments[0].motif == "CAG"
+    assert 180 <= str_segments[0].start <= 184
+    assert any(
+        segment.start <= 109 < segment.end and segment.region_type is RegionType.GENERIC
+        for segment in segments
+    )
+
+
+def test_a_homopolymer_of_six_or_more_is_a_period_one_locus_at_default() -> None:
+    bases = _put(_filler(300), 100, "A" * 20)
+    str_segments = _get_of_type(_partition(bases, _PVC_DEFAULT_CONFIG), RegionType.STR)
+    assert len(str_segments) == 1
+    assert str_segments[0].motif == "A"
+    assert 99 <= str_segments[0].start <= 104
+
+
+def _make_contig_with_one_guarded_run(run: str, guard: str) -> str:
+    """pvc's contig_with_one_guarded_run (mod.rs 2401): the run at 200 in filler, with the
+    base on each side set to guard."""
+    offset = 200
+    bases = _filler(offset * 2 + len(run))
+    return bases[: offset - 1] + guard + run + guard + bases[offset + len(run) + 1 :]
+
+
+def _find_str_segments_at_pvc_default(bases: str) -> list[_Segment]:
+    """pvc's loci_at_default (mod.rs 2415)."""
+    return _get_of_type(_partition(bases, _PVC_DEFAULT_CONFIG), RegionType.STR)
+
+
+def test_the_mononucleotide_copy_floor_is_exactly_eight() -> None:
+    assert _find_str_segments_at_pvc_default(_make_contig_with_one_guarded_run("A" * 7, "C")) == []
+    found = _find_str_segments_at_pvc_default(_make_contig_with_one_guarded_run("A" * 8, "C"))
+    assert len(found) == 1
+    assert found[0].motif == "A"
+    assert found[0].end - found[0].start == 8
+
+
+def test_the_dinucleotide_copy_floor_is_exactly_six() -> None:
+    assert _find_str_segments_at_pvc_default(_make_contig_with_one_guarded_run("AT" * 5, "C")) == []
+    found = _find_str_segments_at_pvc_default(_make_contig_with_one_guarded_run("AT" * 6, "C"))
+    assert len(found) == 1
+    assert found[0].motif == "AT"
+    assert found[0].end - found[0].start == 12
+
+
+def test_a_rejected_repeat_leaves_no_hole() -> None:
+    # pvc's two assertions hold of the one satellite the port gives here: the candidate of
+    # period 1 runs over the whole contig, the ATATAT paid for by the C's and G's, has no
+    # cut, and is 126 bases long.
+    bases = "C" * 60 + "ATATAT" + "G" * 60
+    segments = _partition(bases, _PVC_DEFAULT_CONFIG)
+    assert not _get_of_type(segments, RegionType.STR)
+    assert len(segments) == 1
+
+
+def test_a_tract_at_position_one_is_generic_and_the_partition_still_starts_at_one() -> None:
+    segments = _partition("AT" * 8 + "C" * 80, _PVC_DEFAULT_CONFIG)
+    assert segments[0].start == 0
+    assert not _get_of_type(segments, RegionType.STR)
+
+
+def test_an_empty_contig_has_no_regions() -> None:
+    assert _find_segments("", _PVC_DEFAULT_CONFIG) == []
+
+
+def _make_contig_with_tracts_at(offsets: Iterable[int], length: int) -> str:
+    """pvc's contig_with_tracts_at (mod.rs 2540): (AT)x10 at each offset, in filler."""
+    bases = _filler(length)
+    for offset in offsets:
+        bases = _put(bases, offset, "AT" * 10)
+    return bases
+
+
+def test_two_close_tracts_become_one_bundle_carrying_both() -> None:
+    segments = _partition(_make_contig_with_tracts_at([60, 90], 240), _PVC_DEFAULT_CONFIG)
+    bundles = _get_of_type(segments, RegionType.STR_BUNDLE)
+    assert len(bundles) == 1
+    bundle = bundles[0]
+    assert len(bundle.members) == 2
+    assert bundle.start <= 60
+    assert bundle.end >= 110
+    assert all(bundle.start <= m.start and m.end <= bundle.end for m in bundle.members)
+    assert all(member.motif in ("AT", "TA") for member in bundle.members)
+    assert not _get_of_type(segments, RegionType.STR)
+
+
+def _partition_two_close_tracts(cap: int) -> list[_Segment]:
+    """pvc's two_close_tracts_capped_at (mod.rs 2603), without the counts."""
+    bases = _make_contig_with_tracts_at([60, 90], 240)
+    return _partition(bases, replace(_PVC_DEFAULT_CONFIG, max_bundle_len=cap))
+
+
+def test_a_bundle_longer_than_the_cap_is_a_satellite_and_is_counted_as_one() -> None:
+    # pvc's four assertions on the counts are dropped: the port keeps none.
+    (hull,) = _get_of_type(_partition_two_close_tracts(sys.maxsize), RegionType.STR_BUNDLE)
+    hull_length = hull.end - hull.start
+    for cap, is_satellite in [
+        (hull_length - 1, True),
+        (hull_length, False),
+        (hull_length + 1, False),
+        (0, True),
+    ]:
+        (at_hull,) = [
+            segment
+            for segment in _partition_two_close_tracts(cap)
+            if (segment.start, segment.end) == (hull.start, hull.end)
+        ]
+        assert (at_hull.region_type is RegionType.SATELLITE) == is_satellite, cap
+
+
+def test_a_bundle_at_a_contig_end_is_dropped_unless_capped() -> None:
+    def get_types(offsets: list[int], cap: int) -> list[str]:
+        bases = _make_contig_with_tracts_at(offsets, 200)
+        return _get_types(_partition(bases, replace(_PVC_DEFAULT_CONFIG, max_bundle_len=cap)))
+
+    assert get_types([0, 30], 100) == ["generic"]
+    assert get_types([150, 180], 100) == ["generic"]
+    assert get_types([1, 31], 100) == ["generic", "str-bundle", "generic"]
+    assert get_types([0, 30], 10) == ["satellite", "generic"]
+
+    # One base in from the right end; the C continues neither AT nor TA.
+    bases = _make_contig_with_tracts_at([149, 179], 200)[:199] + "C"
+    (bundle,) = _get_of_type(_partition(bases, _PVC_DEFAULT_CONFIG), RegionType.STR_BUNDLE)
+    assert bundle.end == 199
+
+
+def test_the_hull_ends_past_a_ragged_last_member() -> None:
+    bases = _filler(200) + "TCTC" * 8 + _filler(9) + "CAG" * 8 + "CA" + _filler(200)
+    (bundle,) = _get_of_type(_partition(bases, _PVC_DEFAULT_CONFIG), RegionType.STR_BUNDLE)
+    # The CAG run is [241, 265) and the CA [265, 267).
+    assert max(member.end for member in bundle.members) == 265
+    assert bundle.end == 267
+
+
+def test_three_chained_tracts_become_one_bundle_of_three() -> None:
+    segments = _partition(_make_contig_with_tracts_at([60, 110, 160], 300), _CATALOG_CONFIG)
+    (bundle,) = _get_of_type(segments, RegionType.STR_BUNDLE)
+    assert len(bundle.members) == 3
+    assert bundle.start <= 60
+    assert bundle.end >= 180
+
+
+def test_a_tract_clear_of_a_bundle_is_still_admitted() -> None:
+    segments = _partition(_make_contig_with_tracts_at([60, 90, 400], 600), _PVC_DEFAULT_CONFIG)
+    assert len(_get_of_type(segments, RegionType.STR_BUNDLE)) == 1
+    str_segments = _get_of_type(segments, RegionType.STR)
+    assert len(str_segments) == 1
+    assert str_segments[0].start == 400
+
+
+def test_a_low_copy_repeat_is_generic_not_a_bundle() -> None:
+    segments = _partition(_put(_filler(240), 100, "ATATAT"), _PVC_DEFAULT_CONFIG)
+    assert not _get_of_type(segments, RegionType.STR_BUNDLE)
+    assert len(segments) == 1
+
+
+def test_bundle_clusters_regroups_exactly_what_the_split_set_aside() -> None:
+    bundled = [
+        _make_candidate(100, 130, 2, 100),
+        _make_candidate(150, 180, 2, 100),
+        _make_candidate(5000, 5030, 2, 100),
+        _make_candidate(5040, 5070, 2, 100),
+    ]
+    clusters = _make_clusters(bundled, 50)
+    assert [len(cluster) for cluster in clusters] == [2, 2]
+    assert [cluster[0].start for cluster in clusters] == [100, 5000]
+
+
+_GOLDEN_CATALOG = Path(__file__).parent / "data" / "tandem_repeat" / "golden.ssr_catalog.bed.gz"
+
+
+def test_the_resident_partition_reproduces_the_golden_catalog() -> None:
+    # The settings the golden catalogue was built at: its header gives the purity, the
+    # score and the bundle distance; pvc's test pins the rest.
+    parameters = replace(
+        _CATALOG_CONFIG, max_bundle_len=100, min_purity=0.8, min_score=0, bundle_distance=50
+    )
+    with gzip.open(_GOLDEN_CATALOG, "rt", encoding="utf-8") as catalog:
+        golden = [
+            (columns[0], int(columns[1]), int(columns[2]))
+            for columns in (line.split("\t") for line in catalog if not line.startswith("#"))
+        ]
+    assert golden
+    found: list[tuple[str, int, int]] = []
+    satellites: list[tuple[str, int, int]] = []
+    with IndexedFasta(_SYNTHETIC_REF) as reference:
+        for contig in reference.contigs:
+            segments = list(segment_contig(reference, contig, parameters))
+            _check_genome_segments(segments, contig, reference.get_length(contig))
+            for segment in segments:
+                where = (contig, segment.start, segment.end)
+                if segment.region_type is RegionType.STR:
+                    found.append(where)
+                elif segment.region_type is RegionType.SATELLITE:
+                    satellites.append(where)
+    assert found
+
+    def overlaps(one: tuple[str, int, int], other: tuple[str, int, int]) -> bool:
+        return one[0] == other[0] and one[1] < other[2] and other[1] < one[2]
+
+    missed = [
+        locus
+        for locus in golden
+        if not any(overlaps(locus, other) for other in found)
+        and not any(overlaps(locus, satellite) for satellite in satellites)
+    ]
+    assert missed == []
+
+
+def _make_windowing_fixture() -> str:
+    """pvc's windowing_fixture (mod.rs 3071): four (AT)x10 tracts and a 1200-base (AT)
+    array at 4000, in 6000 bases of filler."""
+    bases = _make_contig_with_tracts_at([990, 1990, 2020, 3500], 6000)
+    return _put(bases, 4000, "AT" * 600)
+
+
+def _make_chained_cluster(span: int, length: int) -> str:
+    """pvc's chained_cluster (mod.rs 3089): (AT)x10 tracts every 50 bases from 1000."""
+    return _make_contig_with_tracts_at(range(1000, 1000 + span - 20 + 1, 50), length)
+
+
+def _find_requested(bases: str, requested: list[tuple[int, int]]) -> list[_Segment]:
+    """pvc's walk_bed: the STR regions of the whole contig that overlap the requested
+    spans, which are pvc's, 1-based and inclusive."""
+    spans = [(start - 1, end) for start, end in requested]
+    return list(_find_requested_str_regions(_find_segments(bases, _PVC_DEFAULT_CONFIG), spans))
+
+
+def test_a_bed_returns_the_same_findings_the_whole_genome_run_does() -> None:
+    # The port segments the whole contig whatever spans are asked for, and a span only
+    # chooses which STR regions come back (`str-regions --regions`); generic regions do
+    # not come back at all.
+    bases = _make_contig_with_tracts_at([], 8000)
+    bases = _put(bases, 1000, "AT" * 1500)
+    whole = _partition(bases, _CATALOG_CONFIG)
+    (truth,) = _get_of_type(whole, RegionType.SATELLITE)
+    assert truth.end - truth.start > 3000
+    got = list(_find_requested_str_regions(whole, [(1099, 1300)]))
+    assert _get_of_type(got, RegionType.SATELLITE) == [truth]
+
+    bases = _make_chained_cluster(1500, 6000)
+    whole = _partition(bases, _CATALOG_CONFIG)
+    (truth,) = _get_of_type(whole, RegionType.STR_BUNDLE)
+    assert truth.end - truth.start > 1400
+    assert len(truth.members) >= 25
+    assert not _get_of_type(whole, RegionType.SATELLITE)
+    got = list(_find_requested_str_regions(whole, [(899, 1200)]))
+    assert _get_of_type(got, RegionType.STR_BUNDLE) == [truth]
+
+
+def _make_micro_near_satellite(micro_left: bool, gap: int) -> str:
+    """pvc's micro_near_satellite (mod.rs 3192): a (CAG)x8 tract gap bases from a
+    1300-base (AT) array, on its left or its right."""
+    if micro_left:
+        micro_at, array_at = 1000, 1000 + 24 + gap
+    else:
+        micro_at, array_at = 1000 + 1300 + gap, 1000
+    bases = _put(_filler(6000), micro_at, "CAG" * 8)
+    return _put(bases, array_at, "AT" * 650)
+
+
+@pytest.mark.parametrize("micro_left", [True, False], ids=["left", "right"])
+def test_a_microsatellite_beside_a_satellite_is_absorbed_into_it(micro_left: bool) -> None:
+    near = 15 // 2  # pvc's DEFAULT_BUNDLE_THRESHOLD / 2
+    far = 15 * 10
+    segments = _partition(_make_micro_near_satellite(micro_left, near), _PVC_DEFAULT_CONFIG)
+    assert _get_types(segments) == ["generic", "satellite", "generic"]
+    satellite = segments[1]
+    assert satellite.end - satellite.start >= 1300 + near + 24
+
+    # The control: far from the array, the same tract is an STR segment.
+    types = _get_types(_partition(_make_micro_near_satellite(micro_left, far), _PVC_DEFAULT_CONFIG))
+    assert "str" in types
+    assert "satellite" in types
+
+
+def test_absorption_tracks_the_bundle_radius() -> None:
+    def find_first_locus_gap(radius: int) -> int | None:
+        parameters = replace(_PVC_DEFAULT_CONFIG, bundle_distance=radius)
+        for gap in range(1, radius * 3 + 1):
+            segments = _find_segments(_make_micro_near_satellite(True, gap), parameters)
+            if _get_of_type(segments, RegionType.STR):
+                return gap
+        return None
+
+    previous = 0
+    for radius in [10, 15, 20, 30]:
+        gap = find_first_locus_gap(radius)
+        assert gap is not None, radius
+        assert gap > previous, radius
+        previous = gap
+
+
+def test_the_satellite_cap_applies_to_the_cleaned_coverage_not_the_raw() -> None:
+    bases = _put(_make_windowing_fixture(), 5200, "CGCG")
+    scanned = replace(_PVC_DEFAULT_CONFIG, copy_floors=_ZERO_FLOORS)
+    raw = _find_candidates(bases, scanned)
+    cleaned = list(_drop_under_copy_floor(raw, _PVC_DEFAULT_CONFIG))
+
+    def find_over_cap(candidates: list[_Candidate]) -> list[tuple[int, int]]:
+        return [
+            (start, end)
+            for start, end in _make_repeat_runs(candidates)
+            if end - start > _PVC_DEFAULT_CONFIG.max_str_len
+        ]
+
+    from_cleaned = find_over_cap(cleaned)
+    assert find_over_cap(raw) != from_cleaned
+    satellites = _get_of_type(_partition(bases, _PVC_DEFAULT_CONFIG), RegionType.SATELLITE)
+    assert [(satellite.start, satellite.end) for satellite in satellites] == from_cleaned
+
+
+# The four tests below ask for parts of a contig. pvc's emit_into keeps the findings that
+# overlap a requested span whole and cuts generic regions at its edges; the port keeps the
+# first rule, for `str-regions --regions`, and has no generic regions to cut. Each test
+# names the assertions it drops.
+
+
+@pytest.mark.parametrize(
+    "requested",
+    [(900, 1100), (1995, 2100), (4500, 4800), (3000, 3600), (1, 6000)],
+    ids=["tract", "bundle", "satellite", "interior", "whole"],
+)
+def test_a_bed_does_not_change_what_things_are(requested: tuple[int, int]) -> None:
+    # pvc's assertion on the type at each edge of what comes back holds of the STR regions
+    # only, which come back as the whole contig's.
+    bases = _make_windowing_fixture()
+    whole = _partition(bases, _PVC_DEFAULT_CONFIG)
+    got = _find_requested(bases, [requested])
+    first, last = requested[0] - 1, requested[1]
+    for segment in got:
+        for position in (segment.start, segment.end - 1):
+            if first <= position < last:
+                (truth,) = [other for other in whole if other.start <= position < other.end]
+                assert truth.region_type is segment.region_type
+
+    def find_starting_inside(segments: list[_Segment]) -> list[tuple[int, int]]:
+        return [
+            (segment.start, segment.end)
+            for segment in segments
+            if segment.region_type is RegionType.STR and first <= segment.start < last
+        ]
+
+    assert find_starting_inside(got) == find_starting_inside(whole)
+
+
+@pytest.mark.parametrize(
+    "requested", [(900, 1100), (1995, 2100), (3000, 3600)], ids=["tract", "bundle", "interior"]
+)
+def test_a_bed_span_is_tiled_by_what_comes_back(requested: tuple[int, int]) -> None:
+    # Dropped: the first segment starting at or before the span and the last ending at or
+    # after it, and consecutive segments abutting with different types. They hold of the
+    # generic regions, which do not come back. What is left: something comes back, in
+    # order and without overlaps.
+    got = _find_requested(_make_windowing_fixture(), [requested])
+    assert got
+    assert all(one.end <= other.start for one, other in itertools.pairwise(got))
+
+
+def test_generic_clips_at_the_edge_and_findings_come_back_whole() -> None:
+    # Dropped: the first and last generic regions of (3000, 3600) cut at the span's edges.
+    bases = _make_windowing_fixture()
+    got = _find_requested(bases, [(4500, 4800)])
+    assert len(got) == 1
+    satellite = got[0]
+    assert satellite.region_type is RegionType.SATELLITE
+    assert satellite.start < 4499
+    assert satellite.end > 4800
+    assert satellite.end - satellite.start > 1000
+    whole = _partition(bases, _PVC_DEFAULT_CONFIG)
+    assert _get_of_type(whole, RegionType.SATELLITE) == [satellite]
+
+    (bundle,) = _get_of_type(_find_requested(bases, [(1995, 2100)]), RegionType.STR_BUNDLE)
+    assert bundle.start < 1994
+    assert all(bundle.start <= m.start and m.end <= bundle.end for m in bundle.members)
+
+
+def test_a_locus_straddling_the_bed_edge_is_emitted_whole() -> None:
+    bases = _make_windowing_fixture()
+    (locus,) = _get_of_type(_find_requested(bases, [(900, 1000)]), RegionType.STR)
+    assert locus.end > 1000
+    whole = _partition(bases, _PVC_DEFAULT_CONFIG)
+    assert [other for other in whole if other.start == locus.start] == [locus]
+
+
+def test_two_spans_sharing_a_scan_span_do_not_leak_the_gap_between_them() -> None:
+    # Dropped: the 402 bases the generic regions cover, which do not come back.
+    got = _find_requested(_make_windowing_fixture(), [(3000, 3200), (3400, 3600)])
+    assert got
+    assert all(2999 <= s.start < 3200 or 3399 <= s.start < 3600 for s in got)
+
+
+# ---- Steps 7 and 8: pvc_eval's own cases -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("member", "is_absorbed"),
+    [
+        (_make_candidate(71, 86, 2, 1), True),
+        (_make_candidate(70, 85, 2, 1), False),
+        (_make_candidate(214, 230, 2, 1), True),
+        (_make_candidate(215, 230, 2, 1), False),
+    ],
+    ids=["left-14", "left-15", "right-14", "right-15"],
+)
+def test_a_feature_is_absorbed_with_fewer_than_the_bundle_distance_bases_between(
+    member: _Candidate, is_absorbed: bool
+) -> None:
+    # The satellite is [100, 200); the bundle distance 15. doc/specs/str_finder.md step 7.
+    satellites, members, _ = _drop_absorbed_features([(100, 200)], [member], [], 15)
+    if is_absorbed:
+        assert (satellites, members) == ([(min(member.start, 100), max(member.end, 200))], [])
+    else:
+        assert (satellites, members) == ([(100, 200)], [member])
+
+
+def test_absorption_is_repeated_until_a_pass_absorbs_nothing() -> None:
+    # Taken in order, the member at 60 is 20 bases from the satellite at 100 and is not
+    # absorbed; the one at 82 is. The grown satellite then reaches the member at 60, which
+    # only a second pass absorbs. Likewise the STR segment at 20 is reached only once the
+    # member at 60 is absorbed.
+    far = _make_candidate(60, 80, 2, 1)
+    near = _make_candidate(82, 90, 2, 1)
+    str_segment = _StrSegment(start=20, end=50, motif="CA", purity=1.0)
+    satellites, members, str_segments = _drop_absorbed_features(
+        [(100, 200), (400, 500)], [far, near], [str_segment], 15
+    )
+    assert satellites == [(20, 200), (400, 500)]
+    assert members == []
+    assert str_segments == []
+
+
+def test_absorption_merges_satellites_that_a_feature_reaches_on_both_sides() -> None:
+    satellites, members, _ = _drop_absorbed_features(
+        [(0, 120), (140, 300)], [_make_candidate(125, 135, 2, 1)], [], 15
+    )
+    assert satellites == [(0, 300)]
+    assert members == []
+
+
+def _write_fasta(directory: Path, contigs: dict[str, str]) -> Path:
+    """A FASTA of the contigs, one line each, and its .fai, as samtools faidx writes it,
+    except that a contig of no bases keeps its line."""
+    fasta = ""
+    fai = ""
+    for name, bases in contigs.items():
+        fasta += f">{name}\n"
+        fai += (
+            f"{name}\t{len(bases)}\t{len(fasta)}\t{max(len(bases), 1)}\t{max(len(bases), 1) + 1}\n"
+        )
+        fasta += f"{bases}\n"
+    path = directory / "ref.fa"
+    path.write_text(fasta, encoding="ascii")
+    Path(f"{path}.fai").write_text(fai, encoding="utf-8")
+    return path
+
+
+def _find_segments_in_fasta(
+    contig: str, bases: str, parameters: StrFinderParameters, tmp_path: Path
+) -> list[tuple[int, int, str, str | None]]:
+    """The segments segment_contig gives for a contig of these bases, as (start, end, type,
+    motif)."""
+    with IndexedFasta(_write_fasta(tmp_path, {contig: bases})) as reference:
+        segments = list(segment_contig(reference, contig, parameters))
+    _check_genome_segments(segments, contig, len(bases))
+    return [
+        (segment.start, segment.end, segment.region_type.value, segment.motif)
+        for segment in segments
+        if segment.region_type is not None
+    ]
+
+
+def _check_genome_segments(segments: Sequence[GenomeSegment], contig: str, length: int) -> None:
+    """doc/spec.md §4: one contig's segments, consecutive and non-overlapping, from 0 to
+    its length, each with a type."""
+    assert all(segment.contig == contig for segment in segments)
+    assert all(segment.region_type is not None for segment in segments)
+    _check_consecutive([(segment.start, segment.end) for segment in segments], length)
+
+
+def _check_consecutive(spans: Sequence[tuple[int, int]], length: int) -> None:
+    """The spans run from 0 to length, each non-empty and starting where the one before
+    ends; none for a length of 0."""
+    ends = [0] + [end for _, end in spans]
+    assert [start for start, _ in spans] == ends[:-1]
+    assert all(end > start for start, end in spans)
+    assert ends[-1] == length
+
+
+# The worked cases of doc/specs/str_finder.md, with the segments `pvc repeat-catalog` and then
+# `pvc dev type-regions --min-copies 5,5,4,4,4,3` gave for them, pvc built at bbcc9f4.
+_FOUR_A = (
+    "GCTAGACATACATACATACAGTCAGCACGACTGTCAGTGATCGCTAGTAGTAGTGATGCACACACACACACACACACACAGTCTGT"
+    "AAAACTACGCTACTGCTGTCACTCGACTGCATACATCAGACAGACTCGTATGACAGTCACGCAGA"
+)
+_WORKED_CASES = [
+    (
+        "four_a",
+        _FOUR_A,
+        [(0, 58, "generic", None), (58, 80, "str", "CA"), (80, 151, "generic", None)],
+    ),
+    (
+        "five_a",
+        _FOUR_A.replace("AAAA", "AAAAA"),
+        [(0, 58, "generic", None), (58, 91, "str-bundle", None), (91, 152, "generic", None)],
+    ),
+    (
+        "near_end",
+        "GCTAGACATGAAAAAACTGTCAGTCACACACACACACACACACAGTCTGTAGCTACTGCTGTCACTCGACTGCATACATCAGACAG"
+        "ACTCGTATGACAGTCACG",
+        [(0, 24, "generic", None), (24, 44, "str", "CA"), (44, 104, "generic", None)],
+    ),
+    (
+        "far_end",
+        "GCTAGACATGCATCAGTAAAAAACTGTCAGTCACACACACACACACACACAGTCTGTAGCTACTGCTGTCACTCGACTGCATACATC"
+        "AGACAGACTCGTATGACAGTCACG",
+        [(0, 17, "generic", None), (17, 51, "str-bundle", None), (51, 111, "generic", None)],
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("contig", "bases", "expected"), _WORKED_CASES, ids=[case[0] for case in _WORKED_CASES]
+)
+def test_the_worked_cases_give_pvcs_segments(
+    contig: str, bases: str, expected: list[tuple[int, int, str, str | None]], tmp_path: Path
+) -> None:
+    assert _find_segments_in_fasta(contig, bases, StrFinderParameters(), tmp_path) == expected
+
+
+# 120 A's in pvc's filler. `pvc dev type-regions --min-copies 5,5,4,4,4,3 --min-period 2`,
+# pvc at bbcc9f4, makes them a satellite: its catalogue scans periods 1 to 6, and the
+# candidate of period 1 makes a repeat run although period 1 is not admitted. pvc's scanning
+# route, which scans periods 2 to 6 alone, leaves them generic (doc/specs/str_finder.md,
+# step 1).
+_A120 = _filler(60) + "A" * 120 + "C" + _filler(59)
+
+
+def test_a_period_scanned_and_not_admitted_still_makes_a_satellite(tmp_path: Path) -> None:
+    parameters = StrFinderParameters(min_period=2)
+    assert _find_segments_in_fasta("a120", _A120, parameters, tmp_path) == [
+        (0, 60, "generic", None),
+        (60, 180, "satellite", None),
+        (180, 240, "generic", None),
+    ]
+
+
+def test_a_period_not_scanned_makes_no_repeat_run(tmp_path: Path) -> None:
+    parameters = StrFinderParameters(scan_min_period=2, min_period=2)
+    assert _find_segments_in_fasta("a120", _A120, parameters, tmp_path) == [
+        (0, 240, "generic", None)
+    ]
+
+
+def _make_guarded(run: str, guard: str) -> str:
+    """The run with a guard base on each side and 29 bases of pvc's filler beyond it, so
+    that 30 bases lie between the run and each contig end."""
+    return _filler(29) + guard + run + guard + _filler(29)
+
+
+# pvc_eval's copy floors of periods 1 and 2 at their boundary, 5 copies each. The segments
+# are what `pvc dev type-regions --min-copies 5,5,4,4,4,3` gave, pvc at bbcc9f4.
+@pytest.mark.parametrize(
+    ("bases", "expected"),
+    [
+        (_make_guarded("A" * 4, "C"), [(0, 64, "generic", None)]),
+        (
+            _make_guarded("A" * 5, "C"),
+            [(0, 30, "generic", None), (30, 35, "str", "A"), (35, 65, "generic", None)],
+        ),
+        (_make_guarded("CA" * 4, "G"), [(0, 68, "generic", None)]),
+        (
+            _make_guarded("CA" * 5, "G"),
+            [(0, 30, "generic", None), (30, 40, "str", "CA"), (40, 70, "generic", None)],
+        ),
+    ],
+    ids=["A4", "A5", "CA4", "CA5"],
+)
+def test_the_default_copy_floors_hold_at_their_boundary(
+    bases: str, expected: list[tuple[int, int, str, str | None]], tmp_path: Path
+) -> None:
+    assert _find_segments_in_fasta("floor", bases, StrFinderParameters(), tmp_path) == expected
+
+
+# A homopolymer at max_str_len, 100 bases, and one past it, and a run over max_str_len
+# whose cut has 10 bases between it and a contig end, so that step 2 drops it. The
+# segments are what `pvc dev type-regions --min-copies 5,5,4,4,4,3` gave, pvc at bbcc9f4.
+@pytest.mark.parametrize(
+    ("bases", "expected"),
+    [
+        (
+            _filler(59) + "C" + "A" * 100 + "C" + _filler(59),
+            [(0, 60, "generic", None), (60, 160, "str", "A"), (160, 220, "generic", None)],
+        ),
+        (
+            _filler(59) + "C" + "A" * 101 + "C" + _filler(59),
+            [(0, 60, "generic", None), (60, 161, "satellite", None), (161, 221, "generic", None)],
+        ),
+        (_filler(9) + "C" + "A" * 120 + "C" + _filler(59), [(0, 190, "generic", None)]),
+        (_filler(59) + "C" + "A" * 120 + "C" + _filler(9), [(0, 190, "generic", None)]),
+    ],
+    ids=["100", "101", "near-start", "near-end"],
+)
+def test_a_repeat_run_longer_than_max_str_len_is_a_satellite_unless_step_2_drops_it(
+    bases: str, expected: list[tuple[int, int, str, str | None]], tmp_path: Path
+) -> None:
+    assert _find_segments_in_fasta("run", bases, StrFinderParameters(), tmp_path) == expected
+
+
+@pytest.mark.parametrize(
+    ("requested", "is_kept"),
+    [((0, 10), False), ((0, 11), True), ((19, 30), True), ((20, 30), False)],
+    ids=["ends-at-start", "one-base-in", "starts-at-last-base", "starts-at-end"],
+)
+def test_a_requested_span_keeps_an_str_region_it_overlaps_by_one_base(
+    requested: tuple[int, int], is_kept: bool
+) -> None:
+    str_segment = _Segment(start=10, end=20, region_type=RegionType.STR, motif="CA")
+    segments = [
+        _Segment(start=0, end=10, region_type=RegionType.GENERIC),
+        str_segment,
+        _Segment(start=20, end=30, region_type=RegionType.GENERIC),
+    ]
+    got = list(_find_requested_str_regions(segments, [requested]))
+    assert got == ([str_segment] if is_kept else [])
+
+
+def test_an_empty_contig_has_no_segments(tmp_path: Path) -> None:
+    with IndexedFasta(_write_fasta(tmp_path, {"empty": "", "chr1": "ACGT"})) as reference:
+        assert list(segment_contig(reference, "empty")) == []
+
+
+@pytest.mark.parametrize("bases", ["A", "ACG", "AAAAA"], ids=["1", "3", "5"])
+def test_a_contig_shorter_than_the_longest_period_is_one_generic_region(
+    bases: str, tmp_path: Path
+) -> None:
+    # Five A's are a candidate of period 1 at both ends of the contig, which step 2
+    # drops; at a flank of 0 step 6 turns it down for touching the ends.
+    for flank in (15, 0):
+        parameters = StrFinderParameters(contig_end_flank=flank)
+        assert _find_segments_in_fasta("short", bases, parameters, tmp_path) == [
+            (0, len(bases), "generic", None)
+        ]
+
+
+def test_a_contig_the_fai_lacks_raises_value_error(tmp_path: Path) -> None:
+    fasta = _write_fasta(tmp_path, {"chr1": "ACGT"})
+    with IndexedFasta(fasta) as reference, pytest.raises(ValueError, match="chr2"):
+        list(segment_contig(reference, "chr2"))
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [StrFinderParameters(), _PVC_DEFAULT_CONFIG, _CATALOG_CONFIG],
+    ids=["defaults", "pvc-default", "catalog"],
+)
+def test_the_fixtures_segments_run_from_0_to_each_contigs_length(
+    parameters: StrFinderParameters,
+) -> None:
+    with IndexedFasta(_SYNTHETIC_REF) as reference:
+        for contig in reference.contigs:
+            segments = list(segment_contig(reference, contig, parameters))
+            _check_genome_segments(segments, contig, reference.get_length(contig))
+            assert {segment.region_type for segment in segments} != {RegionType.GENERIC}
+
+
+_PLANTED_MOTIFS = ["A", "C", "AT", "CA", "CAG", "GATA", "AACGT", "AACGTT"]
+
+
+@st.composite
+def _make_contigs_with_repeats(draw: st.DrawFn) -> str:
+    """Random bases with repeats planted in them, some long, some close to each other,
+    some at the contig ends, some with a base changed."""
+    pieces = []
+    for _ in range(draw(st.integers(0, 8))):
+        pieces.append(draw(st.text("ACGTN", min_size=0, max_size=40)))
+        motif = draw(st.sampled_from(_PLANTED_MOTIFS))
+        run = motif * draw(st.integers(2, 70))
+        if draw(st.booleans()):
+            at = draw(st.integers(0, len(run) - 1))
+            run = run[:at] + draw(st.sampled_from("ACGT")) + run[at + 1 :]
+        pieces.append(run)
+    pieces.append(draw(st.text("ACGT", min_size=0, max_size=40)))
+    return "".join(pieces)
+
+
+@settings(max_examples=200, deadline=None)
+@given(bases=_make_contigs_with_repeats(), flank=st.sampled_from([0, 15]))
+def test_the_segments_of_any_contig_run_from_0_to_its_length(bases: str, flank: int) -> None:
+    parameters = StrFinderParameters(contig_end_flank=flank, bundle_distance=10, max_str_len=60)
+    segments = _find_segments(bases, parameters)
+    _check_consecutive([(segment.start, segment.end) for segment in segments], len(bases))
+
+
+def test_four_threads_give_what_one_thread_gives() -> None:
+    with IndexedFasta(_SYNTHETIC_REF) as reference:
+        contigs = reference.contigs * 4
+
+        def find_segments(contig: str) -> list[GenomeSegment]:
+            return list(segment_contig(reference, contig, _CATALOG_CONFIG))
+
+        one_thread = [find_segments(contig) for contig in contigs]
+        assert all(one_thread)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            four_threads = list(pool.map(find_segments, contigs))
+    assert four_threads == one_thread
