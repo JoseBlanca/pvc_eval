@@ -105,18 +105,25 @@ genotypes.
 
 - **Without `--sample-map`**, every name in both headers is a pair, in file A's header order.
 - **With `--sample-map`**, each line of the map is a pair, in the order of its lines. A line has
-  two fields separated by a tab, a sample of A and a sample of B, and no header. A blank line is
-  skipped. A sample may be in several pairs, as one sample of A compared with two replicates in B.
+  two fields separated by a tab, a sample of A and a sample of B, and no header. A line of nothing
+  but spaces and tabs is blank and skipped. The map is read as UTF-8, and a byte-order mark at its
+  start, which spreadsheet programs write, is ignored. Names are compared exactly, spaces
+  included. A sample may be in several pairs, as one sample of A compared with two replicates in B.
 
 These stop the run with a `PvcEvalInputError`, whose message names the file and the line:
+
+- a map that cannot be read: "pairs.tsv does not exist. Check its path and run again.", and
+  likewise for a directory or a file that cannot be opened; a map that is not UTF-8: "pairs.tsv
+  is not UTF-8 text: line 3 cannot be read as UTF-8. Save it as UTF-8 and run again.";
 
 - a line of the map that is not two non-empty fields: "pairs.tsv, line 3: a line holds a sample
   of a.vcf.gz and a sample of b.vcf.gz, separated by a tab, and this one has 1 field. Correct the
   line and run again.", or, for two fields with one empty, "and this one has an empty field";
-- a sample of the map absent from its file: "pairs.tsv, line 3: HG005 is not a sample of
+- a sample of the map absent from its file, the sample of A first when neither is in its file,
+  with the name in quotes so that a space in it shows: "pairs.tsv, line 3: 'HG005' is not a sample of
   b.vcf.gz, whose samples are HG002, HG003, HG004. Correct the name and run again." The list
   names the first 10 samples and then how many more there are; a file with no sample columns
-  gives "HG005 is not a sample of b.vcf.gz, which has no samples.";
+  gives "'HG005' is not a sample of b.vcf.gz, which has no samples.";
 - the same pair on two lines: "pairs.tsv, lines 2 and 5: both pair HG002 of a.vcf.gz with HG002
   of b.vcf.gz, which would give every row twice. Remove one and run again.";
 - a name that appears twice in the header of a file, when a pair needs it, since its genotypes
@@ -125,7 +132,8 @@ These stop the run with a `PvcEvalInputError`, whose message names the file and 
   those of the VCF line, the first sample in column 10, and a name in more than two columns has
   them all: "in 3 columns, 10, 12 and 13";
 - no pair at all: "a.vcf.gz and b.vcf.gz share no sample name. Pair their samples with
-  --sample-map and run again." With a map, "pairs.tsv holds no pair."
+  --sample-map and run again." With a map, "pairs.tsv holds no pair. Add a line for each
+  pair, a sample of a.vcf.gz and a sample of b.vcf.gz separated by a tab, and run again."
 
 The samples of each file that are in no pair are given in one warning per file and are not
 compared: "2 samples of a.vcf.gz are in no sample pair and are not compared: HG003, HG004. Pair

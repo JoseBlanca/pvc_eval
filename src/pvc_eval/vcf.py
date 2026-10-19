@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
-from pvc_eval.errors import PvcEvalInputError
+from pvc_eval.errors import PvcEvalInputError, format_count
 from pvc_eval.fasta import BLOCK_BASES, FastaWindow, IndexedFasta
 
 _logger = logging.getLogger(__name__)
@@ -304,14 +304,14 @@ def _parse_records_in_file_order(
             "%s: skipped %s with symbolic alleles (<DEL>, breakends); pvc_eval does not"
             " compare structural variants.",
             path,
-            _format_count(num_symbolic, "VCF record"),
+            format_count(num_symbolic, "VCF record"),
         )
     if num_not_numbers:
         _logger.warning(
             "%s: took %s that could not be read as a number as absent, as `.` is, in the"
             " quality of the table.",
             path,
-            _format_count(num_not_numbers, "QUAL or GQ value"),
+            format_count(num_not_numbers, "QUAL or GQ value"),
         )
     if num_beyond_reach:
         assert span_limit is not None, "only a limit cuts a span"
@@ -324,7 +324,7 @@ def _parse_records_in_file_order(
             " its REF as its span; another spelling of the same event further along may"
             " fall into another locus and be compared apart.",
             path,
-            _format_count(num_beyond_reach, "VCF record"),
+            format_count(num_beyond_reach, "VCF record"),
             which,
             f"{span_limit:,} {'base' if span_limit == 1 else 'bases'}",
             given,
@@ -425,8 +425,8 @@ def _check_num_samples(fields: list[str], num_samples: int, path: Path, line_num
     num_found = max(len(fields) - _NUM_FIXED_COLUMNS, 0)
     if num_found != num_samples:
         raise PvcEvalInputError(
-            f"{path}, line {line_number}: the line has {_format_count(num_found, 'sample column')},"
-            f" and the #CHROM line names {_format_count(num_samples, 'sample')}. A VCF record has a FORMAT column and"
+            f"{path}, line {line_number}: the line has {format_count(num_found, 'sample column')},"
+            f" and the #CHROM line names {format_count(num_samples, 'sample')}. A VCF record has a FORMAT column and"
             " then one column per sample; correct the line or remove it, and run again."
         )
 
@@ -437,7 +437,7 @@ def _parse_position(fields: list[str], path: Path, line_number: int) -> tuple[st
     if len(fields) < _NUM_FIXED_COLUMNS - 1:
         raise PvcEvalInputError(
             f"{path}, line {line_number}: the line has"
-            f" {_format_count(len(fields), 'tab-separated column')},"
+            f" {format_count(len(fields), 'tab-separated column')},"
             " and a VCF record has at least 8, CHROM to INFO. Check that its columns are"
             " separated by tabs, correct the line or remove it, and run again."
         )
@@ -447,11 +447,6 @@ def _parse_position(fields: list[str], path: Path, line_number: int) -> tuple[st
     if not (pos.isascii() and pos.isdecimal()):
         raise _make_pos_error(pos, path, line_number)
     return fields[0], int(pos)
-
-
-def _format_count(number: int, noun: str) -> str:
-    """A number and its noun, in the singular for 1: "1 sample", "3 samples"."""
-    return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
 
 
 def _make_pos_error(pos: str, path: Path, line_number: int) -> PvcEvalInputError:
