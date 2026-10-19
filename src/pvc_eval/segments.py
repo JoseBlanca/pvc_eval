@@ -6,15 +6,19 @@ VcfRecord.span are.
 
 Public: RegionType, the four types of a segment; GenomeSegment, one segment of a contig;
 StrFinderParameters, the parameters of the finder; segment_contig, the segmented genome of
-one contig.
+one contig; read_str_regions, the STR regions of a --str-regions BED; write_str_regions,
+the BED of the `pvc_eval str-regions` command.
 """
 
 import bisect
 from collections import deque
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, fields
 from enum import Enum
+from importlib.metadata import version
+from pathlib import Path
 
+from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
 
 
@@ -139,10 +143,12 @@ def _check_period_range(min_name: str, max_name: str, parameters: StrFinderParam
 
 def _check_copy_floors(copy_floors: object) -> None:
     """Raise ValueError unless copy_floors is a tuple of six whole numbers, 0 or more."""
-    if not isinstance(copy_floors, tuple) or len(copy_floors) != _MAX_PERIOD:
+    if not isinstance(copy_floors, tuple):
+        raise ValueError(f"copy_floors is {copy_floors!r}; it must be a tuple")  # noqa: TRY004 -- the spec gives ValueError for every value outside its table
+    if len(copy_floors) != _MAX_PERIOD:
         raise ValueError(
-            f"copy_floors is {copy_floors!r}; it must be a tuple of six whole numbers,"
-            " one for each period from 1 to 6"
+            f"copy_floors is {copy_floors!r}; it must be six whole numbers, one for each"
+            " period from 1 to 6"
         )
     for floor in copy_floors:
         if isinstance(floor, bool) or not isinstance(floor, int) or floor < 0:
@@ -880,3 +886,295 @@ def _find_requested_str_regions(
             index += 1
         if index < len(spans) and spans[index][0] < segment.end:
             yield segment
+
+
+# The region types a --str-regions BED may give, by the word of its fourth column
+# (doc/specs/str_finder.md, read_str_regions). A generic region is not an STR region.
+_STR_REGION_TYPES = {
+    region_type.value: region_type
+    for region_type in RegionType
+    if region_type is not RegionType.GENERIC
+}
+_MOTIF_BASES = frozenset("ACGT")
+_BED_HEADER_STARTS = ("#", "track", "browser")  # lines a BED reader skips
+_CORRECT_LINE = " Correct the line or remove it, and run again."
+
+
+def read_str_regions(path: Path, reference: IndexedFasta) -> Iterator[GenomeSegment]:
+    """The STR regions of a BED, one GenomeSegment per line, in the order of the file:
+    the BED `str-regions` writes, or a user's (doc/specs/str_finder.md, read_str_regions).
+    Positions are 0-based and half-open, as in the BED.
+
+    A line of three columns gives region_type None and motif None. A fourth column is the
+    region type, str, str-bundle or satellite, and a fifth the motif, upper-case A, C, G
+    and T for str and `.` for the others; later columns are ignored. Blank lines and lines
+    that start with #, track or browser are skipped.
+
+    Raises PvcEvalInputError, naming the file and the line, when the BED cannot be read, a
+    line has fewer than three columns, a start or end is not a whole number, an end is not
+    after its start, a contig is not in the reference or an end is past its length, a
+    region type is unknown or a motif does not fit it, the BED is not sorted by contig in
+    the order of the reference's `.fai` and then by start, or two regions overlap.
+    """
+    contig_ranks = {contig: rank for rank, contig in enumerate(reference.contigs)}
+    seen_contigs: set[str] = set()
+    previous: tuple[int, GenomeSegment] | None = None
+    for line_number, columns in _read_bed_lines(path):
+        where = f"{path}, line {line_number}"
+        contig, start, end = _parse_bed_region(columns, where, reference)
+        region_type, motif = _parse_type_and_motif(columns[3:5], where)
+        segment = GenomeSegment(contig, start, end, region_type, motif)
+        if previous is not None:
+            _check_str_region_order(previous, segment, where, path, seen_contigs, contig_ranks)
+        seen_contigs.add(contig)
+        previous = (line_number, segment)
+        yield segment
+
+
+def _read_bed_lines(path: Path) -> Iterator[tuple[int, list[str]]]:
+    """The tab-separated columns of each line of a BED that holds a region, with its line
+    number, from 1. Blank lines and lines that start with #, track or browser are skipped.
+
+    Raises PvcEvalInputError when the file is missing, a directory, not readable or not
+    UTF-8.
+    """
+    line_number = 0
+    try:
+        with path.open(encoding="utf-8") as bed:
+            for line_number, line in enumerate(bed, start=1):
+                text = line.rstrip("\r\n")
+                if text and not text.startswith(_BED_HEADER_STARTS):
+                    yield line_number, text.split("\t")
+    except FileNotFoundError:
+        raise PvcEvalInputError(f"{path} does not exist. Check its path and run again.") from None
+    except IsADirectoryError:
+        raise PvcEvalInputError(
+            f"{path} is a directory, not a BED file. Check its path and run again."
+        ) from None
+    except PermissionError:
+        raise PvcEvalInputError(
+            f"{path} cannot be read: permission denied. Allow reading it and run again."
+        ) from None
+    except UnicodeDecodeError as err:
+        raise PvcEvalInputError(
+            f"{path} is not UTF-8 text: a byte at or after line {line_number + 1} cannot be"
+            f" read as UTF-8. If it is compressed, decompress it with `gunzip -c {path} >"
+            " file.bed`, give file.bed instead, and run again."
+        ) from err
+
+
+def _parse_bed_region(
+    columns: Sequence[str], where: str, reference: IndexedFasta
+) -> tuple[str, int, int]:
+    """The contig, start and end of a BED line, 0-based and half-open, checked against
+    the reference. where names the file and the line, for the message.
+
+    Raises PvcEvalInputError for fewer than three columns, a start or end that is not a
+    whole number, an end not after its start, a contig not in the reference and an end
+    past the contig's length.
+    """
+    if len(columns) < 3:
+        noun = "column" if len(columns) == 1 else "columns"
+        raise PvcEvalInputError(
+            f"{where} has {len(columns)} tab-separated {noun}, and a BED line needs at least"
+            f" three: contig, start and end.{_CORRECT_LINE}"
+        )
+    contig = columns[0]
+    start = _parse_bed_position("start", columns[1], where)
+    end = _parse_bed_position("end", columns[2], where)
+    if end <= start:
+        raise PvcEvalInputError(
+            f"{where}: the end, {end}, is not after the start, {start}, and a region holds at"
+            f" least one base.{_CORRECT_LINE}"
+        )
+    if contig not in reference.contigs:
+        raise PvcEvalInputError(
+            f"{where}: contig {contig} is not in the reference. Use the reference the BED was"
+            f" made for, or remove the lines of {contig}, and run again."
+        )
+    length = reference.get_length(contig)
+    if end > length:
+        raise PvcEvalInputError(
+            f"{where}: the end, {end}, is past the end of {contig}, which has {length} bases in"
+            " the reference. Use the reference the BED was made for, or correct the line, and"
+            " run again."
+        )
+    return contig, start, end
+
+
+def _parse_bed_position(name: str, column: str, where: str) -> int:
+    """A start or end of a BED line, a whole number of 0 or more."""
+    if not (column.isascii() and column.isdecimal()):
+        raise PvcEvalInputError(
+            f"{where}: the {name} is '{column}', and it must be a whole number of 0 or"
+            f" more.{_CORRECT_LINE}"
+        )
+    return int(column)
+
+
+def _parse_type_and_motif(
+    columns: Sequence[str], where: str
+) -> tuple[RegionType | None, str | None]:
+    """The region type and the motif of a --str-regions BED line, from its fourth and fifth
+    columns, those given of the two: None and None when it has neither, and a motif of None
+    for every type but str.
+
+    Raises PvcEvalInputError for an unknown type, a str without a motif of 1 to 6
+    upper-case bases, and another type with a fifth column that is not `.`.
+    """
+    if not columns:
+        return None, None
+    type_column = columns[0]
+    region_type = _STR_REGION_TYPES.get(type_column)
+    if region_type is None:
+        raise PvcEvalInputError(
+            f"{where}: the region type is '{type_column}', and it must be str, str-bundle or"
+            " satellite. Make the BED with `pvc_eval str-regions`, or correct the line, and"
+            " run again."
+        )
+    motif = columns[1] if len(columns) > 1 else None
+    if region_type is not RegionType.STR:
+        if motif is not None and motif != ".":
+            raise PvcEvalInputError(
+                f"{where}: a region of type {type_column} has no motif, and its fifth column is"
+                f" '{motif}'. Put '.' there, and run again."
+            )
+        return region_type, None
+    if motif is None:
+        raise PvcEvalInputError(
+            f"{where}: an STR segment, of type str, needs its motif in the fifth column: 1 to"
+            " 6 bases of A, C, G and T, in upper case. Add it, and run again."
+        )
+    if not (1 <= len(motif) <= _MAX_PERIOD and set(motif) <= _MOTIF_BASES):
+        raise PvcEvalInputError(
+            f"{where}: the motif of an STR segment is '{motif}', and it must be 1 to 6 bases"
+            " of A, C, G and T, in upper case. Correct it, and run again."
+        )
+    return region_type, motif
+
+
+def _check_str_region_order(
+    previous: tuple[int, GenomeSegment],
+    segment: GenomeSegment,
+    where: str,
+    path: Path,
+    seen_contigs: set[str],
+    contig_ranks: Mapping[str, int],
+) -> None:
+    """Raise PvcEvalInputError unless a region of a --str-regions BED comes after the one
+    before it: on a later contig of the `.fai` that has had no line yet, or on the same
+    contig, starting at or after the end of the one before (doc/spec.md §4)."""
+    previous_line, before = previous
+    sort = (
+        " Sort it by contig, in the order of the reference's .fai, and by start, for example"
+        f" with `bedtools sort -faidx <the reference's .fai> -i {path}`, and run again."
+    )
+    if segment.contig != before.contig:
+        if segment.contig in seen_contigs:
+            raise PvcEvalInputError(
+                f"{where}: the lines of {segment.contig} are not all together; this one comes"
+                f" after lines of {before.contig}.{sort}"
+            )
+        if contig_ranks[segment.contig] < contig_ranks[before.contig]:
+            raise PvcEvalInputError(
+                f"{where}: contig {segment.contig} comes after {before.contig}, and the"
+                f" reference's .fai puts {segment.contig} before it.{sort}"
+            )
+        return
+    if segment.start < before.start:
+        raise PvcEvalInputError(
+            f"{where}: the start, {segment.start}, is before the start, {before.start}, of line"
+            f" {previous_line} on {segment.contig}.{sort}"
+        )
+    if segment.start < before.end:
+        raise PvcEvalInputError(
+            f"{where}: the region {segment.contig} {segment.start} {segment.end} overlaps the"
+            f" one of line {previous_line}, {before.contig} {before.start} {before.end}, and"
+            f" STR regions must not overlap. Merge them with `bedtools merge -i {path}`, which"
+            " keeps three columns, and run again."
+        )
+
+
+def _parse_requested_regions(path: Path, reference: IndexedFasta) -> dict[str, list[_Span]]:
+    """The regions of a --regions BED, by contig, each `(start, end)`, 0-based and
+    half-open, in the order of the file, which need not be sorted. Columns after the third
+    are ignored.
+
+    Raises PvcEvalInputError, naming the file and the line, as _read_bed_lines and
+    _parse_bed_region do.
+    """
+    requested: dict[str, list[_Span]] = {}
+    for line_number, columns in _read_bed_lines(path):
+        contig, start, end = _parse_bed_region(columns, f"{path}, line {line_number}", reference)
+        requested.setdefault(contig, []).append((start, end))
+    return requested
+
+
+def write_str_regions(
+    reference: IndexedFasta,
+    output: Path,
+    parameters: StrFinderParameters,
+    regions: Path | None,
+) -> None:
+    """Write the BED of `pvc_eval str-regions` (doc/specs/str_finder.md, "The str-regions
+    command"): a ## line for pvc_eval's version and one for each parameter, a #chrom line,
+    and one row per STR region, contig, start, end, type and motif (`.` but for str),
+    0-based and half-open, in the order of the `.fai` and then by start.
+
+    Every contig of the `.fai` is segmented whole, or with a --regions BED only the contigs
+    it names, and then only the STR regions that overlap one of its regions by at least
+    one base are written, each whole. The BED is written to `<output>.tmp` and renamed to
+    output when complete; a run that stops removes the `.tmp` and leaves output as it was.
+
+    Raises PvcEvalInputError, naming the file and the line, for a --regions BED that cannot
+    be read, a line of it with fewer than three columns, a start or end that is not a whole
+    number, an end not after its start, a contig the reference lacks or an end past its
+    length; and for a byte of the FASTA that is not a letter and an output whose directory
+    does not exist.
+    """
+    requested = None if regions is None else _parse_requested_regions(regions, reference)
+    temporary = Path(f"{output}.tmp")
+    try:
+        bed = temporary.open("w", encoding="utf-8")
+    except FileNotFoundError:
+        raise PvcEvalInputError(
+            f"{output} cannot be written: its directory, {output.parent}, does not exist. Make"
+            " it, or give another --output, and run again."
+        ) from None
+    try:
+        with bed:
+            bed.writelines(_format_str_regions_header(parameters))
+            for contig in reference.contigs:
+                if requested is not None and contig not in requested:
+                    continue
+                # Without --regions, the whole contig is the one span requested.
+                spans = (
+                    [(0, reference.get_length(contig))] if requested is None else requested[contig]
+                )
+                segments = segment_contig(reference, contig, parameters)
+                str_regions = _find_requested_str_regions(segments, spans)
+                bed.writelines(_format_str_region(segment) for segment in str_regions)
+        temporary.replace(output)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _format_str_regions_header(parameters: StrFinderParameters) -> list[str]:
+    """The lines before the rows of the `str-regions` BED, each with its line end."""
+    lines = [f"##pvc_eval str-regions {version('pvc-eval')}\n"]
+    for field in fields(parameters):
+        value = getattr(parameters, field.name)
+        shown = ",".join(map(str, value)) if isinstance(value, tuple) else str(value)
+        lines.append(f"##{field.name}: {shown}\n")
+    lines.append("#chrom\tstart\tend\ttype\tmotif\n")
+    return lines
+
+
+def _format_str_region(segment: GenomeSegment) -> str:
+    """One row of the `str-regions` BED, with its line end."""
+    assert segment.region_type is not None  # segment_contig gives every segment a type
+    motif = "." if segment.motif is None else segment.motif
+    return (
+        f"{segment.contig}\t{segment.start}\t{segment.end}\t{segment.region_type.value}\t{motif}\n"
+    )
