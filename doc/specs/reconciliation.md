@@ -111,21 +111,26 @@ These stop the run with a `PvcEvalInputError`, whose message names the file and 
 
 - a line of the map that is not two non-empty fields: "pairs.tsv, line 3: a line holds a sample
   of a.vcf.gz and a sample of b.vcf.gz, separated by a tab, and this one has 1 field. Correct the
-  line and run again.";
+  line and run again.", or, for two fields with one empty, "and this one has an empty field";
 - a sample of the map absent from its file: "pairs.tsv, line 3: HG005 is not a sample of
-  b.vcf.gz, whose samples are HG002, HG003, HG004. Correct the name and run again.";
+  b.vcf.gz, whose samples are HG002, HG003, HG004. Correct the name and run again." The list
+  names the first 10 samples and then how many more there are; a file with no sample columns
+  gives "HG005 is not a sample of b.vcf.gz, which has no samples.";
 - the same pair on two lines: "pairs.tsv, lines 2 and 5: both pair HG002 of a.vcf.gz with HG002
   of b.vcf.gz, which would give every row twice. Remove one and run again.";
 - a name that appears twice in the header of a file, when a pair needs it, since its genotypes
   could be either column (VCF 4.3 §1.5 does not allow duplicate sample names): "a.vcf.gz names the
-  sample HG002 in two columns, 10 and 12. Rename one of them and run again.";
+  sample HG002 in two columns, 10 and 12. Rename one of them and run again." The columns are
+  those of the VCF line, the first sample in column 10, and a name in more than two columns has
+  them all: "in 3 columns, 10, 12 and 13";
 - no pair at all: "a.vcf.gz and b.vcf.gz share no sample name. Pair their samples with
   --sample-map and run again." With a map, "pairs.tsv holds no pair."
 
 The samples of each file that are in no pair are given in one warning per file and are not
 compared: "2 samples of a.vcf.gz are in no sample pair and are not compared: HG003, HG004. Pair
 them with --sample-map to compare them." With a map, the advice is to add them to it. The warning
-names the first 10 and then says how many more there are.
+names each sample once, a name that fills two columns too, the first 10 of them, and then says
+how many more there are.
 
 ## 4. Reconciliation
 
