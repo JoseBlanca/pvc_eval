@@ -9,7 +9,6 @@ positions 1-based and inclusive; the loci here are 0-based and half-open, so the
 """
 
 from collections.abc import Iterator
-from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
@@ -26,21 +25,14 @@ FIRST_RECORD_LINE = 3  # the line of a VCF record that follows the two lines of 
 HOMOZYGOUS_ALT = VcfGenotype(alleles=(1, 1), phased=False, phase_set=None, quality=None)
 
 
-@pytest.fixture
-def reference_stack() -> Iterator[ExitStack]:
-    """Closes the references a test opens, at its end."""
-    with ExitStack() as stack:
-        yield stack
-
-
-def open_reference(tmp_path: Path, stack: ExitStack, sequence: str) -> IndexedFasta:
-    """An IndexedFasta of one contig, chr1, written on one line in tmp_path with the .fai
-    `samtools faidx` writes for it."""
+def write_reference(tmp_path: Path, sequence: str) -> Path:
+    """Writes a FASTA of one contig, chr1, on one line, as tmp_path/ref.fa, and beside it
+    the .fai `samtools faidx` writes for it; returns the FASTA's path."""
     path = tmp_path / "ref.fa"
     path.write_text(f">chr1\n{sequence}\n", encoding="utf-8")
     fai = f"chr1\t{len(sequence)}\t6\t{len(sequence)}\t{len(sequence) + 1}\n"
     Path(f"{path}.fai").write_text(fai, encoding="utf-8")
-    return stack.enter_context(IndexedFasta(path))
+    return path
 
 
 def write_vcf(tmp_path: Path, name: str, lines: list[str]) -> Path:
@@ -134,26 +126,28 @@ TRADED_B_DELETION = make_record(7, ("AC", "A"), (7, 9), 1)
     ids=["one_locus_at_1", "two_loci_at_0"],
 )
 def test_traded_events_read_from_vcf_share_a_locus_from_a_chain_distance_of_one(
-    tmp_path: Path, reference_stack: ExitStack, chain_distance: int, expected: list[Locus]
+    tmp_path: Path, chain_distance: int, expected: list[Locus]
 ) -> None:
-    reference = open_reference(tmp_path, reference_stack, TRADED_REFERENCE)
-
-    loci = find_loci(
-        tmp_path, reference, TRADED_LINES_A, TRADED_LINES_B, chain_distance=chain_distance
-    )
+    with IndexedFasta(write_reference(tmp_path, TRADED_REFERENCE)) as reference:
+        loci = find_loci(
+            tmp_path, reference, TRADED_LINES_A, TRADED_LINES_B, chain_distance=chain_distance
+        )
 
     assert loci == expected
 
 
 def test_deletion_that_can_slide_right_shares_a_locus_with_the_record_it_slides_onto(
-    tmp_path: Path, reference_stack: ExitStack
+    tmp_path: Path,
 ) -> None:
     # The second case of doc/spec.md §5.2, reference 20-27 GCAGAGTC: A's `21 CAG C` spans
     # 21-25, since the AG at 22-23 repeats at 24-25, and so reaches B's `24 AGT C` at 24-26.
     # At a chain distance of 0 only the span joins them.
-    reference = open_reference(tmp_path, reference_stack, "T" * 19 + "GCAGAGTC" + "T" * 4)
+    fasta = write_reference(tmp_path, "T" * 19 + "GCAGAGTC" + "T" * 4)
 
-    loci = find_loci(tmp_path, reference, ["21 CAG C", "26 T C"], ["24 AGT C"], chain_distance=0)
+    with IndexedFasta(fasta) as reference:
+        loci = find_loci(
+            tmp_path, reference, ["21 CAG C", "26 T C"], ["24 AGT C"], chain_distance=0
+        )
 
     deletion_a = make_record(20, ("CAG", "C"), (20, 25), 0)
     snp_a = make_record(25, ("T", "C"), (25, 26), 1)
@@ -162,14 +156,15 @@ def test_deletion_that_can_slide_right_shares_a_locus_with_the_record_it_slides_
 
 
 def test_insertion_shares_a_locus_with_a_record_on_the_base_after_its_anchor(
-    tmp_path: Path, reference_stack: ExitStack
+    tmp_path: Path,
 ) -> None:
     # The third case of doc/spec.md §5.2, reference 10-11 CG: A's `10 C CT` cannot slide and
     # still spans 10-11, the base after its anchor, which B's `11 G TA` at 11 is on. At a
     # chain distance of 0 only the span joins them.
-    reference = open_reference(tmp_path, reference_stack, "A" * 9 + "CG" + "A" * 4)
+    fasta = write_reference(tmp_path, "A" * 9 + "CG" + "A" * 4)
 
-    loci = find_loci(tmp_path, reference, ["10 C CT", "11 G A"], ["11 G TA"], chain_distance=0)
+    with IndexedFasta(fasta) as reference:
+        loci = find_loci(tmp_path, reference, ["10 C CT", "11 G A"], ["11 G TA"], chain_distance=0)
 
     insertion_a = make_record(9, ("C", "CT"), (9, 11), 0)
     snp_a = make_record(10, ("G", "A"), (10, 11), 1)
@@ -184,25 +179,25 @@ AT_REPEAT_REFERENCE = "GCGTCAGCTGCAGTCCGTGAGCATG" + "AT" * 10 + "CGGTACCTGAGGCTC
 
 
 def test_insertion_before_an_at_repeat_found_by_segment_contig_holds_the_repeat(
-    tmp_path: Path, reference_stack: ExitStack
+    tmp_path: Path,
 ) -> None:
     # Read with getattr while segment_contig is on the branch str-finder only, so that this
     # module imports without it.
     segment_contig = getattr(segments, "segment_contig", None)
     if segment_contig is None:
         pytest.skip("segment_contig is not in pvc_eval.segments yet")
-    reference = open_reference(tmp_path, reference_stack, AT_REPEAT_REFERENCE)
 
     # `25 G GAT` inserts AT after the G at 25, before the repeat, and slides right through
     # it: its span runs from its anchor to the C after the repeat, 25-46.
-    loci = find_loci(
-        tmp_path,
-        reference,
-        ["25 G GAT"],
-        [],
-        segments_of_chr1=segment_contig(reference, "chr1"),
-        chain_distance=0,
-    )
+    with IndexedFasta(write_reference(tmp_path, AT_REPEAT_REFERENCE)) as reference:
+        loci = find_loci(
+            tmp_path,
+            reference,
+            ["25 G GAT"],
+            [],
+            segments_of_chr1=segment_contig(reference, "chr1"),
+            chain_distance=0,
+        )
 
     insertion_a = make_record(24, ("G", "GAT"), (24, 46), 0)
     at_repeat = GenomeSegment("chr1", 25, 45, RegionType.STR, "AT")
