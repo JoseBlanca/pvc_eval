@@ -15,7 +15,6 @@ from pvc_eval.errors import PvcEvalInputError
 
 GZIP_MAGIC = b"\x1f\x8b"  # the first two bytes of a gzip or bgzip file
 NUM_FAI_COLUMNS = 5  # name, length, offset, bases per line, bytes per line
-LINE_END_BYTES = b"\r\n"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -92,28 +91,28 @@ class IndexedFasta:
         if start == end:
             return ""
         first_byte = fai_line.byte_of(start)
-        raw = os.pread(self._fd, fai_line.byte_of(end - 1) + 1 - first_byte, first_byte)
-        # Pad the first line to a whole one, so that every line of the region starts at a
-        # multiple of the bytes per line, and its line end follows its bases.
-        padding = start % fai_line.line_bases
-        padded = b"N" * padding + raw
-        lines = (
-            padded[line_start : line_start + fai_line.line_bases]
-            for line_start in range(0, len(padded), fai_line.line_bytes)
-        )
-        region = b"".join(lines)[padding:]
-        where = f"{self.path}: the bases of {contig}:{start + 1}-{end}"
-        if len(region) != end - start or any(byte in region for byte in LINE_END_BYTES):
-            raise PvcEvalInputError(
-                f"{where} are not where its .fai, line {fai_line.line_number}, says."
-                f" Make the .fai again with `samtools faidx {self.path}` and run again."
+        num_bytes = fai_line.byte_of(end - 1) + 1 - first_byte
+        fasta_bytes = os.pread(self._fd, num_bytes, first_byte)
+        # fasta_bytes is shorter only when the FASTA was cut short after it was opened,
+        # and then the region stays empty, which isalpha takes as not letters.
+        region = bytearray()
+        if len(fasta_bytes) == num_bytes:
+            region = _drop_line_ends(
+                fasta_bytes, start % fai_line.line_bases, end - start, fai_line
             )
-        if not region.isascii():
+        del fasta_bytes  # so that at most two copies of the region are held at once
+        # A byte that is not a letter, or a line end where the .fai puts a base: the .fai
+        # was made for another FASTA. isalpha is true only for ASCII letters.
+        if not region.isalpha():
             raise PvcEvalInputError(
-                f"{where} hold a byte that is not ASCII, where a FASTA holds only letters."
-                " Check that it is a FASTA file, and run again."
+                f"{self.path}: the bytes of {contig}:{start + 1}-{end} that its .fai, line"
+                f" {fai_line.line_number}, gives are not all letters. Make the .fai again with"
+                f" `samtools faidx {self.path}`, check that the FASTA holds only letters"
+                " between its header lines, and run again."
             )
-        return region.decode("ascii").upper()
+        upper_region = region.upper()
+        del region
+        return upper_region.decode("ascii")
 
     def close(self) -> None:
         """Close the FASTA. A read after this raises OSError."""
@@ -205,3 +204,26 @@ def _parse_fai_line(line: str, line_number: int, where: str, remedy: str) -> tup
         line_bytes=line_bytes,
         line_number=line_number,
     )
+
+
+def _drop_line_ends(
+    fasta_bytes: bytes, first_column: int, num_bases: int, fai_line: _FaiLine
+) -> bytearray:
+    """The bases of fasta_bytes, which start at first_column of a line, without line ends.
+
+    The bytes the .fai says hold line ends are dropped without being looked at; a line end
+    elsewhere is left in the bases, for the caller to find.
+    """
+    region = bytearray(num_bases)
+    line_end_bytes = fai_line.line_bytes - fai_line.line_bases
+    with memoryview(fasta_bytes) as source, memoryview(region) as target:
+        source_at = 0
+        target_at = 0
+        line_bases = fai_line.line_bases - first_column
+        while target_at < num_bases:
+            num_copied = min(line_bases, num_bases - target_at)
+            target[target_at : target_at + num_copied] = source[source_at : source_at + num_copied]
+            target_at += num_copied
+            source_at += num_copied + line_end_bytes
+            line_bases = fai_line.line_bases
+    return region
