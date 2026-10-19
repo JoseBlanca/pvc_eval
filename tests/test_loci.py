@@ -313,6 +313,18 @@ def test_a_satellite_on_the_next_contig_widens_no_reach_on_this_one() -> None:
     assert loci == [make_locus(9, 10, (first,)), make_locus(399, 400, (second,))]
 
 
+def test_a_record_with_no_alt_over_an_str_region_is_kept_until_a_record_pulls_it_in() -> None:
+    # No record touches the region at 15-40 when the record with no ALT at 20-22 is
+    # passed; the SNP at 40 touches it at its end, and its locus covers the record.
+    no_alt = make_no_alt(20, 2, line_number=1)
+    snp = make_snp(40, line_number=2)
+    region = make_region(15, 40)
+
+    loci = run_build_loci((no_alt, snp), (), (region,))
+
+    assert loci == [make_locus(15, 41, (no_alt, snp), (), (region,))]
+
+
 def test_an_str_region_at_the_start_of_the_next_contig_is_not_dropped() -> None:
     snp_chr1 = make_snp(29, contig="chr1", line_number=1)
     region_chr2 = make_region(0, 20, contig="chr2")
