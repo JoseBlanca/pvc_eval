@@ -10,13 +10,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from pvc_eval.errors import PvcEvalInputError
+from pvc_eval.errors import PvcEvalInputError, format_count
 from pvc_eval.vcf import parse_vcf_samples
 
 _logger = logging.getLogger(__name__)
 
 # The column of a VCF line, counted from 1, that holds the first sample: after the nine of
-# CHROM to FORMAT (VCF 4.3 §1.5).
+# CHROM to FORMAT (VCF 4.3 §1.5), which vcf.py counts as _NUM_FIXED_COLUMNS.
 _FIRST_SAMPLE_COLUMN = 10
 # How many samples a message names before it counts the rest (§3).
 _NAMES_IN_MESSAGE = 10
@@ -213,10 +213,8 @@ def _make_absent_error(
 def _make_fields_error(
     sample_map: Path, line_number: int, fields: Sequence[str], path_a: Path, path_b: Path
 ) -> PvcEvalInputError:
-    if len(fields) == 2:
-        how_many = "an empty field"
-    else:
-        how_many = f"{len(fields)} field" if len(fields) == 1 else f"{len(fields)} fields"
+    # Two fields are refused only when one is empty.
+    how_many = "an empty field" if len(fields) == 2 else format_count(len(fields), "field")
     return PvcEvalInputError(
         f"{sample_map}, line {line_number}: a line holds a sample of {path_a} and a sample"
         f" of {path_b}, separated by a tab, and this one has {how_many}. Correct the line and"
@@ -238,15 +236,15 @@ def _make_unpaired_warning(
     if not unpaired_names:
         return None
     if len(unpaired_names) == 1:
-        samples, verb, them = "1 sample", "is", "it"
+        verb, them = "is", "it"
     else:
-        samples, verb, them = f"{len(unpaired_names)} samples", "are", "them"
+        verb, them = "are", "them"
     if sample_map is None:
         advice = f"Pair {them} with --sample-map to compare {them}."
     else:
         advice = f"Add {them} to {sample_map} to compare {them}."
     return (
-        f"{samples} of {path} {verb} in no sample pair and {verb} not compared:"
+        f"{format_count(len(unpaired_names), 'sample')} of {path} {verb} in no sample pair and {verb} not compared:"
         f" {_format_names(unpaired_names)}. {advice}"
     )
 
