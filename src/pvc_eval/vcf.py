@@ -187,7 +187,10 @@ def _read_alts(alt_field: str) -> tuple[str, ...]:
 
 
 def _is_symbolic(alt: str) -> bool:
-    return alt.startswith("<") or "[" in alt or "]" in alt
+    """A symbolic ALT (`<DEL>`), a breakend (`A]chr2:20]`) or a single breakend of VCF 4.3
+    (`A.`, `.A`); `.` alone is no ALT at all."""
+    is_single_breakend = len(alt) > 1 and (alt.startswith(".") or alt.endswith("."))
+    return alt.startswith("<") or "[" in alt or "]" in alt or is_single_breakend
 
 
 def _parse_record(

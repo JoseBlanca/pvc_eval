@@ -123,18 +123,27 @@ def test_contig_missing_from_the_reference_stops_the_run(tmp_path: Path) -> None
         list(read_vcf_records(path, CONTIGS))
 
 
+@pytest.mark.parametrize(
+    "alt",
+    ["<DEL>", "A]chr2:20]", "[chr2:20[A", "A.", ".A"],
+    ids=[
+        "symbolic",
+        "breakend_right",
+        "breakend_left",
+        "single_breakend_right",
+        "single_breakend_left",
+    ],
+)
 def test_symbolic_alleles_are_skipped_and_counted(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, alt: str
 ) -> None:
     path = write_vcf(
         tmp_path,
-        "chr1\t5\t.\tA\t<DEL>\t.\t.\t.\tGT\t0/1\t0/1\n"
-        "chr1\t6\t.\tA\tA]chr2:20]\t.\t.\t.\tGT\t0/1\t0/1\n"
-        "chr1\t7\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+        f"chr1\t5\t.\tA\t{alt}\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t7\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
     )
 
     with caplog.at_level(logging.WARNING):
         records = list(read_vcf_records(path, CONTIGS))
 
-    assert [record.start for record in records] == [6]
-    assert "2 VCF records with symbolic alleles" in caplog.text
+    assert [(record.start, record.alleles) for record in records] == [(6, ("A", "T"))]
+    assert "1 VCF records with symbolic alleles" in caplog.text
