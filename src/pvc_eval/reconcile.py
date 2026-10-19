@@ -23,6 +23,7 @@ from pvc_eval.vcf import (
     MALFORMED_GT,
     MISSING,
     OTHER_PLOIDY_GT,
+    Span,
     VcfGenotype,
     VcfRecord,
 )
@@ -63,23 +64,30 @@ class ReconciledLocus:
     results_b: Mapping[int, SampleResult]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class _Edit:
     """What one VCF allele does to the reference: replace `[start, end)`, 0-based and
     half-open, with bases. An insertion has end equal to start, and goes in before start;
-    a deletion has no bases."""
+    a deletion has no bases.
+
+    covered: the positions on which the edit covers a `*`, 0-based and half-open (§4.2):
+        for a deletion, those its placements delete; for another edit that replaces
+        positions, those; None for an insertion, which replaces none.
+    """
 
     start: int
     end: int
     bases: str
+    covered: Span | None
 
     @property
     def is_insertion(self) -> bool:
         return self.start == self.end
 
-    @property
-    def is_deletion(self) -> bool:
-        return not self.bases and self.end > self.start
+
+# The edit of each VCF allele of a record, by the allele's index: None for REF, for an
+# allele that spells REF and for `*`.
+type _RecordEdits = tuple[_Edit | None, ...]
 
 
 def reconcile(
@@ -120,10 +128,12 @@ def reconcile(
     results: list[dict[int, SampleResult]] = []
     for file_name, records, sample_indices, ploidy in files:
         _check_genotype_ploidy(records, sample_indices, ploidy, file_name)
+        # Made once for the locus, and read by every haplotype of every sample.
+        edits = [_make_record_edits(vcf_record, locus.start, locus_bases) for vcf_record in records]
         file_results: dict[int, SampleResult] = {}
         for sample_index in sample_indices:
             result = _find_sample_result(
-                locus, locus_bases, records, sample_index, ploidy, phasing_cap
+                locus.start, locus_bases, records, edits, sample_index, ploidy, phasing_cap
             )
             if isinstance(result, list):
                 result = _index_locus_genotypes(result, locus_alleles)
@@ -216,9 +226,10 @@ def _check_genotype_ploidy(
 
 
 def _find_sample_result(
-    locus: Locus,
+    locus_start: int,
     locus_bases: str,
     records: Sequence[VcfRecord],
+    edits: Sequence[_RecordEdits],
     sample_index: int,
     ploidy: int,
     phasing_cap: int,
@@ -240,7 +251,7 @@ def _find_sample_result(
         return TOO_COMPLEX
     locus_genotypes: list[_SequenceGenotype] = []
     for haplotypes in _make_assignments(vcf_genotypes, block_of_record, ploidy):
-        locus_genotype = _make_locus_genotype(locus, locus_bases, records, haplotypes)
+        locus_genotype = _make_locus_genotype(locus_start, locus_bases, records, edits, haplotypes)
         if locus_genotype is not None:
             locus_genotypes.append(locus_genotype)
     if not locus_genotypes:
@@ -298,16 +309,17 @@ def _make_assignments(
 
 
 def _make_locus_genotype(
-    locus: Locus,
+    locus_start: int,
     locus_bases: str,
     records: Sequence[VcfRecord],
+    edits: Sequence[_RecordEdits],
     haplotypes: Iterable[_Haplotype],
 ) -> _SequenceGenotype | None:
     """The locus allele of each haplotype of an assignment, or None when one of them is
     impossible."""
     locus_genotype = []
     for haplotype in haplotypes:
-        locus_allele = _make_locus_allele(locus, locus_bases, records, haplotype)
+        locus_allele = _make_locus_allele(locus_start, locus_bases, records, edits, haplotype)
         if locus_allele is None:
             return None
         locus_genotype.append(locus_allele)
@@ -315,32 +327,48 @@ def _make_locus_genotype(
 
 
 def _make_locus_allele(
-    locus: Locus, locus_bases: str, records: Sequence[VcfRecord], haplotype: _Haplotype
+    locus_start: int,
+    locus_bases: str,
+    records: Sequence[VcfRecord],
+    edits: Sequence[_RecordEdits],
+    haplotype: _Haplotype,
 ) -> str | MISSING | None:
     """A haplotype's locus allele (§4.2): None when it is impossible, MISSING when it is
     missing at a record, and otherwise the reference over the locus with its edits."""
-    edits = []
+    carried_edits = []
     star_records = []
-    for vcf_record, allele_index in zip(records, haplotype, strict=True):
+    for vcf_record, record_edits, allele_index in zip(records, edits, haplotype, strict=True):
         if allele_index is MISSING:
             continue
         if vcf_record.alleles[allele_index] == _SPANNING_DELETION:
             star_records.append(vcf_record)
             continue
-        edit = _make_edit(vcf_record, allele_index)
+        edit = record_edits[allele_index]
         if edit is not None:
-            edits.append(edit)
-    if _has_collision(edits):
+            carried_edits.append(edit)
+    if _has_collision(carried_edits):
         return None
     for star_record in star_records:
-        if not _is_star_covered(star_record, locus, locus_bases, records, haplotype):
+        if not _is_star_covered(star_record, records, edits, haplotype):
             return None
     if any(allele_index is MISSING for allele_index in haplotype):
         return MISSING
-    return _apply_edits(locus.start, locus_bases, edits)
+    return _apply_edits(locus_start, locus_bases, carried_edits)
 
 
-def _make_edit(vcf_record: VcfRecord, allele_index: int) -> _Edit | None:
+def _make_record_edits(vcf_record: VcfRecord, locus_start: int, locus_bases: str) -> _RecordEdits:
+    """The edit of each VCF allele of a record, by its index (see _RecordEdits)."""
+    return tuple(
+        None
+        if allele_index == 0 or allele == _SPANNING_DELETION
+        else _make_edit(vcf_record, allele_index, locus_start, locus_bases)
+        for allele_index, allele in enumerate(vcf_record.alleles)
+    )
+
+
+def _make_edit(
+    vcf_record: VcfRecord, allele_index: int, locus_start: int, locus_bases: str
+) -> _Edit | None:
     """The edit of a VCF allele that is not `*`, or None when it spells REF: what is left
     of REF and of the allele once the bases they share are removed from the left and then
     from the right (§4.2)."""
@@ -352,7 +380,13 @@ def _make_edit(vcf_record: VcfRecord, allele_index: int) -> _Edit | None:
     if not ref and not alt:
         return None
     start = vcf_record.start + num_prefix
-    return _Edit(start, start + len(ref), alt)
+    end = start + len(ref)
+    covered: Span | None = (start, end)
+    if not ref:
+        covered = None
+    elif not alt:
+        covered = _find_placements(start, end, vcf_record.span, locus_start, locus_bases)
+    return _Edit(start=start, end=end, bases=alt, covered=covered)
 
 
 def _count_shared(first: str, second: str) -> int:
@@ -386,9 +420,8 @@ def _do_collide(first: _Edit, second: _Edit) -> bool:
 
 def _is_star_covered(
     star_record: VcfRecord,
-    locus: Locus,
-    locus_bases: str,
     records: Sequence[VcfRecord],
+    edits: Sequence[_RecordEdits],
     haplotype: _Haplotype,
 ) -> bool:
     """Whether a `*` the haplotype carries is covered (§4.2): a deletion covers it when one
@@ -396,40 +429,29 @@ def _is_star_covered(
     as written, it replaces one. The edits that count are those of the alleles the
     haplotype carries at the other records, and every ALT of a record where it is
     MISSING, since it might carry that one."""
-    for vcf_record, allele_index in zip(records, haplotype, strict=True):
+    for vcf_record, record_edits, allele_index in zip(records, edits, haplotype, strict=True):
         if vcf_record is star_record:
             continue
-        if allele_index is MISSING:
-            allele_indices = range(1, len(vcf_record.alleles))
-        else:
-            allele_indices = range(allele_index, allele_index + 1)
-        for candidate in allele_indices:
-            if vcf_record.alleles[candidate] == _SPANNING_DELETION:
+        candidates = record_edits[1:] if allele_index is MISSING else (record_edits[allele_index],)
+        for edit in candidates:
+            if edit is None or edit.covered is None:
                 continue
-            edit = _make_edit(vcf_record, candidate)
-            # An insertion replaces no position, so it covers no `*`.
-            if edit is None or edit.is_insertion:
-                continue
-            start, end = edit.start, edit.end
-            if edit.is_deletion:
-                start, end = _find_placements(edit, vcf_record.span, locus.start, locus_bases)
+            start, end = edit.covered
             if start < star_record.end and star_record.start < end:
                 return True
     return False
 
 
-def _find_placements(
-    deletion: _Edit, span: tuple[int, int], locus_start: int, locus_bases: str
-) -> tuple[int, int]:
-    """The positions the placements of a deletion delete, together, 0-based and
-    half-open: where it was written and every slide along the reference that deletes only
+def _find_placements(start: int, end: int, span: Span, locus_start: int, locus_bases: str) -> Span:
+    """The positions the placements of the deletion of `[start, end)` delete, together,
+    0-based and half-open: where it was written and every slide along the reference that deletes only
     positions of its record's span (§4.2). Each placement is a stretch as long as the
     deletion, and the placements are consecutive, so together they are one stretch.
 
     The span lies within the locus, as a record with an ALT's does (doc/spec.md §4).
     """
     span_start, span_end = span
-    start, end = deletion.start, deletion.end
+    deleted_start, deleted_end = start, end
     # A slide left by one base deletes the base before and restores the last one, which
     # gives the same haplotype when the two are equal; likewise to the right.
     while start > span_start and (
@@ -437,7 +459,7 @@ def _find_placements(
     ):
         start, end = start - 1, end - 1
     first_start = start
-    start, end = deletion.start, deletion.end
+    start, end = deleted_start, deleted_end
     while end < span_end and locus_bases[end - locus_start] == locus_bases[start - locus_start]:
         start, end = start + 1, end + 1
     return first_start, end
