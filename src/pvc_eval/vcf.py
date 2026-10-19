@@ -557,17 +557,9 @@ def _parse_genotypes(
             phase_set = None
         quality = _parse_gq(values.get("GQ"))
         num_not_numbers += _is_taken_as_absent(values.get("GQ"), quality)
-        if "GT" not in values:
-            genotypes.append(
-                VcfGenotype(
-                    alleles=(MISSING,) * ploidy,
-                    phased=False,
-                    phase_set=phase_set,
-                    quality=quality,
-                )
-            )
-            continue
-        genotypes.append(_parse_genotype(values["GT"], num_alleles, ploidy, phase_set, quality))
+        # A sample with no GT is MISSING on every haplotype, as a GT of `.` is (§2).
+        gt = values.get("GT", ".")
+        genotypes.append(_parse_genotype(gt, num_alleles, ploidy, phase_set, quality))
     return tuple(genotypes), num_not_numbers
 
 
