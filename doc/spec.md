@@ -197,7 +197,9 @@ pvc_eval ports the STR finder of pvc (repository `pop_var_caller`, at the commit
 `doc/port_provenance.md`). pvc's own rules are in its `doc/devel/ng/spec/typed_regions.md` (§2.1–§2.5,
 §4, §5), `repeat_catalog.md` (§3–§5), `ssr_repeat_scanner.md` (§3) and `str_bundle_loci.md` (§5);
 where those documents and pvc's code disagree, the code is followed (pvc's `typed_regions_cli.md`
-header example, for one, is out of date).
+header example, for one, is out of date). The finder's own spec, `doc/specs/str_finder.md`, gives
+each step exactly, with pvc's function for each, its parameters, the `str-regions` command and how
+the port is checked.
 
 **What the finder does, in pvc's order.** For one contig's uppercased sequence:
 
