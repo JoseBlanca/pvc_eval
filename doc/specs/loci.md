@@ -258,12 +258,16 @@ lies next to it.
 than in the `.fai`'s order. GIAB's benchmark regions for HG002 on GRCh38 hold about 300,000 lines.
 It skips blank lines and lines that start with `#`, `track` or `browser`, as `read_str_regions`
 does, and uses the first three columns of the others, which are separated by tabs, as BED's are.
-Regions that overlap or lie next to each other are merged. It raises `PvcEvalInputError`, naming the
-file and line and how to put it right, for a file that does not exist, is a directory, cannot be
-read or is not UTF-8 text (a gzipped BED among them); for a line with fewer than three columns,
-saying when its columns are separated by spaces instead; for a start or end that is not a whole
-number, or an end not after its start; and for a line on a contig the reference lacks. The values
-of the file are quoted in the messages, so that a character the user cannot see shows. The last stops the run at the first such
+Regions that overlap or lie next to each other are merged. A gzipped or bgzipped BED, known by its
+first two bytes, is read as `parse_vcf` reads a gzipped VCF, since GIAB's stratification BEDs come
+so (decided by the owner on 19 October 2026). It raises `PvcEvalInputError`, naming the file and
+line and how to put it right, for a file that does not exist, is a directory, cannot be read or is
+not UTF-8 text once decompressed; for a BED with no line once blank, comment and header lines are
+skipped, since it would skip every locus without a word (decided by the owner on 19 October 2026);
+for a line with fewer than three columns, saying when its columns are separated by spaces instead;
+for a start or end that is not a whole number, or an end not after its start; and for a line on a
+contig the reference lacks. The values of the file are quoted in the messages, so that a character
+the user cannot see shows. A line on a contig the reference lacks stops the run at the first such
 line even when the reference was cut to one chromosome and the BED is GIAB's, which covers chr1–22,
 X and Y: the message names the contig and says to keep only the reference's contigs in the BED, and
 how (decided by the owner on 19 October 2026, over skipping such lines with a warning). When the

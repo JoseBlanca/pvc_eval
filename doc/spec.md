@@ -397,7 +397,7 @@ begins.
 A REF-mismatch record's span is its trimmed REF.
 
 **Three cases.** The first is valid, and would be made invalid by moving its deletion; the other
-two are one haplotype written twice, which only the span puts in one locus.
+two are one haplotype written twice, whose spellings overlap only through the span.
 
 ```
 reference 21–26  CAGAGT                    the AG at 22–23 repeats at 24–25
@@ -416,8 +416,10 @@ file A   26  T    C   1/1
 file B   24  AGT  C   1/1                  span 24–26
 ```
 
-Both files give `GCAGCC`. Without the span, A's deletion (21–23) and B's record (24–26) would fall
-into different loci, giving *only in A* at one and *different* at the other.
+Both files give `GCAGCC`. By overlap alone, without the span, A's deletion (21–23) and B's record
+(24–26) would fall into different loci, giving *only in A* at one and *different* at the other.
+They touch, so the chain distance (§5.3) joins them too; `doc/specs/loci.md` has a case that only
+the span joins.
 
 ```
 reference 10–11  CG
