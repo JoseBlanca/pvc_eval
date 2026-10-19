@@ -33,7 +33,7 @@ states at the end of this spec, where the two are compared over the GIAB benchma
 GRCh38.
 
 What is asked of the owner: approval of the spec, and the one open point at the end, whether 52 of
-pvc's tests are left out. Three sentences of `doc/spec.md` §5.1 differ from pvc's code and are
+pvc's tests are left out. Four sentences of `doc/spec.md` §5.1 differ from pvc's code and are
 reported before the end.
 
 ## Vocabulary
@@ -503,7 +503,7 @@ code is the same whichever way they are settled. The owner decides whether §5.1
   bases between them" in pvc's code (`joins_cluster`, `absorb_into`). Two candidates with exactly
   15 bases between them do not bundle.
 
-A third sentence of §5.1 is true of pvc_eval and not of pvc. §5.1 says pvc's two routes "give the
+Two more sentences of §5.1 are true of pvc_eval and not of pvc. §5.1 says pvc's two routes "give the
 same partition", and that pvc "gives the same answer whether or not a region list is given". The
 routes differ in step 2 and in the periods scanned (step 1), and `dev type-regions --regions` can
 give a shorter satellite (the whole-port check). pvc_eval segments whole contigs whatever region
