@@ -13,7 +13,7 @@ that is too wide joins unrelated events in one row, which is *same genotype* onl
 agree. This spec gives `build_loci` in full: how it merges its inputs,
 what it holds while it works, what it does at each boundary, and what it raises. After it come the
 three things read from a locus once it is built: whether `--regions` selects it, its kind and its
-stratum. One point is open, in the list at the end.
+stratum. Two points are open, in the list at the end.
 
 `doc/spec.md` §3, §4 and §5.3 already give the rules of the loci, the `Locus` type and the
 signature of `build_loci`. This spec decides, beyond them:
@@ -135,37 +135,45 @@ dropped, or ahead and kept.
 
 ### What `build_loci` holds
 
-`doc/spec.md` §4 says nothing holds more than the current locus and a short look-ahead. For
-`build_loci` the look-ahead is:
+`doc/spec.md` §4 says nothing holds more than the current locus and a short look-ahead. In what
+follows, positions are 0-based and half-open, and **the next start** is the `span_start` of the
+next record not yet read, of either file and of either kind, on the contig being built. When no
+such record is left, there is no next start, and every condition that uses it is false. Every
+record read later starts there or after, since both files come by span start.
 
-- **The next record of each file**, read but not yet placed.
-- **The current locus**, its records and STR regions, until the next record with an ALT, of either
-  file, is on a later contig or leaves a gap of more than the chain distance after it, or both
-  streams end; it is then yielded. No later
-  record can then chain to it, since later records start no earlier, and no STR region can widen it
-  but through a record of its own.
-- **Every STR region that a later record could still touch**: those with `region.end >=
-  span_start` of the next record with an ALT. A region that ends further back is dropped. Such a
-  region can be held far ahead of the current locus, as the satellite of the case above is held
-  while the locus at 100 is built.
-- **Every record with no ALT that a later locus could still overlap.** A record with no ALT is
-  dropped once `record.end <= span_start` of the next record with an ALT and no held STR region
-  overlaps its REF, since such a region can still widen a later locus over it. An all-sites VCF over a satellite of 5 kb with no record with
-  an ALT in it therefore holds about 5,000 records until the records pass the satellite's end.
+`build_loci` reads the records one at a time, in the order of the section above. Before it handles
+a record, of either kind, it reads the segments up to the first one with `segment.start >
+span_end`, so every STR region that the record's span could touch has been read. After the last
+record it reads no more segments. GENERIC segments, the generic regions of `segment_contig`, whose
+`region_type` is `RegionType.GENERIC`, are read and dropped.
 
-`build_loci` reads the segments only as far as the records need, which is up to the first segment
-that starts after the end of the span of the record it is placing, with a position between them:
-in 0-based terms, `segment.start > span_end`. After the last record it reads no
-more. GENERIC segments, the generic regions of `segment_contig`, whose `region_type` is
-`RegionType.GENERIC`, are read and dropped. So when the segments come from the STR finder, a
-contig is segmented only if the caller asks for it. `compare` passes the segments of the contigs
-that hold records: reading only the contig column of the chr20 benchmark VCF (234,998 records, 200
-samples) took 0.64 s, against 52 s for `parse_vcf` over the same file, on an Apple M5 Pro with CPython
-3.15t on 19 October 2026. That pass is what `compare` adds to learn which contigs to segment.
+A locus is open from the record with an ALT that starts it until it is yielded. While it is open,
+each record read whose `span_start <= end + chain_distance` is taken: a record with an ALT joins
+the locus and widens it, with the STR regions it touches, and a record with no ALT is held. The
+locus is yielded when the next record is on a later contig, leaves a gap of more than the chain
+distance, or does not exist. No later record can then chain to it, and no STR region can widen it
+but through a record of its own. It is yielded with its records with an ALT, and with the held STR
+regions and records with no ALT that overlap it.
 
-How large the locus grows is set by the data: §5.3's simulation gives 145 bases at one variant site
-per 10 bases and 1,235 at one per 3. A satellite can be kilobases long. Nothing here bounds either,
-which is what the phasing cap (§5.4) is for.
+What is held besides the open locus, and when each is dropped:
+
+- **An STR region** is held while a locus is open and `region.end > start` of the locus, since it
+  may lie in a gap of it, or while `region.end >=` the next start, since a later record could
+  touch it. Otherwise it is dropped. A region can be held far ahead of the open locus, as the
+  satellite of the case above is held while the locus at 100 is built.
+- **A record with no ALT** is held while a locus is open and `record.end > start` of the locus,
+  while `record.end >` the next start, or while it overlaps a held STR region, which could still
+  widen a later locus over it. Otherwise it is dropped.
+
+So the records with no ALT of an all-sites VCF are dropped as soon as the reading passes them,
+except over an STR region that may still join a locus. Over a satellite of 5 kb with no record with
+an ALT in it, that holds about 5,000 records until the reading passes the satellite's end. The
+open locus itself grows with the data, as §5.3's simulation shows, and with the satellites it
+holds; nothing here bounds it, which is what the phasing cap (§5.4) is for.
+
+When the segments come from the STR finder, a contig is segmented only if the caller asks for it,
+since the segments are read only as far as the records need. `compare` passes the segments of the
+contigs that hold records (see "Not in this spec").
 
 ### What `build_loci` checks
 
@@ -238,7 +246,7 @@ def select_loci(loci: Iterator[Locus], regions: Regions | None) -> Iterator[Locu
 
 `locus_kind`, in `pvc_eval.kind`, gives the kind of `doc/spec.md` §5.6. A locus holding an STR
 region is STR. Otherwise the kind is read from every ALT of every record with an ALT in the locus.
-Records with no ALT and `*` alleles are left out. Each ALT is trimmed against its record's REF,
+Records with no ALT, `*` alleles and an ALT equal to its REF, which makes no edit, are left out. Each ALT is trimmed against its record's REF,
 first at the left and then at the right, as an edit is (§5.4). It is then a substitution of one
 base, an insertion, a deletion, or anything else. When every ALT is a substitution of one base the
 locus is SNP, when every ALT is an insertion or a deletion it is indel, and otherwise it is complex.
@@ -272,7 +280,7 @@ from the region types of `locus.str_regions`: `satellite`, `str-bundle`, `str` o
 region with no region type, from a `--str-regions` BED without a fourth column, raises
 `PvcEvalInputError`. Its message names the region and says that `--strata pvc` needs the types that
 `pvc_eval str-regions` writes. A locus holding no STR region is `generic` and raises nothing, so
-the error comes at the first locus that holds an untyped region.
+the error comes at the first locus that holds an untyped region (**Open 2**).
 
 With a BED, `read_strata` reads it whole, as `read_regions` does, with the same refusals, plus one
 for a line with no fourth column. `Strata.stratum` gives the classes of the intervals that share at
@@ -297,7 +305,9 @@ not wait for the STR finder. Each case's loci are compared with a literal list o
 
 **At `build_loci`, the cases of this spec:** the chain distance at a gap of 10 and of 11, and at 0
 with adjacent SNPs and with a gap of 1; the four rows of the STR table; the STR region in a gap; the
-two loci 4 positions apart; the four rows of the table of records with no ALT; a `*`-only record
+two loci 4 positions apart; the four rows of the table of records with no ALT; a record with no
+ALT in the gap between two chained SNPs (SNP at 10, `12 A .`, SNP at 15: one locus 10–15 holding
+it); a `*`-only record
 starting a locus; SNPs at the last position of chr1 and the first of chr2 with a chain distance of
 1,000; a contig with records in one file only; both streams empty, one empty, and one holding only
 records with no ALT; segments with and without GENERIC segments between the STR regions, giving the
@@ -311,10 +321,13 @@ also run from VCF text and a FASTA in `tmp_path` through `parse_vcf`, so that th
 computes are the ones the loci rely on.
 
 **What it reads, at `build_loci`.** The record streams and the segments are iterators that count
-what is read from them. When the *k*-th locus is yielded, from 100,000 SNPs of file A 100
-positions apart and an empty file B, at most *k* + 1 records have been read from file A. The
-segment iterator raises if it is read past the first segment that starts more than one position
-after the last record's span. With no records it is never read.
+what is read from them. When the *k*-th locus is yielded, counting from 1, from 100,000 SNPs
+of file A 100 positions apart and an empty file B, at most *k* + 1 records have been read from file
+A. The segment iterator raises if it is read past the first segment with `segment.start >
+span_end` of the last record read. Records with no ALT are not kept once passed: with 10,000 and with
+100,000 of them one position apart, followed by one SNP, the peak that tracemalloc traces while
+`build_loci` runs differs by less than 10%, and the SNP's locus holds only the one that overlaps
+it. With no records it is never read.
 
 **A property, at `build_loci`, with hypothesis.** A slow version of `doc/spec.md` §5.3, written in
 the test from the rules alone, holds every record and STR region in lists and applies the rules
@@ -348,6 +361,19 @@ BED naming 23 contigs the reference lacks. `read_str_regions` stops the run for 
 
 I recommend skipping with the warning: it runs the common case of a cut reference, and still
 stops the run when the naming is wrong. Until the owner decides, the implementer builds that.
+
+**Open 2. `--strata pvc` with a `--str-regions` BED that has no types.** `pvc_stratum` finds the
+missing type at the first locus that holds an untyped region, after the rows of earlier loci are
+written, and the run then stops. The options:
+
+- *Stop there*, as above: nothing more to build, and the user loses the rows written.
+- *Check first*: with `--strata pvc` and `--str-regions`, `compare` reads the BED's lines once
+  before the comparison and stops at the first line with no type, before any row is written. The
+  BED is read twice.
+
+I recommend checking first, which belongs to the spec of `compare`; `pvc_stratum` raises in either
+case, since it can be called from the Python API. Until the owner decides, the implementer builds
+`pvc_stratum` as this spec gives it, which both options need.
 
 ## Not in this spec
 
