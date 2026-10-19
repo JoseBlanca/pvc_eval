@@ -1372,9 +1372,9 @@ NUM_PLOIDY_LINES = 1000
 def test_two_streams_of_other_ploidies_read_together_keep_their_own_genotypes(
     tmp_path: Path, make_reference: MakeReference, num_threads: int
 ) -> None:
-    # The same GTs read with ploidy 1 and 2, the two streams taken in turns on this thread
-    # and their batches on the same pool threads, so a GT or genotype kept for one ploidy
-    # and given to the other would show here.
+    # The same GTs read with ploidy 1 and 2 by two streams open at once in one process,
+    # taken in turns on this thread, each with its own pool, so a GT or genotype kept for
+    # one ploidy in anything the streams share and given to the other would show here.
     lines = "".join(
         f"chr1\t{pos_1based}\t.\tC\tT\t.\t.\t.\tGT\t1\t0/1\n"
         if pos_1based % 2
