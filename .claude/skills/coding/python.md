@@ -243,6 +243,11 @@ that pays for it.
   | format | turn a value into text for a person |
   | is | answer a yes-or-no question about a value, returning a bool |
   | open | open a file and return it, to be read or written |
+  | batch | group the items of a stream into lists of a fixed length, the last perhaps shorter |
+  | map | apply a function to each item of a stream, giving the results in the order of the items |
+  | log | send a message to the logger, for the user |
+  | reconcile | build a locus's locus alleles and its samples' sample results (`doc/specs/reconciliation.md` §4) |
+  | evaluate | give the outcome of a sample pair (`doc/specs/reconciliation.md` §5) |
 
 - Public is only what another module or the user calls: everything else
   starts with an underscore, functions, classes and constants alike. The
@@ -365,9 +370,10 @@ The command line catches it alone, prints its message to stderr and exits
 with 1. Anything else is a defect of pvc_eval and is left to rise with its
 traceback.
 
-What the spec calls invalid is not an error: a REF that disagrees with the
-reference, a malformed GT, contradicting VCF records. It becomes an outcome
-of the row, and the run goes on.
+What the spec calls invalid is not an error: a malformed or haploid GT,
+contradicting VCF records. It becomes an outcome of the row, and the run
+goes on. A REF that disagrees with the reference is an error that stops the
+run (decided by the owner on 19 October 2026, `doc/spec.md` §5.2).
 
 - No silent fallback: no `except` that returns `None`, `[]` or a default,
   no `dict.get(key, default)` where a missing key is a defect, no record
