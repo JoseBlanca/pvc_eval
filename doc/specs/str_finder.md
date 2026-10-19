@@ -1,8 +1,8 @@
 # The STR finder
 
-*Status: draft, 19 October 2026, for review; not yet approved by the owner. No code yet. It
-depends on `doc/spec.md` §2 (vocabulary), §4 (the segment contract, "What stage 1 yields") and §5.1
-(what the finder does), and ports pvc at the commit of `doc/port_provenance.md`.*
+*Status: approved by the owner on 19 October 2026, with Open 1 answered as recommended. No code
+yet. It depends on `doc/spec.md` §2 (vocabulary), §4 (the segment contract, "What stage 1 yields")
+and §5.1 (what the finder does), and ports pvc at the commit of `doc/port_provenance.md`.*
 
 The STR finder is stage 1 of pvc_eval's pipeline. For one contig of the reference, it yields the
 segmented genome: consecutive, non-overlapping segments from the first base to the last, each a
@@ -32,8 +32,8 @@ with both, so it gives what `dev type-regions` gives, under the conditions the *
 states at the end of this spec, where the two are compared over the GIAB benchmark regions of
 GRCh38.
 
-What is asked of the owner: approval of the spec, and the one open point at the end, whether 52 of
-pvc's tests are left out. Four sentences of `doc/spec.md` §5.1 differ from pvc's code and are
+The owner approved the spec on 19 October 2026, and decided that 52 of pvc's tests are left out
+(the decided point at the end). Four sentences of `doc/spec.md` §5.1 differ from pvc's code and are
 reported before the end.
 
 ## Vocabulary
@@ -474,9 +474,10 @@ check runs there. How long pvc_eval takes
 over chromosomes 1 to 22 is not known before the measurement, so the check is run at the end of the
 build and when the finder changes, not with every commit.
 
-## Open point
+## Decided point
 
-**Open 1. pvc's tests that test what is not ported.** The brief for this port asks for every one of pvc's 142
+**Open 1, decided. pvc's tests that test what is not ported.** The owner chose to leave them out on
+19 October 2026. The brief for this port asks for every one of pvc's 142
 tests to be rewritten. 52 test functions the port does not have, and the list is in
 `doc/specs/str_finder_tests.md`.
 
@@ -488,7 +489,6 @@ tests to be rewritten. 52 test functions the port does not have, and the list is
 
 I recommend leaving them out. Each of the 52 tests either has a subject that pvc_eval does not run,
 or, like the sweep property, compares a function with itself once only the fixed point is ported.
-Meanwhile the plan leaves them out.
 
 ## Reported, not changed here
 
