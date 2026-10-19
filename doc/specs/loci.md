@@ -136,14 +136,18 @@ dropped, or ahead and kept.
 ### What `build_loci` holds
 
 `doc/spec.md` §4 says nothing holds more than the current locus and a short look-ahead. In what
-follows, positions are 0-based and half-open, and **the next start** is the `span_start` of the
-next record not yet read, of either file and of either kind, on the contig being built. When no
-such record is left, there is no next start, and every condition that uses it is false. Every
-record read later starts there or after, since both files come by span start.
+follows, positions are 0-based and half-open, and every position is compared with its contig: as
+the pair of the contig's rank in `contigs` and the position, so that any position of chr2 comes
+after every position of chr1. Without the contig, an STR region read ahead from the next contig
+would be dropped or never read. **The next start** is the contig and `span_start` of the next
+record not yet handled, of either file and of either kind, whatever its contig. When no record is
+left, there is no next start, and every condition that uses it is false. Every record handled
+later starts there or after, since both files come in that order.
 
 `build_loci` reads the records one at a time, in the order of the section above. Before it handles
-a record, of either kind, it reads the segments up to the first one with `segment.start >
-span_end`, so every STR region that the record's span could touch has been read. After the last
+a record, of either kind, it reads the segments up to the first one that comes after the end of
+its span, `(rank, segment.start) > (rank, span_end)`, so every STR region that the record's span
+could touch has been read. After the last
 record it reads no more segments. GENERIC segments, the generic regions of `segment_contig`, whose
 `region_type` is `RegionType.GENERIC`, are read and dropped.
 
@@ -157,12 +161,13 @@ regions and records with no ALT that overlap it.
 
 What is held besides the open locus, and when each is dropped:
 
-- **An STR region** is held while a locus is open and `region.end > start` of the locus, since it
-  may lie in a gap of it, or while `region.end >=` the next start, since a later record could
-  touch it. Otherwise it is dropped. A region can be held far ahead of the open locus, as the
+- **An STR region** is held while a locus is open on its contig and `region.end > start` of the
+  locus, since it may lie in a gap of it, or while its end is at or after the next start, since a
+  later record could touch it. A region on a later contig than the open locus is held by the second
+  condition. Otherwise it is dropped. A region can be held far ahead of the open locus, as the
   satellite of the case above is held while the locus at 100 is built.
-- **A record with no ALT** is held while a locus is open and `record.end > start` of the locus,
-  while `record.end >` the next start, or while it overlaps a held STR region, which could still
+- **A record with no ALT** is held while a locus is open on its contig and `record.end > start` of
+  the locus, while its end is after the next start, or while it overlaps a held STR region, which could still
   widen a later locus over it. Otherwise it is dropped.
 
 So the records with no ALT of an all-sites VCF are dropped as soon as the reading passes them,
@@ -308,7 +313,11 @@ with adjacent SNPs and with a gap of 1; the four rows of the STR table; the STR 
 two loci 4 positions apart; the four rows of the table of records with no ALT; a record with no
 ALT in the gap between two chained SNPs (SNP at 10, `12 A .`, SNP at 15: one locus 10–15 holding
 it); a `*`-only record
-starting a locus; SNPs at the last position of chr1 and the first of chr2 with a chain distance of
+starting a locus; two cases across contigs, 0-based with a chain distance of 10: a SNP at (29, 30) on chr1, then on
+chr2 an STR region at (0, 20) and a SNP at (4, 5), which give a chr2 locus (0, 20) holding the
+region; and a SNP at (9, 10) with a region at (4999, 5010) on chr1, then on chr2 a region at
+(89, 99) and a SNP at (99, 100), which give a chr2 locus (89, 100) holding it; SNPs at the last
+position of chr1 and the first of chr2 with a chain distance of
 1,000; a contig with records in one file only; both streams empty, one empty, and one holding only
 records with no ALT; segments with and without GENERIC segments between the STR regions, giving the
 same loci; each `ValueError` of "What `build_loci` checks".
@@ -323,15 +332,16 @@ computes are the ones the loci rely on.
 **What it reads, at `build_loci`.** The record streams and the segments are iterators that count
 what is read from them. When the *k*-th locus is yielded, counting from 1, from 100,000 SNPs
 of file A 100 positions apart and an empty file B, at most *k* + 1 records have been read from file
-A. The segment iterator raises if it is read past the first segment with `segment.start >
-span_end` of the last record read. Records with no ALT are not kept once passed: with 10,000 and with
-100,000 of them one position apart, followed by one SNP, the peak that tracemalloc traces while
+A. The segment iterator raises if it is read past the first segment that comes after
+the end of the span of the last record handled, by contig rank and then position. Records with no ALT are not kept once passed: with 10,000 and with
+100,000 of them one position apart, made by a generator as each is read, followed by one SNP, the peak that tracemalloc traces while
 `build_loci` runs differs by less than 10%, and the SNP's locus holds only the one that overlaps
 it. With no records it is never read.
 
 **A property, at `build_loci`, with hypothesis.** A slow version of `doc/spec.md` §5.3, written in
 the test from the rules alone, holds every record and STR region in lists and applies the rules
-until nothing changes. On generated records with an ALT and without, of both files, on two contigs,
+until nothing changes. On generated records with an ALT and without, of both files, on two contigs, with STR regions
+and records generated near the end of the first contig and the start of the second,
 with STR regions and chain distances from 0 to 20, its loci equal `build_loci`'s. The same cases
 also check that every record with an ALT is in exactly one locus, inside it; that each record with
 no ALT is in exactly the loci its REF overlaps; and that the loci of a contig come by start and do
