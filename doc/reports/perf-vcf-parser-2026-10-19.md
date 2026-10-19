@@ -265,3 +265,52 @@ run, between 0.75 and 2.42 during the measurements, and 0.78 after the last. Bef
 after each run, no process used more than 50% of a core. Against the first baseline, the
 5 Mb input at the default limit is 6.3% faster (3.540 s against 3.777 s) and the 64 Mb
 input 7.1% faster (44.280 s against 47.666 s). The peak memory is unchanged.
+
+## All kept changes together
+
+P1, P2 and P3 were measured together against the base, as the performance skill asks
+after several kept changes, since gains do not always add up. The base is commit 2911203,
+the parser before the review; the candidate is commit 27116a8, which holds the three
+changes. Both were measured on 19 October 2026 between 16:13 and 16:35, each from its own
+worktree and environment, on the same inputs, with CPython 3.15.0 free-threaded and the
+GIL off. The four digests of the candidate at the default limit equal those of
+`benchmarks/README.md`.
+
+Each input and limit was timed in one hyperfine call that ran the base and the candidate,
+10 runs after 1 warm-up (5 for the 64 Mb input at the default limit, 3 with no limit),
+mean ± sd. Peak memory is the median of 3 maximum resident set sizes from
+`/usr/bin/time -l` (1 for the 64 Mb input with no limit).
+
+| input | span limit | base time | P1+P2+P3 time | change | base peak | P1+P2+P3 peak | change |
+|---|---|---|---|---|---|---|---|
+| 5 Mb, GT:GQ:PS | 10 kb | 3.532 ± 0.023 s | 1.054 ± 0.008 s | −70.2% | 35.9 MB | 36.3 MB | +1.1% |
+| 5 Mb, GT:GQ:PS | none | 4.070 ± 0.024 s | 1.089 ± 0.008 s | −73.2% | 614.9 MB | 87.3 MB | −85.8% |
+| 5 Mb, GATK-like | 10 kb | 4.015 ± 0.050 s | 1.463 ± 0.014 s | −63.6% | 35.9 MB | 36.8 MB | +2.6% |
+| 5 Mb, GATK-like | none | 4.570 ± 0.068 s | 1.619 ± 0.024 s | −64.6% | 610.1 MB | 140.4 MB | −77.0% |
+| one sample | 10 kb | 780.6 ± 13.4 ms | 735.4 ± 3.6 ms | −5.8% | 34.0 MB | 36.5 MB | +7.3% |
+| one sample | none | 868.0 ± 10.7 ms | 828.2 ± 5.6 ms | −4.6% | 128.8 MB | 118.7 MB | −7.9% |
+| 64 Mb, GT:GQ:PS | 10 kb | 45.075 ± 0.297 s | 13.104 ± 0.180 s | −70.9% | 36.7 MB | 37.4 MB | +2.1% |
+| 64 Mb, GT:GQ:PS | none | 53.098 ± 0.326 s | 14.322 ± 0.295 s | −73.0% | 7,611.9 MB | 706.8 MB | −90.7% |
+
+The gains add up. On the inputs with 200 samples the three changes take 64% to 73% off the
+wall time, about what P1, P2 and P3 gave one after the other. With no limit, the peak
+memory falls by 77% to 91%, since the held records share their genotypes; on chromosome
+20 it goes from 7.6 GB to 0.7 GB. At the default limit the peak is 0.4 to 0.9 MB higher,
+which is what the caches of distinct genotypes hold.
+
+The one-sample input gains 5.8% and 4.6%, at the edge of its noise of 4.3%. Its peak at
+the default limit is 2.5 MB higher, the same in all six runs; why it is more than on the
+inputs with 200 samples was not looked into. It does not grow with the input: with no
+limit the candidate's peak is 10 MB lower.
+
+The base matches the baseline of 15:02 to 15:26: 3.532 s against 3.540 s on the 5 Mb
+input, 45.075 s against 44.280 s (+1.8%) on the 64 Mb input, and the same peaks within
+0.1 MB.
+
+The one-minute load average was between 1.34 and 2.89 during the timings and between 2.07
+and 2.82 during the memory runs. Processes of other sessions held a core at times: the
+test runs of another worktree at the start of the digests and of the 64 Mb timing at the
+default limit, a script of another session from 16:29 to 16:31, during the memory runs of
+the three small inputs, and a short burst of a system service at 16:19. Running the base
+and the candidate in one call shares that load between them; the peak memory does not
+depend on it.

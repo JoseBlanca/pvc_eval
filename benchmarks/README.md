@@ -126,8 +126,36 @@ held. The Tachyon captures are taken by the owner, as `tachyon.md` says, into
 ### The numbers of each review
 
 Each review writes its baseline, its noise, its profiles and its experiments in its
-report, `doc/reports/perf-<scope>-<date>.md`. The baseline of the first review is below,
-so that the next one can compare against it.
+report, `doc/reports/perf-<scope>-<date>.md`. The numbers of the parser as the last
+review left it are below, so that the next review can compare against them, and after
+them the baseline of the first review.
+
+#### After the first review: commit 27116a8, 19 October 2026
+
+The first review (`doc/reports/perf-vcf-parser-2026-10-19.md`) kept three changes, P1, P2
+and P3. Its code was measured on 19 October 2026 between 16:13 and 16:35, at commit
+27116a8 on branch `perf/vcf-parser`, against the code before the review (commit 2911203),
+on the same machine and Python. Each input and limit was one hyperfine call that ran both,
+10 runs after 1 warm-up (5 for the spec-size input at 10,000, 3 with no limit). The wall
+time is the mean ± sd, and the peak RSS the median of 3 (1 for the spec-size input with no
+limit). The digests at the default limit equal the ones above.
+
+| input | span limit | wall time | peak RSS | before the review, measured beside it |
+|---|---|---|---|---|
+| small | 10,000 | 1.054 s ± 0.008 s | 36.3 MB | 3.532 s ± 0.023 s, 35.9 MB |
+| small | none | 1.089 s ± 0.008 s | 87.3 MB | 4.070 s ± 0.024 s, 614.9 MB |
+| small, GATK-like | 10,000 | 1.463 s ± 0.014 s | 36.8 MB | 4.015 s ± 0.050 s, 35.9 MB |
+| small, GATK-like | none | 1.619 s ± 0.024 s | 140.4 MB | 4.570 s ± 0.068 s, 610.1 MB |
+| one sample | 10,000 | 735.4 ms ± 3.6 ms | 36.5 MB | 780.6 ms ± 13.4 ms, 34.0 MB |
+| one sample | none | 828.2 ms ± 5.6 ms | 118.7 MB | 868.0 ms ± 10.7 ms, 128.8 MB |
+| spec size | 10,000 | 13.104 s ± 0.180 s | 37.4 MB | 45.075 s ± 0.297 s, 36.7 MB |
+| spec size | none | 14.322 s ± 0.295 s | 706.8 MB | 53.098 s ± 0.326 s, 7,611.9 MB |
+
+The one-minute load average was between 1.34 and 2.89. Test runs and a script of other
+sessions held one core at times; each call shared that load between its two sides. The
+noise was not measured again: the small inputs' 3% to 5% below is where to start.
+
+#### The baseline of the first review: commit df41b16, 19 October 2026
 
 The baseline was measured on 19 October 2026 between 15:02 and 15:26, at commit df41b16,
 whose code of pvc_eval is that of ac58b60. The machine was an Apple M5 Pro (18 cores,
