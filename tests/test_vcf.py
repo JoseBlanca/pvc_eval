@@ -35,10 +35,13 @@ def write_vcf(tmp_path: Path, body: str, *, gzipped: bool = False) -> Path:
 @pytest.mark.parametrize(
     ("gt", "expected"),
     [
-        ("0/1", VcfGenotype(alleles=(0, 1), phased=False, phase_set=None)),
-        ("1|0", VcfGenotype(alleles=(1, 0), phased=True, phase_set=None)),
-        ("./1", VcfGenotype(alleles=(MISSING, 1), phased=False, phase_set=None)),
-        ("./.", VcfGenotype(alleles=(MISSING, MISSING), phased=False, phase_set=None)),
+        ("0/1", VcfGenotype(alleles=(0, 1), phased=False, phase_set=None, quality=None)),
+        ("1|0", VcfGenotype(alleles=(1, 0), phased=True, phase_set=None, quality=None)),
+        ("./1", VcfGenotype(alleles=(MISSING, 1), phased=False, phase_set=None, quality=None)),
+        (
+            "./.",
+            VcfGenotype(alleles=(MISSING, MISSING), phased=False, phase_set=None, quality=None),
+        ),
         (".", MALFORMED_GT),
         ("0/1/1", MALFORMED_GT),
         ("0/3", MALFORMED_GT),
@@ -56,7 +59,7 @@ def write_vcf(tmp_path: Path, body: str, *, gzipped: bool = False) -> Path:
     ],
 )
 def test_parse_genotype(gt: str, expected: VcfGenotype | MALFORMED_GT) -> None:
-    assert parse_genotype(gt, num_alleles=3, phase_set=None) == expected
+    assert parse_genotype(gt, num_alleles=3, phase_set=None, quality=None) == expected
 
 
 @pytest.mark.parametrize("gzipped", [False, True], ids=["plain", "bgzipped"])
@@ -77,10 +80,14 @@ def test_records_are_read_with_0_based_starts(tmp_path: Path, gzipped: bool) -> 
         ("CA", "C", "CAA"),
     )
     assert first.qual == 50.5
-    assert first.genotypes[0] == VcfGenotype(alleles=(1, 2), phased=True, phase_set="7")
-    assert first.genotype_qualities == (30, None)
+    assert first.genotypes == (
+        VcfGenotype(alleles=(1, 2), phased=True, phase_set="7", quality=30),
+        VcfGenotype(alleles=(0, 0), phased=False, phase_set=None, quality=None),
+    )
     assert (second.contig, second.start, second.qual) == ("chr2", 2, None)
-    assert second.genotypes[0] == VcfGenotype(alleles=(MISSING, 1), phased=False, phase_set=None)
+    assert second.genotypes[0] == VcfGenotype(
+        alleles=(MISSING, 1), phased=False, phase_set=None, quality=None
+    )
 
 
 def test_samples_are_read_from_the_header(tmp_path: Path) -> None:

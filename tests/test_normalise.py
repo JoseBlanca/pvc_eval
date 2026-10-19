@@ -15,7 +15,6 @@ def make_record(start: int, *alleles: str) -> VcfRecord:
         alleles=alleles,
         qual=None,
         genotypes=(),
-        genotype_qualities=(),
         line_number=1,
     )
 

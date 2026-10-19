@@ -30,7 +30,7 @@ GZIP_MAGIC = b"\x1f\x8b"
 NUM_FIXED_COLUMNS = 9  # CHROM to FORMAT
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class VcfGenotype:
     """One sample's GT at one VCF record, as written.
 
@@ -38,11 +38,13 @@ class VcfGenotype:
     phased: the GT was written with `|`.
     phase_set: the PS of the sample, or None when the record gives none, which VCF
         reads as one phase set per sample and contig (§5.4).
+    quality: the GQ of the sample, or None where absent.
     """
 
     alleles: tuple[int | MISSING, ...]
     phased: bool
     phase_set: str | None
+    quality: int | None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -52,8 +54,7 @@ class VcfRecord:
     start: the first position REF covers, 0-based; `end` is one past the last.
     alleles: REF first, then the ALTs, as written; `*` is a spanning deletion.
     qual: QUAL, or None for `.`.
-    genotypes: one per sample, in the order of the header.
-    genotype_qualities: the GQ of each sample, None where absent.
+    genotypes: one per sample, in the order of the header; a MALFORMED_GT keeps no GQ.
     line_number: the 1-based line of the file, for messages.
     ref_mismatch: REF differs from the reference (§5.2), set by normalising.
     """
@@ -63,7 +64,6 @@ class VcfRecord:
     alleles: tuple[str, ...]
     qual: float | None
     genotypes: tuple[VcfGenotype | MALFORMED_GT, ...]
-    genotype_qualities: tuple[int | None, ...]
     line_number: int
     ref_mismatch: bool = False
 
@@ -136,10 +136,13 @@ def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
         )
 
 
-def parse_genotype(gt: str, num_alleles: int, phase_set: str | None) -> VcfGenotype | MALFORMED_GT:
+def parse_genotype(
+    gt: str, num_alleles: int, phase_set: str | None, quality: int | None
+) -> VcfGenotype | MALFORMED_GT:
     """A GT field as a VcfGenotype, or MALFORMED_GT when it cannot be one (§5.4).
 
     num_alleles: how many VCF alleles the record has, REF included.
+    phase_set, quality: the sample's PS and GQ, kept in the VcfGenotype.
     """
     parts = gt.replace("|", "/").split("/")
     if len(parts) != PLOIDY:
@@ -152,7 +155,9 @@ def parse_genotype(gt: str, num_alleles: int, phase_set: str | None) -> VcfGenot
             alleles.append(int(part))
         else:
             return MALFORMED_GT
-    return VcfGenotype(alleles=tuple(alleles), phased="|" in gt, phase_set=phase_set)
+    return VcfGenotype(
+        alleles=tuple(alleles), phased="|" in gt, phase_set=phase_set, quality=quality
+    )
 
 
 def _open_text(path: Path) -> TextIO:
@@ -187,7 +192,6 @@ def _parse_record(
 ) -> VcfRecord:
     alleles = (fields[3], *alts)
     genotypes: list[VcfGenotype | MALFORMED_GT] = []
-    genotype_qualities: list[int | None] = []
     if len(fields) > NUM_FIXED_COLUMNS:
         keys = fields[8].split(":")
         for sample_field in fields[NUM_FIXED_COLUMNS:]:
@@ -199,16 +203,15 @@ def _parse_record(
                     values.get("GT", "./."),
                     len(alleles),
                     None if phase_set in (None, ".") else phase_set,
+                    _int_or_none(values.get("GQ")),
                 )
             )
-            genotype_qualities.append(_int_or_none(values.get("GQ")))
     return VcfRecord(
         contig=contig,
         start=start,
         alleles=alleles,
         qual=_float_or_none(fields[5]),
         genotypes=tuple(genotypes),
-        genotype_qualities=tuple(genotype_qualities),
         line_number=line_number,
     )
 
