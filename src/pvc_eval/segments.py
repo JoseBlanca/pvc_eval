@@ -554,7 +554,7 @@ def _is_in_cluster(reach: int, candidate: _Candidate, bundle_distance: int) -> b
     return max(candidate.start - reach, 0) < bundle_distance
 
 
-def _split_bundles(
+def _find_bundles(
     candidates: Sequence[_Candidate], bundle_distance: int
 ) -> tuple[list[_Candidate], list[_Candidate]]:
     """Step 5 of doc/specs/str_finder.md: the candidates alone in their cluster, and those
@@ -617,7 +617,7 @@ def _find_str_segments(
         else:
             in_scope.append(candidate)
     in_scope.sort(key=lambda candidate: (candidate.start, candidate.end))
-    isolated, bundle_members = _split_bundles(in_scope, parameters.bundle_distance)
+    isolated, bundle_members = _find_bundles(in_scope, parameters.bundle_distance)
     str_segments: list[_StrSegment] = []
     for candidate in isolated:
         outcome = _make_str_segment(candidate, bases, parameters)

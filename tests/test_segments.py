@@ -17,6 +17,7 @@ from pvc_eval.segments import (
     _Candidate,
     _drop_near_contig_ends,
     _drop_under_copy_floor,
+    _find_bundles,
     _find_candidates,
     _find_cut,
     _find_maximal_scoring_subsequences,
@@ -28,7 +29,6 @@ from pvc_eval.segments import (
     _make_bundle_member,
     _make_clusters,
     _Rejection,
-    _split_bundles,
     _StrSegment,
 )
 
@@ -743,7 +743,7 @@ def test_split_bundles_sets_aside_whole_clusters_and_keeps_isolated() -> None:
         _make_candidate(200, 230, 2, 100),
         lone,
     ]
-    isolated, bundled = _split_bundles(candidates, 50)
+    isolated, bundled = _find_bundles(candidates, 50)
     assert isolated == [lone]
     assert [candidate.start for candidate in bundled] == [100, 150, 200]
 
@@ -754,7 +754,7 @@ def test_split_bundles_keeps_all_when_none_close() -> None:
         _make_candidate(1000, 1030, 2, 100),
         _make_candidate(2000, 2030, 2, 100),
     ]
-    isolated, bundled = _split_bundles(candidates, 50)
+    isolated, bundled = _find_bundles(candidates, 50)
     assert isolated == candidates
     assert bundled == []
 
@@ -1049,7 +1049,7 @@ def test_a_member_spanning_past_its_neighbour_keeps_the_cluster_open() -> None:
         _make_candidate(62, 105, 2, 100),
         _make_candidate(142, 154, 2, 100),  # 37 bases past the one before, inside the long one
     ]
-    isolated, bundled = _split_bundles(candidates, 30)
+    isolated, bundled = _find_bundles(candidates, 30)
     assert isolated == []
     assert bundled == candidates
     assert _make_clusters(bundled, 30) == [candidates]
