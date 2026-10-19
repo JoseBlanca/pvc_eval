@@ -416,6 +416,20 @@ def _get_span_bases(candidate: _Candidate, bases: str) -> str:
     return bases[candidate.start : candidate.end].upper()
 
 
+def _get_motif(candidate: _Candidate, bases: str) -> str:
+    """A candidate's motif: the first period bases of its detected span, in upper case."""
+    return bases[candidate.start : candidate.start + candidate.period].upper()
+
+
+def _find_cut_or_span(candidate: _Candidate, bases: str) -> tuple[int, int]:
+    """A candidate's cut, or its detected span when it has no cut, as positions of the
+    contig whose bases are bases, 0-based and half-open."""
+    cut = _find_cut(_get_span_bases(candidate, bases), _get_motif(candidate, bases))
+    if cut is None:
+        return (candidate.start, candidate.end)
+    return (candidate.start + cut[0], candidate.start + cut[1])
+
+
 def _drop_near_contig_ends(
     candidates: Iterable[_Candidate], bases: str, parameters: StrFinderParameters
 ) -> Iterator[_Candidate]:
@@ -428,11 +442,7 @@ def _drop_near_contig_ends(
     """
     flank = parameters.contig_end_flank
     for candidate in candidates:
-        span_bases = _get_span_bases(candidate, bases)
-        cut = _find_cut(span_bases, span_bases[: candidate.period])
-        start, end = (candidate.start, candidate.end)
-        if cut is not None:
-            start, end = (candidate.start + cut[0], candidate.start + cut[1])
+        start, end = _find_cut_or_span(candidate, bases)
         if start >= flank and len(bases) - end >= flank:
             yield candidate
 
@@ -583,11 +593,8 @@ def _make_bundle_member(candidate: _Candidate, bases: str) -> _BundleMember:
     """A bundle member with its cut, or its detected span when it has no cut, and its
     motif (pvc segment_criteria.rs, bundle_member_from_bases). bases are the whole contig,
     and positions 0-based and half-open."""
-    span_bases = _get_span_bases(candidate, bases)
-    motif = span_bases[: candidate.period]
-    cut = _find_cut(span_bases, motif)
-    start, end = (0, len(span_bases)) if cut is None else cut
-    return _BundleMember(start=candidate.start + start, end=candidate.start + end, motif=motif)
+    start, end = _find_cut_or_span(candidate, bases)
+    return _BundleMember(start=start, end=end, motif=_get_motif(candidate, bases))
 
 
 def _find_str_segments(
@@ -605,7 +612,7 @@ def _find_str_segments(
             continue
         if candidate.end - candidate.start < candidate.period:
             rejected.append((candidate, _Rejection.COPY_FLOOR))
-        elif _is_compound(_get_span_bases(candidate, bases)[: candidate.period]):
+        elif _is_compound(_get_motif(candidate, bases)):
             rejected.append((candidate, _Rejection.COMPOUND))
         else:
             in_scope.append(candidate)
@@ -632,7 +639,7 @@ def _make_str_segment(
     cluster, or why there is none (pvc segment_criteria.rs, finish_locus). bases are the
     whole contig, and positions 0-based and half-open."""
     span_bases = _get_span_bases(candidate, bases)
-    motif = span_bases[: candidate.period]
+    motif = _get_motif(candidate, bases)
     cut = _find_cut(span_bases, motif)
     if cut is None:
         return _Rejection.NO_CUT
