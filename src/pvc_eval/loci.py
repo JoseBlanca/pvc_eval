@@ -12,6 +12,7 @@ Public: build_loci, which yields the loci; DEFAULT_CHAIN_DISTANCE.
 import heapq
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from enum import IntEnum
 
 from pvc_eval.locus import Locus
 from pvc_eval.segments import GenomeSegment, RegionType
@@ -20,27 +21,34 @@ from pvc_eval.vcf import VcfRecord
 DEFAULT_CHAIN_DISTANCE = 10  # doc/spec.md §5.3, kept by the owner on 19 October 2026
 
 type _Position = tuple[int, int]  # the rank of a contig in `contigs`, and a position on it
-type _RankedRegion = tuple[int, GenomeSegment]  # an STR region and the rank of its contig
+type _RankedSegment = tuple[int, GenomeSegment]  # a segment and the rank of its contig
 
-_FILE_NAMES = ("A", "B")
+
+class _SourceFile(IntEnum):
+    """The file a record comes from; file A is read before file B where both are equal."""
+
+    A = 0
+    B = 1
 
 
 @dataclass(frozen=True, slots=True)
 class _RankedRecord:
-    """A VCF record as build_loci reads it: with the rank of its contig, its file (0 for
-    file A, 1 for file B) and its place in that file's stream."""
+    """A VCF record as build_loci reads it: with the rank of its contig, its file and its
+    place in that file's stream."""
 
     rank: int
-    file_index: int
+    source_file: _SourceFile
     index_in_file: int
     vcf_record: VcfRecord
 
     @property
     def start_position(self) -> _Position:
+        """The rank and the 0-based start of the span."""
         return (self.rank, self.vcf_record.span[0])
 
     @property
     def end_position(self) -> _Position:
+        """The rank and the end of the span, one past its last position."""
         return (self.rank, self.vcf_record.span[1])
 
 
@@ -75,54 +83,52 @@ def build_loci(
         far as the records need: up to the first segment after the span of the last record.
     contigs: the reference's contig names, in the order of its `.fai`.
     chain_distance: the most positions that may lie between a record and a locus for the
-        record to join it, a whole number of 0 or more.
+        record to chain to it, a whole number of 0 or more.
 
     Positions are 0-based and half-open. A locus holds its records with an ALT, the records
     with no ALT whose REF overlaps it, and the STR regions that lie in it.
 
     Raises ValueError, when the stream starts, for a chain_distance that is not a whole
-    number of 0 or more and for a contig named twice in contigs; and when the stream reaches it, for a record or a segment on a
-    contig that contigs lacks, a record that comes before the one read before it in its
-    file, a segment that comes before the one read before it, and an STR region that
-    overlaps the STR region read before it.
+    number of 0 or more and for a contig named twice in contigs; and when the stream
+    reaches it, for a record or a segment on a contig that contigs lacks, a record that
+    comes before the one read before it in its file, a segment that comes before the one
+    read before it, and an STR region that overlaps the STR region read before it.
     """
     _check_chain_distance(chain_distance)
     ranks = {contig: rank for rank, contig in enumerate(contigs)}
     _check_contigs(contigs, ranks)
     ranked_records = heapq.merge(
-        _rank_records(records_a, 0, ranks),
-        _rank_records(records_b, 1, ranks),
+        _make_ranked_records(records_a, _SourceFile.A, ranks),
+        _make_ranked_records(records_b, _SourceFile.B, ranks),
         key=lambda ranked_record: ranked_record.start_position,
     )
-    ranked_segments = _rank_segments(segments, ranks)
+    ranked_segments = _make_ranked_segments(segments, ranks)
     last_segment_position: _Position | None = None
-    held_regions: list[_RankedRegion] = []
+    held_regions: list[_RankedSegment] = []
     # The records with no ALT that the reading has not passed, by end, and those it has
     # passed that the open locus or an STR region still holds.
-    no_alt_ahead: list[tuple[_Position, int, int, _RankedRecord]] = []
+    no_alt_ahead: list[tuple[_Position, _SourceFile, int, _RankedRecord]] = []
     no_alt_passed: list[_RankedRecord] = []
     locus: _OpenLocus | None = None
 
     ranked_record = next(ranked_records, None)
     while ranked_record is not None:
-        last_segment_position = _hold_segments_up_to(
+        last_segment_position = _read_segments_up_to(
             ranked_record.end_position, ranked_segments, last_segment_position, held_regions
         )
         # The reach is found anew for each record, after its segments are read: an STR
         # region that starts within the chain distance of the locus may be read only now.
         is_yielded = False
-        if locus is not None and not _is_joining(
-            ranked_record, locus, held_regions, chain_distance
-        ):
+        if locus is not None and not _is_taken(ranked_record, locus, held_regions, chain_distance):
             yield _make_locus(locus, held_regions, _get_no_alt(no_alt_ahead, no_alt_passed))
             locus = None
             is_yielded = True
-        if _has_alt(ranked_record.vcf_record):
-            locus = _add_to_locus(locus, ranked_record, held_regions)
+        if _is_with_alt(ranked_record.vcf_record):
+            locus = _make_widened_locus(locus, ranked_record, held_regions)
         else:
             entry = (
                 ranked_record.end_position,
-                ranked_record.file_index,
+                ranked_record.source_file,
                 ranked_record.index_in_file,
                 ranked_record,
             )
@@ -154,7 +160,7 @@ def build_loci(
 
 
 def _get_no_alt(
-    no_alt_ahead: Iterable[tuple[_Position, int, int, _RankedRecord]],
+    no_alt_ahead: Iterable[tuple[_Position, _SourceFile, int, _RankedRecord]],
     no_alt_passed: Iterable[_RankedRecord],
 ) -> list[_RankedRecord]:
     """The records with no ALT held, ahead of the reading and passed by it."""
@@ -175,16 +181,16 @@ def _check_contigs(contigs: Sequence[str], ranks: Mapping[str, int]) -> None:
         raise ValueError(f"contigs names {repeated} twice; each contig must be named once")
 
 
-def _has_alt(vcf_record: VcfRecord) -> bool:
+def _is_with_alt(vcf_record: VcfRecord) -> bool:
     return len(vcf_record.alleles) > 1
 
 
-def _rank_records(
-    vcf_records: Iterable[VcfRecord], file_index: int, ranks: Mapping[str, int]
+def _make_ranked_records(
+    vcf_records: Iterable[VcfRecord], source_file: _SourceFile, ranks: Mapping[str, int]
 ) -> Iterator[_RankedRecord]:
     """One file's records with the rank of their contigs, checked to be on a contig of
     ranks and in order of span start."""
-    file_name = _FILE_NAMES[file_index]
+    file_name = source_file.name
     previous: _RankedRecord | None = None
     for index_in_file, vcf_record in enumerate(vcf_records):
         span_start = vcf_record.span[0]
@@ -194,7 +200,7 @@ def _rank_records(
                 f" at span start {span_start} (0-based)"
             )
         ranked_record = _RankedRecord(
-            ranks[vcf_record.contig], file_index, index_in_file, vcf_record
+            ranks[vcf_record.contig], source_file, index_in_file, vcf_record
         )
         if previous is not None and ranked_record.start_position < previous.start_position:
             raise ValueError(
@@ -207,14 +213,14 @@ def _rank_records(
         previous = ranked_record
 
 
-def _rank_segments(
+def _make_ranked_segments(
     segments: Iterable[GenomeSegment], ranks: Mapping[str, int]
-) -> Iterator[_RankedRegion]:
+) -> Iterator[_RankedSegment]:
     """The segments with the rank of their contigs. Each is checked to be on a contig of
     ranks and to start no earlier than the one before it, and each STR region not to
     overlap the STR region before it."""
-    previous_segment: _RankedRegion | None = None
-    previous_region: _RankedRegion | None = None
+    previous_segment: _RankedSegment | None = None
+    previous_region: _RankedSegment | None = None
     for segment in segments:
         if segment.contig not in ranks:
             raise ValueError(
@@ -232,7 +238,7 @@ def _rank_segments(
         yield ranked_segment
 
 
-def _check_segment_order(ranked_segment: _RankedRegion, previous: _RankedRegion | None) -> None:
+def _check_segment_order(ranked_segment: _RankedSegment, previous: _RankedSegment | None) -> None:
     if previous is None:
         return
     rank, segment = ranked_segment
@@ -246,7 +252,7 @@ def _check_segment_order(ranked_segment: _RankedRegion, previous: _RankedRegion 
         )
 
 
-def _check_region_overlap(ranked_region: _RankedRegion, previous: _RankedRegion | None) -> None:
+def _check_region_overlap(ranked_region: _RankedSegment, previous: _RankedSegment | None) -> None:
     if previous is None:
         return
     rank, region = ranked_region
@@ -259,14 +265,16 @@ def _check_region_overlap(ranked_region: _RankedRegion, previous: _RankedRegion 
         )
 
 
-def _hold_segments_up_to(
+def _read_segments_up_to(
     position: _Position,
-    ranked_segments: Iterator[_RankedRegion],
+    ranked_segments: Iterator[_RankedSegment],
     last_segment_position: _Position | None,
-    held_regions: list[_RankedRegion],
+    held_regions: list[_RankedSegment],
 ) -> _Position | None:
-    """Reads the segments up to the first that starts after position, adds the STR regions
-    among them to held_regions, and returns the start of the last segment read."""
+    """Reads the segments up to the first whose 0-based start comes after position, adds
+    the STR regions among them to held_regions, and returns the rank and the start of the
+    last segment read. position is a rank and the end of a span, one past its last
+    position."""
     while last_segment_position is None or last_segment_position <= position:
         ranked_segment = next(ranked_segments, None)
         if ranked_segment is None:
@@ -279,10 +287,12 @@ def _hold_segments_up_to(
 
 
 def _find_reach(
-    locus: _OpenLocus, held_regions: Iterable[_RankedRegion], chain_distance: int
+    locus: _OpenLocus, held_regions: Iterable[_RankedSegment], chain_distance: int
 ) -> int:
-    """The furthest position a later record can start at and still join the locus: its end
-    plus the chain distance, or the end of a held STR region that starts no further.
+    """The reach of the open locus: the last 0-based span start at which a later record is
+    still taken by it, an inclusive bound. It is the locus's end, one past its last
+    position, plus the chain distance, or the end of a held STR region on its contig that
+    starts no further, whichever is further.
 
     A record that starts past end + chain_distance and no further than such a region's end
     touches the region, which joins the record's locus to this one (§5.3 step 4).
@@ -295,10 +305,10 @@ def _find_reach(
     return reach
 
 
-def _is_joining(
+def _is_taken(
     ranked_record: _RankedRecord,
     locus: _OpenLocus,
-    held_regions: Iterable[_RankedRegion],
+    held_regions: Iterable[_RankedSegment],
     chain_distance: int,
 ) -> bool:
     """Whether a record, of either kind, is taken by the open locus: on its contig, and
@@ -310,21 +320,25 @@ def _is_joining(
 
 
 def _is_touching(vcf_record: VcfRecord, region: GenomeSegment) -> bool:
-    """Whether a record's span overlaps an STR region or lies next to it (§5.3), on one
-    contig."""
+    """Whether a record's span overlaps an STR region or lies next to it (§5.3), both on
+    one contig, 0-based and half-open: the span ends on the region's first position or
+    starts on the position after its last."""
     span_start, span_end = vcf_record.span
     return span_start <= region.end and region.start <= span_end
 
 
 def _is_overlapping(start: int, end: int, other_start: int, other_end: int) -> bool:
+    """Whether [start, end) and [other_start, other_end), 0-based and half-open on one
+    contig, share a position."""
     return start < other_end and other_start < end
 
 
-def _add_to_locus(
-    locus: _OpenLocus | None, ranked_record: _RankedRecord, held_regions: Iterable[_RankedRegion]
+def _make_widened_locus(
+    locus: _OpenLocus | None, ranked_record: _RankedRecord, held_regions: Iterable[_RankedSegment]
 ) -> _OpenLocus:
-    """Adds a record with an ALT to the open locus, or opens one with it, and widens the
-    locus over its span and over the STR regions it touches."""
+    """The open locus with a record with an ALT added, widened over the record's span and
+    over the STR regions it touches; the locus given is changed and returned, and a new
+    one is made when none is open."""
     vcf_record = ranked_record.vcf_record
     span_start, span_end = vcf_record.span
     if locus is None:
@@ -340,7 +354,7 @@ def _add_to_locus(
 
 
 def _is_region_held(
-    ranked_region: _RankedRegion, locus: _OpenLocus | None, next_start: _Position | None
+    ranked_region: _RankedSegment, locus: _OpenLocus | None, next_start: _Position | None
 ) -> bool:
     """Whether an STR region may still be in a locus: in a gap of the open locus, or
     touched by a later record."""
@@ -354,7 +368,7 @@ def _is_no_alt_held(
     no_alt: _RankedRecord,
     locus: _OpenLocus | None,
     next_start: _Position | None,
-    held_regions: Iterable[_RankedRegion],
+    held_regions: Iterable[_RankedSegment],
 ) -> bool:
     """Whether a record with no ALT may still be in a locus: one that overlaps the open
     locus, a later one, or a held STR region that may still widen a later locus over it."""
@@ -371,7 +385,7 @@ def _is_no_alt_held(
 
 def _make_locus(
     locus: _OpenLocus,
-    held_regions: Iterable[_RankedRegion],
+    held_regions: Iterable[_RankedSegment],
     held_no_alt: Iterable[_RankedRecord],
 ) -> Locus:
     """The Locus of the open locus, with the held STR regions and records with no ALT that
@@ -384,14 +398,18 @@ def _make_locus(
     ]
     ranked_records = sorted(
         [*locus.records, *overlapping_no_alt],
-        key=lambda ranked_record: (ranked_record.file_index, ranked_record.index_in_file),
+        key=lambda ranked_record: (ranked_record.source_file, ranked_record.index_in_file),
     )
     return Locus(
         locus.contig,
         locus.start,
         locus.end,
-        tuple(ranked.vcf_record for ranked in ranked_records if ranked.file_index == 0),
-        tuple(ranked.vcf_record for ranked in ranked_records if ranked.file_index == 1),
+        tuple(
+            ranked.vcf_record for ranked in ranked_records if ranked.source_file is _SourceFile.A
+        ),
+        tuple(
+            ranked.vcf_record for ranked in ranked_records if ranked.source_file is _SourceFile.B
+        ),
         tuple(
             region
             for rank, region in held_regions

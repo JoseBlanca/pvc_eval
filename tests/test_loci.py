@@ -81,20 +81,19 @@ def make_locus(
     return Locus(contig, start, end, records_a, records_b, str_regions)
 
 
-def run_build_loci(
+def find_loci(
     records_a: Iterable[VcfRecord],
     records_b: Iterable[VcfRecord] = (),
     segments: Iterable[GenomeSegment] = (),
     *,
     chain_distance: int = DEFAULT_CHAIN_DISTANCE,
-    contigs: Sequence[str] = CONTIGS,
 ) -> list[Locus]:
     return list(
         build_loci(
             iter(records_a),
             iter(records_b),
             iter(segments),
-            contigs,
+            CONTIGS,
             chain_distance=chain_distance,
         )
     )
@@ -135,7 +134,7 @@ SNP_112 = make_snp(111, line_number=2)
 def test_records_chain_up_to_the_chain_distance(
     records_a: tuple[VcfRecord, ...], chain_distance: int, expected: list[Locus]
 ) -> None:
-    assert run_build_loci(records_a, chain_distance=chain_distance) == expected
+    assert find_loci(records_a, chain_distance=chain_distance) == expected
 
 
 # The STR table: an AT repeat at 11-20.
@@ -168,7 +167,7 @@ SNP_21 = make_snp(20)
 def test_a_record_widens_its_locus_to_the_str_regions_it_touches(
     records_a: tuple[VcfRecord, ...], regions: tuple[GenomeSegment, ...], expected: list[Locus]
 ) -> None:
-    assert run_build_loci(records_a, (), regions) == expected
+    assert find_loci(records_a, (), regions) == expected
 
 
 def test_a_locus_holds_an_str_region_in_a_gap_between_its_records() -> None:
@@ -176,7 +175,7 @@ def test_a_locus_holds_an_str_region_in_a_gap_between_its_records() -> None:
     second = make_snp(17, line_number=2)
     homopolymer = make_region(11, 16)
 
-    loci = run_build_loci((first, second), (), (homopolymer,))
+    loci = find_loci((first, second), (), (homopolymer,))
 
     assert loci == [make_locus(9, 18, (first, second), (), (homopolymer,))]
 
@@ -246,7 +245,7 @@ HOMOPOLYMER_AT_102 = make_region(101, 103, region_type=RegionType.STR)
 def test_a_locus_that_reaches_back_joins_the_one_before_it(
     records_a: tuple[VcfRecord, ...], regions: tuple[GenomeSegment, ...], expected: list[Locus]
 ) -> None:
-    assert run_build_loci(records_a, (), regions) == expected
+    assert find_loci(records_a, (), regions) == expected
 
 
 # The table of records with no ALT: `100 CAGTCAGTCAGTC .`, 100-112, in file B.
@@ -275,7 +274,7 @@ SNP_110 = make_snp(109, line_number=2)
 def test_a_record_with_no_alt_is_in_every_locus_its_ref_overlaps(
     records_a: tuple[VcfRecord, ...], expected: list[Locus]
 ) -> None:
-    assert run_build_loci(records_a, (NO_ALT_100,)) == expected
+    assert find_loci(records_a, (NO_ALT_100,)) == expected
 
 
 def test_a_record_with_no_alt_in_the_gap_between_chained_snps_is_in_their_locus() -> None:
@@ -283,7 +282,7 @@ def test_a_record_with_no_alt_in_the_gap_between_chained_snps_is_in_their_locus(
     no_alt = make_no_alt(11, 1, line_number=2)
     second = make_snp(14, line_number=3)
 
-    loci = run_build_loci((first, no_alt, second))
+    loci = find_loci((first, no_alt, second))
 
     assert loci == [make_locus(9, 15, (first, no_alt, second))]
 
@@ -291,7 +290,7 @@ def test_a_record_with_no_alt_in_the_gap_between_chained_snps_is_in_their_locus(
 def test_a_record_whose_only_alt_is_star_starts_a_locus() -> None:
     star = make_record(9, "A", ("*",), (9, 10))
 
-    assert run_build_loci((star,)) == [make_locus(9, 10, (star,))]
+    assert find_loci((star,)) == [make_locus(9, 10, (star,))]
 
 
 def test_a_satellite_starting_exactly_at_the_chain_distance_joins_the_locus() -> None:
@@ -299,7 +298,7 @@ def test_a_satellite_starting_exactly_at_the_chain_distance_joins_the_locus() ->
     second = make_snp(2989, line_number=2)
     satellite = make_satellite(110, 3000)
 
-    loci = run_build_loci((first, second), (), (satellite,))
+    loci = find_loci((first, second), (), (satellite,))
 
     # The locus at 99-100 ends at 100, and 100 + 10 is the satellite's start.
     assert loci == [make_locus(99, 3000, (first, second), (), (satellite,))]
@@ -310,7 +309,7 @@ def test_a_satellite_on_the_next_contig_widens_no_reach_on_this_one() -> None:
     second = make_snp(399, line_number=2)
     satellite_chr2 = GenomeSegment("chr2", 0, 500, RegionType.SATELLITE, None)
 
-    loci = run_build_loci((first, second), (), (satellite_chr2,))
+    loci = find_loci((first, second), (), (satellite_chr2,))
 
     assert loci == [make_locus(9, 10, (first,)), make_locus(399, 400, (second,))]
 
@@ -322,7 +321,7 @@ def test_a_record_with_no_alt_over_an_str_region_is_kept_until_a_record_pulls_it
     snp = make_snp(40, line_number=2)
     region = make_region(15, 40)
 
-    loci = run_build_loci((no_alt, snp), (), (region,))
+    loci = find_loci((no_alt, snp), (), (region,))
 
     assert loci == [make_locus(15, 41, (no_alt, snp), (), (region,))]
 
@@ -332,7 +331,7 @@ def test_an_str_region_at_the_start_of_the_next_contig_is_not_dropped() -> None:
     region_chr2 = make_region(0, 20, contig="chr2")
     snp_chr2 = make_snp(4, contig="chr2", line_number=2)
 
-    loci = run_build_loci((snp_chr1, snp_chr2), (), (region_chr2,))
+    loci = find_loci((snp_chr1, snp_chr2), (), (region_chr2,))
 
     assert loci == [
         make_locus(29, 30, (snp_chr1,)),
@@ -346,7 +345,7 @@ def test_an_str_region_on_the_next_contig_is_read_past_the_ones_of_the_first() -
     region_chr2 = make_region(89, 99, contig="chr2")
     snp_chr2 = make_snp(99, contig="chr2", line_number=2)
 
-    loci = run_build_loci((snp_chr1, snp_chr2), (), (far_region_chr1, region_chr2))
+    loci = find_loci((snp_chr1, snp_chr2), (), (far_region_chr1, region_chr2))
 
     assert loci == [
         make_locus(9, 10, (snp_chr1,)),
@@ -358,7 +357,7 @@ def test_a_locus_never_spans_two_contigs() -> None:
     last_of_chr1 = make_snp(999, contig="chr1", line_number=1)
     first_of_chr2 = make_snp(0, contig="chr2", line_number=2)
 
-    loci = run_build_loci((last_of_chr1, first_of_chr2), chain_distance=1000)
+    loci = find_loci((last_of_chr1, first_of_chr2), chain_distance=1000)
 
     assert loci == [
         make_locus(999, 1000, (last_of_chr1,)),
@@ -371,7 +370,7 @@ def test_a_contig_with_records_of_one_file_gives_loci_with_none_of_the_other() -
     snp_a_chr2 = make_snp(9, contig="chr2", line_number=2)
     snp_b_chr1 = make_snp(14, contig="chr1", line_number=1)
 
-    loci = run_build_loci((snp_a_chr1, snp_a_chr2), (snp_b_chr1,))
+    loci = find_loci((snp_a_chr1, snp_a_chr2), (snp_b_chr1,))
 
     assert loci == [
         make_locus(9, 15, (snp_a_chr1,), (snp_b_chr1,)),
@@ -439,8 +438,8 @@ def test_generic_segments_between_the_str_regions_change_no_locus() -> None:
     )
     expected = [make_locus(99, 3000, records_a, (), str_regions)]
 
-    assert run_build_loci(records_a, (), str_regions) == expected
-    assert run_build_loci(records_a, (), segments) == expected
+    assert find_loci(records_a, (), str_regions) == expected
+    assert find_loci(records_a, (), segments) == expected
 
 
 # What build_loci checks: each fault raises ValueError when the stream reaches it.
@@ -499,7 +498,7 @@ def test_inputs_out_of_order_or_on_an_unknown_contig_raise(
     message: str,
 ) -> None:
     with pytest.raises(ValueError, match=message):
-        run_build_loci(records_a, records_b, segments)
+        find_loci(records_a, records_b, segments)
 
 
 def test_a_generic_segment_may_overlap_an_str_region_and_share_its_start() -> None:
@@ -507,7 +506,7 @@ def test_a_generic_segment_may_overlap_an_str_region_and_share_its_start() -> No
     region = make_region(0, 10)
     segments = (make_region(0, 30, region_type=RegionType.GENERIC), region)
 
-    assert run_build_loci((snp,), (), segments) == [make_locus(0, 10, (snp,), (), (region,))]
+    assert find_loci((snp,), (), segments) == [make_locus(0, 10, (snp,), (), (region,))]
 
 
 @pytest.mark.parametrize("chain_distance", [-1, 1.5, True], ids=["negative", "float", "bool"])
@@ -533,7 +532,7 @@ def test_chaining_runs_across_both_files() -> None:
     middle_b = make_snp(15, line_number=1)
     last_a = make_snp(22, line_number=2)
 
-    loci = run_build_loci((first_a, last_a), (middle_b,))
+    loci = find_loci((first_a, last_a), (middle_b,))
 
     # The two SNPs of file A leave a gap of 12; each leaves less than 10 to file B's.
     assert loci == [make_locus(9, 23, (first_a, last_a), (middle_b,))]
@@ -574,7 +573,7 @@ TRADED_B_DELETION = make_record(7, "AC", ("A",), (7, 9), line_number=2)
 def test_traded_events_share_a_locus_from_a_chain_distance_of_one(
     chain_distance: int, expected: list[Locus]
 ) -> None:
-    loci = run_build_loci(
+    loci = find_loci(
         (TRADED_A_DELETION, TRADED_A_SNP),
         (TRADED_B_SNP, TRADED_B_DELETION),
         chain_distance=chain_distance,
@@ -587,7 +586,7 @@ def test_adjacent_snps_of_the_two_files_chain_at_0() -> None:
     snp_a = make_snp(9)
     snp_b = make_snp(10)
 
-    loci = run_build_loci((snp_a,), (snp_b,), chain_distance=0)
+    loci = find_loci((snp_a,), (snp_b,), chain_distance=0)
 
     assert loci == [make_locus(9, 11, (snp_a,), (snp_b,))]
 
@@ -596,7 +595,7 @@ def test_a_record_with_no_alt_starts_no_locus() -> None:
     no_alt = make_no_alt(9, 1, line_number=1)
     snp = make_snp(30, line_number=2)
 
-    loci = run_build_loci((no_alt, snp))
+    loci = find_loci((no_alt, snp))
 
     assert loci == [make_locus(30, 31, (snp,))]
 
@@ -605,7 +604,7 @@ def test_an_insertion_next_to_a_repeat_pulls_the_repeat_into_its_locus() -> None
     # `9 G GC` spans 9-10, the base after its anchor included; the repeat is at 11-20.
     insertion = make_record(8, "G", ("GC",), (8, 10))
 
-    loci = run_build_loci((insertion,), (), (AT_REPEAT,))
+    loci = find_loci((insertion,), (), (AT_REPEAT,))
 
     assert loci == [make_locus(8, 20, (insertion,), (), (AT_REPEAT,))]
 
@@ -616,7 +615,7 @@ def test_complex_records_at_the_two_ends_of_a_repeat_share_its_locus() -> None:
     complex_a = make_record(8, "GA", ("TT",), (8, 10))
     complex_b = make_record(20, "TC", ("GG",), (20, 22))
 
-    loci = run_build_loci((complex_a,), (complex_b,), (AT_REPEAT,), chain_distance=0)
+    loci = find_loci((complex_a,), (complex_b,), (AT_REPEAT,), chain_distance=0)
 
     assert loci == [make_locus(8, 22, (complex_a,), (complex_b,), (AT_REPEAT,))]
 
@@ -778,11 +777,11 @@ def is_overlapping(first: tuple[int, int], second: tuple[int, int]) -> bool:
     return first[0] < second[1] and second[0] < first[1]
 
 
-def has_alt(record: VcfRecord) -> bool:
+def is_with_alt(record: VcfRecord) -> bool:
     return len(record.alleles) > 1
 
 
-def build_loci_slowly(
+def find_loci_slowly(
     records_a: Sequence[VcfRecord],
     records_b: Sequence[VcfRecord],
     segments: Sequence[GenomeSegment],
@@ -801,7 +800,7 @@ def build_loci_slowly(
         left = [
             record
             for record in (*records_a, *records_b)
-            if record.contig == contig and has_alt(record)
+            if record.contig == contig and is_with_alt(record)
         ]
         built: list[tuple[int, int, list[VcfRecord]]] = []
         while left:
@@ -840,7 +839,7 @@ def build_loci_slowly(
                 if record in members
                 or (
                     record.contig == contig
-                    and not has_alt(record)
+                    and not is_with_alt(record)
                     and is_overlapping(record.span, (start, end))
                 )
             ]
@@ -862,7 +861,7 @@ def build_loci_slowly(
 
 
 @st.composite
-def draw_segments(draw: st.DrawFn, contig: str) -> list[GenomeSegment]:
+def make_segment_lists(draw: st.DrawFn, contig: str) -> list[GenomeSegment]:
     """STR regions of one contig, in order and apart, with GENERIC segments between them
     or not."""
     with_generic = draw(st.booleans())
@@ -891,7 +890,7 @@ def draw_segments(draw: st.DrawFn, contig: str) -> list[GenomeSegment]:
 
 
 @st.composite
-def draw_records(draw: st.DrawFn, first_line_number: int) -> list[VcfRecord]:
+def make_record_lists(draw: st.DrawFn, first_line_number: int) -> list[VcfRecord]:
     """Records of one file on chr1 and chr2, with an ALT and without, in the order of
     parse_vcf: by contig and then by span start."""
     records = []
@@ -930,7 +929,7 @@ def check_invariants(
     """The invariants of doc/specs/loci.md, "A property"."""
     for record in records:
         holding = [locus for locus in loci if record in (*locus.records_a, *locus.records_b)]
-        if has_alt(record):
+        if is_with_alt(record):
             assert len(holding) == 1, record
             assert holding[0].start <= record.span[0]
             assert record.span[1] <= holding[0].end
@@ -950,10 +949,10 @@ def check_invariants(
 
 @settings(max_examples=500, deadline=None)
 @given(
-    records_a=draw_records(1),
-    records_b=draw_records(101),
-    segments_chr1=draw_segments("chr1"),
-    segments_chr2=draw_segments("chr2"),
+    records_a=make_record_lists(1),
+    records_b=make_record_lists(101),
+    segments_chr1=make_segment_lists("chr1"),
+    segments_chr2=make_segment_lists("chr2"),
     chain_distance=st.integers(0, 20),
 )
 def test_build_loci_gives_the_loci_of_the_rules(
@@ -965,7 +964,7 @@ def test_build_loci_gives_the_loci_of_the_rules(
 ) -> None:
     segments = segments_chr1 + segments_chr2
 
-    loci = run_build_loci(records_a, records_b, segments, chain_distance=chain_distance)
+    loci = find_loci(records_a, records_b, segments, chain_distance=chain_distance)
 
-    assert loci == build_loci_slowly(records_a, records_b, segments, CONTIGS, chain_distance)
+    assert loci == find_loci_slowly(records_a, records_b, segments, CONTIGS, chain_distance)
     check_invariants(loci, records_a + records_b, chain_distance)
