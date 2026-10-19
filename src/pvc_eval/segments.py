@@ -395,12 +395,7 @@ def _find_candidates(
             kept_now = list(_drop_covered_candidates(queue, testable_to, kept_shorter))
             if multiples[period]:
                 kept[period].extend(kept_now)
-            floor = parameters.copy_floors[period - 1]
-            found[period].extend(
-                candidate
-                for candidate in kept_now
-                if (candidate.end - candidate.start) // period >= floor
-            )
+            found[period].extend(_drop_under_copy_floor(kept_now, parameters))
             # After the last block nothing is open and no candidate starts later; the length
             # is past every end, so the longer periods can test all that is left.
             no_later_start = len(canonical) if open_from is None else open_from
@@ -409,3 +404,240 @@ def _find_candidates(
             if multiples[period]:
                 _evict_unneeded(kept[period], min(tested_to[p] for p in multiples[period]))
     return [candidate for period in periods for candidate in found[period]]
+
+
+def _get_copy_floor(parameters: StrFinderParameters, period: int) -> int:
+    """The fewest copies a candidate of a period needs (pvc MinCopies::for_period)."""
+    return parameters.copy_floors[period - 1]
+
+
+def _get_tract(candidate: _Candidate, bases: str) -> str:
+    """The bases of a candidate's detected span, in upper case, as pvc's upper gives them."""
+    return bases[candidate.start : candidate.end].upper()
+
+
+def _drop_near_contig_ends(
+    candidates: Iterable[_Candidate], bases: str, parameters: StrFinderParameters
+) -> Iterator[_Candidate]:
+    """Step 2 of doc/specs/str_finder.md: drop a candidate with fewer than
+    contig_end_flank bases between it and either end of the contig (pvc row.rs,
+    row_for_interval). bases are the whole contig, and positions 0-based and half-open.
+
+    The distance is measured on the candidate's cut, or on its detected span when it has
+    no cut. A contig_end_flank of 0 drops nothing.
+    """
+    flank = parameters.contig_end_flank
+    for candidate in candidates:
+        tract = _get_tract(candidate, bases)
+        cut = _find_cut(tract, tract[: candidate.period])
+        start, end = (candidate.start, candidate.end)
+        if cut is not None:
+            start, end = (candidate.start + cut[0], candidate.start + cut[1])
+        if start >= flank and len(bases) - end >= flank:
+            yield candidate
+
+
+def _drop_under_copy_floor(
+    candidates: Iterable[_Candidate], parameters: StrFinderParameters
+) -> Iterator[_Candidate]:
+    """Step 3 of doc/specs/str_finder.md: drop a candidate whose detected span has fewer
+    copies than the copy floor of its period (pvc segment_criteria.rs, prefilter)."""
+    for candidate in candidates:
+        copies = (candidate.end - candidate.start) // candidate.period
+        if copies >= _get_copy_floor(parameters, candidate.period):
+            yield candidate
+
+
+class _Rejection(Enum):
+    """Why step 4 or step 6 turned a candidate down (pvc RejectionReason)."""
+
+    COPY_FLOOR = "copy floor"  # pvc CopyFloor: under the floor, or shorter than the period
+    COMPOUND = "compound"  # pvc Compound
+    NO_CUT = "no cut"  # pvc NoCleanTrim
+    PURITY = "purity"  # pvc Purity
+    CONTIG_END = "contig end"  # pvc FlankClamped: the cut touches an end of the contig
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _StrSegment:
+    """What step 6 makes of a candidate: its cut, `[start, end)`, 0-based and half-open,
+    its motif in upper case, and the purity of the cut. pvc's SsrSegment."""
+
+    start: int
+    end: int
+    motif: str
+    purity: float
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _BundleMember:
+    """A bundle member as pvc's partition describes it: its cut, `[start, end)`, 0-based
+    and half-open, or its detected span when it has no cut, and its motif in upper case.
+    pvc's BundleMember."""
+
+    start: int
+    end: int
+    motif: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Classification:
+    """What steps 4 to 6 make of the candidates of a contig, pvc's Classified: the STR
+    segments, the bundle members as they came in, and each candidate turned down with
+    its reason. A candidate outside the periods admitted, or under min_score, is in
+    none of the three, as in pvc."""
+
+    str_segments: tuple[_StrSegment, ...]
+    bundle_members: tuple[_Candidate, ...]
+    rejected: tuple[tuple[_Candidate, _Rejection], ...]
+
+
+def _is_compound(motif: str) -> bool:
+    """Whether a motif equals itself shifted by a length that divides its own
+    (pvc segment_criteria.rs, is_compound)."""
+    length = len(motif)
+    return any(
+        length % shift == 0 and motif[shift:] == motif[: length - shift]
+        for shift in range(1, length)
+    )
+
+
+def _find_cut(tract: str, motif: str) -> tuple[int, int] | None:
+    """The cut of a tract, as offsets into it, `[start, end)`, or None when it has none
+    (doc/specs/str_finder.md step 6; pvc segment_criteria.rs, minimal_trim)."""
+    two_copies = motif * 2
+    reach = min(3 * len(motif), len(tract) // 2)
+    start = None
+    for offset in range(reach + 1):
+        # pvc gives up before it compares, so a tract of exactly two copies has no cut.
+        if offset + len(two_copies) >= len(tract):
+            return None
+        if tract[offset : offset + len(two_copies)] == two_copies:
+            start = offset
+            break
+    if start is None:
+        return None
+    for offset in range(len(tract), len(tract) - reach - 1, -1):
+        if offset < len(two_copies):
+            return None
+        if tract[offset - len(two_copies) : offset] == two_copies:
+            return (start, offset) if start < offset else None
+    return None
+
+
+def _get_purity(tract: str, motif: str) -> float:
+    """The fraction of the bases of a cut that equal the motif repeated from its first
+    base (pvc segment_criteria.rs, recompute_purity). The cut is never empty."""
+    tiling = (motif * (len(tract) // len(motif) + 1))[: len(tract)]
+    matches = sum(base == expected for base, expected in zip(tract, tiling, strict=True))
+    return matches / len(tract)
+
+
+def _is_in_cluster(reach: int, candidate: _Candidate, bundle_distance: int) -> bool:
+    """Whether a candidate joins the cluster whose furthest end is reach: fewer than
+    bundle_distance bases between them, an overlap counting as none (pvc
+    segment_criteria.rs, joins_cluster)."""
+    return max(candidate.start - reach, 0) < bundle_distance
+
+
+def _split_bundles(
+    candidates: Sequence[_Candidate], bundle_distance: int
+) -> tuple[list[_Candidate], list[_Candidate]]:
+    """Step 5 of doc/specs/str_finder.md: the candidates alone in their cluster, and those
+    of the clusters of two or more, each in the order given (pvc segment_criteria.rs,
+    split_bundles). candidates are sorted by start, then end."""
+    isolated: list[_Candidate] = []
+    bundled: list[_Candidate] = []
+    for cluster in _make_clusters(candidates, bundle_distance):
+        if len(cluster) > 1:
+            bundled.extend(cluster)
+        else:
+            isolated.extend(cluster)
+    return isolated, bundled
+
+
+def _make_clusters(
+    candidates: Sequence[_Candidate], bundle_distance: int
+) -> list[list[_Candidate]]:
+    """The clusters of step 5, in order: each candidate joins the cluster before it when
+    _is_in_cluster says so. candidates are sorted by start, then end. Over the bundle
+    members alone it gives the bundles of step 7 (pvc segment_criteria.rs,
+    bundle_clusters)."""
+    clusters: list[list[_Candidate]] = []
+    reach = 0
+    for candidate in candidates:
+        if clusters and _is_in_cluster(reach, candidate, bundle_distance):
+            clusters[-1].append(candidate)
+            reach = max(reach, candidate.end)
+        else:
+            clusters.append([candidate])
+            reach = candidate.end
+    return clusters
+
+
+def _make_bundle_member(candidate: _Candidate, bases: str) -> _BundleMember:
+    """A bundle member with its cut, or its detected span when it has no cut, and its
+    motif (pvc segment_criteria.rs, bundle_member_from_bases). bases are the whole contig,
+    and positions 0-based and half-open."""
+    tract = _get_tract(candidate, bases)
+    motif = tract[: candidate.period]
+    cut = _find_cut(tract, motif)
+    start, end = (0, len(tract)) if cut is None else cut
+    return _BundleMember(start=candidate.start + start, end=candidate.start + end, motif=motif)
+
+
+def _find_str_segments(
+    candidates: Iterable[_Candidate], bases: str, parameters: StrFinderParameters
+) -> _Classification:
+    """Steps 4 to 6 of doc/specs/str_finder.md over the candidates of a contig (pvc
+    segment_criteria.rs, classify, over a whole contig). bases are the whole contig, in
+    any case, and positions 0-based and half-open."""
+    in_scope: list[_Candidate] = []
+    rejected: list[tuple[_Candidate, _Rejection]] = []
+    for candidate in candidates:
+        if not parameters.min_period <= candidate.period <= parameters.max_period:
+            continue
+        if candidate.score < parameters.min_score:
+            continue
+        if candidate.end - candidate.start < candidate.period:
+            rejected.append((candidate, _Rejection.COPY_FLOOR))
+        elif _is_compound(_get_tract(candidate, bases)[: candidate.period]):
+            rejected.append((candidate, _Rejection.COMPOUND))
+        else:
+            in_scope.append(candidate)
+    in_scope.sort(key=lambda candidate: (candidate.start, candidate.end))
+    isolated, bundle_members = _split_bundles(in_scope, parameters.bundle_distance)
+    str_segments: list[_StrSegment] = []
+    for candidate in isolated:
+        outcome = _make_str_segment(candidate, bases, parameters)
+        if isinstance(outcome, _Rejection):
+            rejected.append((candidate, outcome))
+        else:
+            str_segments.append(outcome)
+    return _Classification(
+        str_segments=tuple(str_segments),
+        bundle_members=tuple(bundle_members),
+        rejected=tuple(rejected),
+    )
+
+
+def _make_str_segment(
+    candidate: _Candidate, bases: str, parameters: StrFinderParameters
+) -> _StrSegment | _Rejection:
+    """Step 6 of doc/specs/str_finder.md: the STR segment of a candidate alone in its
+    cluster, or why there is none (pvc segment_criteria.rs, finish_locus). bases are the
+    whole contig, and positions 0-based and half-open."""
+    tract = _get_tract(candidate, bases)
+    motif = tract[: candidate.period]
+    cut = _find_cut(tract, motif)
+    if cut is None:
+        return _Rejection.NO_CUT
+    start, end = candidate.start + cut[0], candidate.start + cut[1]
+    if (end - start) // candidate.period < _get_copy_floor(parameters, candidate.period):
+        return _Rejection.COPY_FLOOR
+    purity = _get_purity(tract[cut[0] : cut[1]], motif)
+    if purity < parameters.min_purity:
+        return _Rejection.PURITY
+    if start == 0 or end == len(bases):
+        return _Rejection.CONTIG_END
+    return _StrSegment(start=start, end=end, motif=motif, purity=purity)
