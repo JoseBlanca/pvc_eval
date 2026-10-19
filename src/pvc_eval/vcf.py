@@ -544,6 +544,7 @@ def _parse_genotypes(
     values were taken as absent for not being numbers.
 
     num_alleles: how many VCF alleles the record has, REF included.
+    ploidy: how many haplotypes each sample has.
     """
     if len(fields) <= _NUM_FIXED_COLUMNS:
         return (), 0
