@@ -45,3 +45,44 @@ the contract is shared. The duplicate default tests: they are pvc's, ported by n
 - On input made of long runs of one base, the queue of candidates waiting for their test grows by
   about one per 500 bases, because period 1 keeps one subsequence open. The output stays right, and
   pvc has the same bound. Whether real sequence does this is for the performance work.
+
+## Milestone 2: from candidates to STR segments and bundle members
+
+Commits 098c345 to the second-round fix. Steps 2 to 6 in `src/pvc_eval/segments.py`, private; pvc's
+fixtures in `tests/data/tandem_repeat/`, byte for byte (`cmp`), with `tests/data/README.md`.
+
+- **The 44 ported tests** (42 of `segment_criteria.rs`, 2 of `repeat_catalog/row.rs`), by pvc's
+  names, all passing, plus tests of the port's own for rules no ported test reached.
+- **pvc's fixture**, `synthetic_ref.fa`, now pins pvc's counts with `params()`: 15 STR segments on
+  ctg1 and 2 on ctg2, no bundle members.
+- Every expected value added beyond pvc's own tests equals the output of a line-by-line Python
+  transcription of pvc's functions at bbcc9f4, which the tests' comments name.
+- Checks: ruff and ty clean, `pytest -q` "370 passed".
+
+**Changed in the plan.** None beyond step 2, moved here from milestone 1. The plan said
+`minimal_trim_returns_none_without_two_clean_copies` guards the cut's early failure; its input has no
+cut either way, and a test of the port's own guards it instead.
+
+**What the review found and is fixed.**
+- *Tests, a blocker.* A candidate under `min_score`, or with a compound motif, could be dropped after
+  bundling instead of before, and every test passed, because each case of the test the plan named
+  held one candidate. Two tests now put such a candidate beside a clean repeat. The review also
+  found three bounds of the cut and the order of the rejection reasons unpinned; each now has a test
+  that a mutant fails. One of these needed a second round: a restructuring changed how the motif is
+  read, and the first version of the test could no longer fail.
+- *Spec.* The rule that a contig-end flank of 0 turns step 2 off had no test; a ported assertion
+  had been dropped that the test list keeps.
+- *Correctness and spec.* An empty candidate passed the copy floor at a floor of 0, where pvc drops
+  it; steps 3 and 4 now test that the end is after the start, as pvc's do.
+- *Design.* One rule, "the cut, or else the detected span", was written twice and is now one
+  function; "tract", a word the spec forbids, was renamed after what each value is.
+- The spec and correctness reviewers compared steps 2 to 6 with two independent transcriptions of
+  pvc on 125,000 random and adversarial cases, and steps 1 to 3 with pvc's own binary on 400
+  contigs: no difference.
+
+**Not taken.** Purity is kept in 64 bits where pvc keeps 32: the decision can differ only for a cut
+of more than about 10 million bases, and pvc_eval never writes purity out. Step 2 keeps a candidate
+shorter than its period, where pvc refuses it: step 1 never makes one.
+
+**What the owner should know.** Nothing that changes a result. The comparison with pvc's binary on
+400 random contigs agrees for steps 1 to 3; milestone 5 compares the whole finder.

@@ -1240,8 +1240,9 @@ def test_a_compound_candidate_bundles_nothing() -> None:
 
 
 def test_a_candidate_shorter_than_its_period_is_turned_down_before_the_compound_test() -> None:
-    # AA given as period 4 is both shorter than its period and, as a motif, compound.
-    rejections = _find_rejections([_make_candidate(5, 7, 4, 100)], "CGCGCAAGCGCG", _PARAMS)
+    # [5, 7) given as period 4 is shorter than its period, and the four bases from its start,
+    # AAAA, are a compound motif. pvc's classify tests the length first.
+    rejections = _find_rejections([_make_candidate(5, 7, 4, 100)], "CGCGCAAAAGCG", _PARAMS)
     assert rejections == [_Rejection.COPY_FLOOR]
 
 
