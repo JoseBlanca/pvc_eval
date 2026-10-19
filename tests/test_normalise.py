@@ -89,6 +89,7 @@ def test_spans_of_the_three_cases_of_the_spec(
         (HOMOPOLYMER, 5, ("T", "AT"), (0, 6)),
         # An A inserted after position 4 slides from 0 to 5, a CA inserted there from 3 to 8.
         ("GAAAACACT", 4, ("A", "AA", "ACA"), (0, 9)),
+        ("GAAAACACT", 4, ("A", "ACA", "AA"), (0, 9)),
         (DINUCLEOTIDE, 4, ("ACA", "A", "ACG"), (0, 7)),
         (HOMOPOLYMER, 3, ("AA", "A", "*"), (0, 5)),
         (HOMOPOLYMER, 2, ("A", "*"), (2, 3)),
@@ -109,6 +110,7 @@ def test_spans_of_the_three_cases_of_the_spec(
         "deletion_anchored_on_the_right",
         "insertion_anchored_on_the_right",
         "union_of_two_insertions",
+        "union_of_two_insertions_the_first_reaching_right",
         "union_of_deletion_and_snp",
         "spanning_deletion_beside_a_deletion",
         "spanning_deletion_only",
