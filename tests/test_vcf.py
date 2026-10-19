@@ -828,6 +828,58 @@ def test_span_limit_of_1_is_named_in_the_singular(
     ) in caplog.text
 
 
+# A run of 200 As after a G: the deletion of the A at 2 slides left to the G and right to
+# the last A, past the first bases its span is looked for in.
+LONG_SLIDE_REFERENCE = make_fasta({"chr1": "G" + "A" * 200 + "T" + "C" * 300})
+LONG_SLIDE_LINE = "chr1\t2\t.\tAA\tA\t.\t.\t.\tGT\t0/1\t0/1\n"
+
+
+@pytest.mark.parametrize("limit", [{}, {"span_limit": None}], ids=["default_10_kb", "no_limit"])
+def test_deletion_that_slides_far_right_spans_its_whole_slide(
+    tmp_path: Path, make_reference: MakeReference, limit: dict[str, None]
+) -> None:
+    path = write_vcf(tmp_path, LONG_SLIDE_LINE)
+
+    (record,) = parse_vcf(path, make_reference(*LONG_SLIDE_REFERENCE), **limit)
+
+    assert get_placement(record) == (1, ("AA", "A"), (0, 201), False)
+
+
+def test_span_reaching_one_base_beyond_a_limit_of_64_is_the_ref(
+    tmp_path: Path, make_reference: MakeReference
+) -> None:
+    # The deletion's span ends 198 bases after its REF, and is first looked for 64 bases
+    # on each side of it: the most a limit of 64 allows.
+    path = write_vcf(tmp_path, LONG_SLIDE_LINE)
+
+    (record,) = parse_vcf(path, make_reference(*LONG_SLIDE_REFERENCE), span_limit=64)
+
+    assert get_placement(record) == (1, ("AA", "A"), (1, 3), False)
+
+
+def test_with_no_limit_an_insertion_slides_to_the_end_of_its_contig(
+    tmp_path: Path, make_reference: MakeReference, windows: list[RecordingWindow]
+) -> None:
+    # The window stops a reader that keeps asking for bases past the contig's end.
+    path = write_vcf(tmp_path, "chr1\t1\t.\tG\tGA\t.\t.\t.\tGT\t0/1\t0/1\n")
+    reference = make_reference(*make_fasta({"chr1": "G" + "A" * 100}))
+
+    (record,) = parse_vcf(path, reference, span_limit=None)
+
+    assert get_placement(record) == (0, ("G", "GA"), (0, 101), False)
+    assert len(windows) == 1
+
+
+def test_a_byte_that_is_not_a_base_where_a_record_reads_stops_the_run(
+    tmp_path: Path, make_reference: MakeReference
+) -> None:
+    path = write_vcf(tmp_path, "chr1\t2\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n")
+    reference = make_reference(">chr1\nGGGA1GAGG\n", "chr1\t9\t6\t9\t10\n")
+
+    with pytest.raises(PvcEvalInputError, match=r"ref\d+\.fa: chr1:5 is not a letter"):
+        list(parse_vcf(path, reference))
+
+
 def make_walk(tmp_path: Path) -> tuple[Path, tuple[str, str], list[int]]:
     """A contig of 1 Mb, a VCF of a SNP or a deletion of one base every 997 bases, and the
     0-based POS of each record."""
