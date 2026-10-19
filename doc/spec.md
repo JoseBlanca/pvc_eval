@@ -49,6 +49,8 @@ use for it.
 
 | term | meaning | not |
 |---|---|---|
+| **segmented genome** | each contig of the reference cut by the STR finder (§5.1) into consecutive, non-overlapping regions, each a generic region or an STR region | |
+| **generic region** | a stretch of the segmented genome that holds no tandem repeat the STR finder admits; pvc's `generic` | "ordinary sequence" |
 | **STR region** | a stretch the STR finder (§5.1) reports as a tandem repeat: an **STR segment** (one repeat), an **STR bundle** (two or more repeats within 15 bases of each other) or a **satellite** (a repeat run longer than 100 bases). pvc's terms. | "tract", "STR locus", "repeat locus" |
 
 **Building what is compared**
@@ -71,29 +73,31 @@ use for it.
 |---|---|
 | **outcome** | the result of comparing one sample pair at one locus (§5.5) |
 | **kind** | SNP, indel, STR or complex (§5.6) |
-| **stratum** | the class an optional stratification BED gives the locus (homopolymer, segmental duplication, …) |
+| **stratum** | the class `--strata` gives the locus: from a stratification BED (homopolymer, segmental duplication, …), or, with `--strata pvc`, the kind of STR region the locus holds (§5.7) |
 | **quality** | for one file and sample, the lowest QUAL among the VCF records giving the sample a non-reference VCF allele at the locus |
 
 ## 3. Interface
 
 ```
 pvc_eval compare --reference ref.fa --a a.vcf.gz --b b.vcf.gz --output loci.tsv
-                 [--regions regions.bed] [--strata strata.bed] [--str-regions str.bed]
+                 [--regions regions.bed] [--strata strata.bed|pvc] [--str-regions str.bed]
                  [--sample-map pairs.tsv] [--record-cap N] [--summary summary.tsv] [--all-rows]
+                 [--evaluator pvc|vcfeval|happy|naive]
 ```
 
 | option | what it does |
 |---|---|
 | `--reference` | FASTA with its `.fai`. Contig names and order come from the `.fai`. |
 | `--a`, `--b` | the two VCFs, plain or bgzipped. |
-| `--regions` | compare only loci lying wholly inside these regions; any other locus is reported as *outside the regions*. Without it, every locus is compared. |
-| `--strata` | BED with a fourth column naming each interval's class; a locus takes the class of the intervals it overlaps (several are joined with `,`; none gives `.`). |
+| `--regions` | compare only the loci that overlap these regions, by at least one position; every other locus is skipped and gets no row, nor a count in the summary. A locus that overlaps is compared whole, its VCF records outside the regions included, since loci are built from all VCF records (§5.3). Without it, every locus is compared. |
+| `--strata` | BED with a fourth column naming each interval's class; a locus takes the class of the intervals it overlaps (several are joined with `,`; none gives `.`). The word `pvc` instead of a path gives each locus one class from the STR regions it holds — `satellite`, `str-bundle`, `str` or `generic` — with no BED needed (§5.7); a file named `pvc` is given as `./pvc`. |
 | `--str-regions` | BED of STR regions to use instead of running the STR finder. |
 | `--sample-map` | two columns: a sample of A, a sample of B. Without it, samples are paired by name. |
 | `--record-cap` | default 30 (§5.3). |
 | `--output` | the table of §6, one row per sample pair and locus. |
 | `--summary` | counts of outcomes by kind and stratum. |
 | `--all-rows` | also write the rows whose outcome is *reference in both* (§5.5). |
+| `--evaluator` | what decides each locus's outcome: `pvc`, pvc_eval's own rules (§5.4, §5.5), the default; or `vcfeval`, `happy` or `naive`, another evaluator wrapped behind the same interface (§8). |
 
 **Errors, which stop the run:** a VCF not sorted in the `.fai`'s contig order and by position; a
 contig in a VCF but not in the reference; no sample pairs; a sample named in `--sample-map` absent
@@ -106,6 +110,17 @@ affected sample (§5.4) and the run goes on.
 
 The Python API offers each stage of §4 as a function over iterators, so a user can, for example,
 filter VCF records between reading and grouping, or read loci and genotypes without evaluating them.
+Above the stages, one function does what `compare` does, whichever the evaluator: it takes the
+two VCFs, the reference and the options of the table above, and yields the rows of §6 in position
+order, one per sample pair and locus.
+
+```python
+def compare(a: Path, b: Path, reference: Path, config: CompareConfig,
+            evaluator: Evaluator = PVC) -> Iterator[OutcomeRow]: ...
+```
+
+`CompareConfig` holds the options of the table above but `--output`, `--summary` and
+`--evaluator`.
 
 ## 4. The pipeline
 
@@ -113,21 +128,26 @@ Five stages, each a function from one stream to the next. Nothing holds more tha
 and a short look-ahead, so memory does not grow with the genome.
 
 ```
-reference ──► STR regions ─────────────────┐
+reference ──► segmented genome ────────────┐
 file A ──► VCF records, normalised ──┐      │
-                                     ├──► loci ──► reconciled loci ──► outcomes
-file B ──► VCF records, normalised ──┘
+                                     ├──► loci ──┬──► reconciled loci ──► outcomes
+file B ──► VCF records, normalised ──┘           └──► another evaluator's decisions ──► outcomes (§8)
 ```
 
-1. **STR regions** (§5.1): the STR finder, run per contig over the reference, yields STR regions in
-   position order. Only contigs that appear in a VCF are scanned.
+1. **Segmented genome** (§5.1): the STR finder, run per contig over the reference, yields the
+   contig's generic regions and STR regions in position order. Only contigs that appear in a VCF
+   are scanned.
 2. **VCF records** (§5.2): each file is read as a stream of VCF records, checked against the
    reference, normalised, and kept in position order.
-3. **Loci** (§5.3): the two streams of VCF records and the stream of STR regions are merged into a
-   stream of loci, each holding the VCF records of both files that fall in it.
+3. **Loci** (§5.3): the two streams of VCF records and the STR regions of the segmented genome are
+   merged into a stream of loci, each holding the VCF records of both files that fall in it.
 4. **Reconciliation** (§5.4): each locus gets its list of locus alleles, and each sample in each file
    its possible genotypes as indices into that list.
 5. **Evaluation** (§5.5): each sample pair at each locus gets an outcome.
+
+Stages 1 to 3 are the same for every evaluator, so every evaluator reports on the same loci and
+their tables line up row by row. With another evaluator, stages 4 and 5 are replaced by its wrapper
+(§8).
 
 ## 5. The rules
 
@@ -148,7 +168,7 @@ header example, for one, is out of date).
    period's bases are not themselves a repeat of a shorter unit; a candidate is dropped when a kept
    candidate of a shorter period that divides its period covers at least half of it.
 2. **Admit or reject each candidate as one STR** (pvc `repeat_catalog/row.rs`, `segment_criteria.rs`).
-   A candidate is rejected — and its bases stay ordinary sequence — if it has fewer copies than the
+   A candidate is rejected — and its bases stay in a generic region — if it has fewer copies than the
    floor for its period, its motif is compound, it has no clean whole-motif cut at both ends, its
    purity after the cut is below the minimum, or it lies within 15 bases of a contig end. Candidates
    chained within 15 bases of each other become an **STR bundle**; a lone admitted candidate is an
@@ -158,8 +178,9 @@ header example, for one, is out of date).
    them. A bundle whose span exceeds 100 bases becomes a satellite. A bundle touching a contig end is
    dropped.
 
-The result is pvc's partition of the contig into STR segments, STR bundles, satellites and ordinary
-sequence; pvc_eval keeps all but the ordinary sequence.
+The result is the segmented genome: pvc's partition of the contig into STR segments, STR bundles,
+satellites and generic regions. Loci are built from its STR regions (§5.3), and `--strata pvc`
+reads its kinds (§5.7).
 
 **Satellites are STR regions in pvc_eval.** The vocabulary of §2 names two kinds of STR region; this
 section adds a third. An indel in a satellite can be written in as many places as in a short repeat,
@@ -198,9 +219,12 @@ faster sweep it uses).
 benchmark comparison. So:
 
 - `pvc_eval str-regions --reference ref.fa [--regions r.bed] --output str.bed` runs the finder once
-  and writes STR regions as a BED, for `compare --str-regions` to reuse. pvc gives the same answer
-  whether or not a region list is given (its `typed_regions.md` §2.5), because it always scans whole
-  contigs; the port does the same, and a region list only limits what is written.
+  and writes STR regions as a BED, for `compare --str-regions` to reuse; its fourth column is each
+  region's kind, `str`, `str-bundle` or `satellite`, which `--strata pvc` reads (§5.7). A
+  `--str-regions` BED without that column can be used for loci, and with `--strata pvc` it is an
+  error. pvc gives the same answer whether or not a region list is given (its `typed_regions.md`
+  §2.5), because it always scans whole contigs; the port does the same, and a region list only
+  limits what is written.
 - Without `--str-regions`, `compare` runs the finder itself over the contigs its VCFs touch.
 
 How long the port takes on GRCh38 is measured first, before deciding whether the finder needs
@@ -260,8 +284,9 @@ at the end of the repeat, while another caller's separate deletion left-aligns t
 repeat. Taking the whole repeat whenever a VCF record touches it puts both into one locus.
 
 **The record cap.** A locus holding more VCF records than the record cap (default 30, both files
-together) is not reconciled; every sample pair gets the outcome *over the cap*. This bounds the work
-in §5.4, whose number of possible genotypes can double with every unphased heterozygous VCF record.
+together) is not reconciled; every sample pair gets the outcome *too many records*. This bounds the
+work in §5.4, whose number of possible genotypes can double with every unphased heterozygous VCF
+record.
 
 ### 5.4 Reconciliation
 
@@ -325,8 +350,7 @@ Each sample pair at each compared locus gets exactly one outcome. The first rule
 
 | outcome | when |
 |---|---|
-| **over the cap** | the locus was not reconciled (§5.3) |
-| **outside the regions** | `--regions` was given and the locus is not wholly inside one of its intervals |
+| **too many records** | the locus holds more VCF records than the record cap and was not reconciled (§5.3) |
 | **invalid in A**, **invalid in B**, **invalid in both** | that file's sample is invalid at the locus |
 | **missing in A**, **missing in B**, **missing in both** | every possible genotype of that file's sample has a missing haplotype |
 | **reference in both** | in both files, the only possible genotype is all REF |
@@ -353,6 +377,38 @@ The kind of a locus is read from its locus alleles:
 | **SNP** | every non-reference locus allele has the length of REF and differs from it at one position |
 | **indel** | every non-reference locus allele differs from REF by one insertion or one deletion, and nothing else |
 | **complex** | anything else: several changed positions, or a change of length together with a substitution |
+
+### 5.7 Strata from pvc's region kinds
+
+`--strata pvc` sorts loci by the part of pvc's partition (§5.1) they fall in, which is the
+stratification most comparisons of pvc want. The four classes are pvc's region kinds, with
+pvc_eval's names: `generic` (a generic region; pvc `RegionKind::Generic`), `str` (an STR segment;
+`ssr_locus` in pvc's typed-regions BED), `str-bundle` (`ssr_bundle`) and `satellite`.
+
+A locus has exactly one of the four classes, the first that applies, from the most complex STR
+region to the simplest:
+
+| stratum | when the locus contains |
+|---|---|
+| `satellite` | a satellite |
+| `str-bundle` | an STR bundle, and no satellite |
+| `str` | an STR segment, and no satellite or STR bundle |
+| `generic` | no STR region |
+
+The generic regions a locus overlaps beside its STR regions do not count. The rule for a
+stratification BED, every class the locus overlaps, would make nearly every STR locus
+`generic,str`: a locus widened to an STR region (§5.3) usually keeps the base before it, where a
+left-aligned insertion sits.
+
+For example, an AT repeat is an STR segment at positions 11 to 20, and a VCF record inserts `AT`
+after position 10. The locus is 10 to 20; its stratum is `str`, not `generic,str`. A locus whose
+records chain that STR segment to a satellite 20 bases away is `satellite` (within 15 bases the
+satellite would have swallowed the segment, §5.1), and one that chains it to an STR bundle is
+`str-bundle`.
+
+The STR regions are the ones the loci were built from, the finder's or `--str-regions`'s, so the
+stratum always agrees with the `str_regions` column (§6). It refines the kind of §5.6: a locus of
+kind STR is never `generic`, and every other kind is.
 
 ## 6. The output table
 
@@ -381,15 +437,21 @@ The summary (`--summary`) counts rows by outcome, kind and stratum.
 Nothing about pvc_eval is trusted until these pass.
 
 1. **The STR finder against pvc:** the port's own copy of pvc's tests (§5.1), and identical STR
-   regions from the port and from `pvc dev type-regions` over the GIAB benchmark regions of GRCh38.
+   regions, kinds included, from the port and from `pvc dev type-regions` over the GIAB benchmark
+   regions of GRCh38.
 2. **Each stage on hand-written cases**, including:
    - normalising: trimming at both ends; left-alignment in homopolymers and longer repeats; a
      multi-ALT record whose ALTs would move by different amounts; a complex record, not moved;
    - loci: chaining across both files; a left-aligned insertion next to a repeat pulling it in; the
-     complex-record-plus-separate-records example of §5.3; the record cap;
+     complex-record-plus-separate-records example of §5.3; the record cap; with `--regions`, a locus
+     sticking out of a region compared whole, and one sharing no position with any region skipped;
    - reconciliation: the invalid example of §5.4 and its valid variant; GATK's `*` form; phase
      sets; `./1`; a REF mismatch; malformed GT;
-   - evaluation: one case per outcome.
+   - evaluation: one case per outcome;
+   - strata with `--strata pvc`: the insertion of §5.7 (`str`), a locus with no STR region
+     (`generic`), the STR segment chained to a satellite (`satellite`) and to a bundle
+     (`str-bundle`), a bundle chained to a satellite (`satellite`), and a `--str-regions` BED
+     without a kind column (an error).
 3. **A file against itself:** every row *same genotype* or *reference in both*.
 4. **A file against re-spellings of itself** — every VCF record decomposed into single-base and
    single-indel records with genotypes carried over; neighbouring records merged into complex ones;
@@ -402,14 +464,27 @@ Nothing about pvc_eval is trusted until these pass.
 
 ## 8. Comparing evaluators
 
-Once pvc_eval passes §7, the same comparisons are run through two other evaluators wrapped behind
-pvc_eval's interface (two VCFs and a reference in, the table of §6 out): RTG vcfeval, and naive
-matching (`bcftools norm` then matching VCF records by position and alleles). Each wrapper lays its
-own per-record decisions onto pvc_eval's loci. Every locus where the three disagree is classified by
-hand; that classification is how pvc_eval's rules are checked against the established tools'. hap.py
-is left out because it ships only for x86-64; it can be added behind the same interface on such a
-machine. How the wrappers map per-record decisions onto loci is its own short spec, written after
-this one is settled.
+Other evaluators run behind `compare`'s interface (§3): the same two VCFs, reference and options in,
+the table of §6 out. There are three: RTG vcfeval, hap.py, and naive matching (`bcftools norm`, then
+matching VCF records by position and alleles).
+
+**A wrapper yields outcomes, not reconciled loci.** vcfeval and hap.py do not build locus alleles
+or possible genotypes; they give a decision for each VCF record (matched, or unmatched in one
+file), with some grades of partial match. A wrapper that filled reconciled loci from those would be
+inventing what the tool never computed. So a wrapper takes the loci of §4 stage 3, runs its tool
+once per sample pair (vcfeval and hap.py compare one sample at a time), and turns the decisions of
+the VCF records in each locus into one outcome of §5.5. The columns the tool has nothing for —
+`alleles`, `genotype_a`, `genotype_b`, `possible_a`, `possible_b` — are `.`.
+
+**What the wrappers are for.** Once pvc_eval passes §7, the same comparisons are run with every
+evaluator, and every locus where they disagree is classified by hand. That classification is how
+pvc_eval's rules are checked against the established tools'.
+
+hap.py ships only for x86-64; on an arm64 machine it runs from its Docker image under emulation,
+which is slow but enough for benchmark regions. How each wrapper turns a locus's record decisions
+into an outcome — a locus whose records got different decisions, the outcomes a tool cannot tell
+apart, the A/B asymmetry of tools that call one file the truth — is its own short spec under
+`doc/specs/`, written after this one is settled.
 
 ## 9. Not covered
 
