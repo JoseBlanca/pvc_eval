@@ -1,6 +1,6 @@
 """The loci of build_loci on the spans parse_vcf computes (doc/specs/loci.md, "How it is
-verified"): the traded events of doc/spec.md §5.3, the second and third cases of §5.2, and
-the STR regions of segment_contig.
+verified"): the traded events of doc/spec.md §5.3, the second and third cases of §5.2, a
+deletion that only its span joins to the next record, and the STR regions of segment_contig.
 
 The VCF text and the FASTA with its .fai are written in tmp_path, so that a span parse_vcf
 computes differently from the one the spec's case assumes shows here. The spec writes
@@ -141,7 +141,9 @@ def test_deletion_that_can_slide_right_shares_a_locus_with_the_record_it_slides_
 ) -> None:
     # The second case of doc/spec.md §5.2, reference 20-27 GCAGAGTC: A's `21 CAG C` spans
     # 21-25, since the AG at 22-23 repeats at 24-25, and so reaches B's `24 AGT C` at 24-26.
-    # At a chain distance of 0 only the span joins them.
+    # Their REFs, 21-23 and 24-26, already touch, so they would share a locus without the
+    # span too: the test checks the spans parse_vcf gives, and the next one that only the
+    # span joins them.
     fasta = write_reference(tmp_path, "T" * 19 + "GCAGAGTC" + "T" * 4)
 
     with IndexedFasta(fasta) as reference:
@@ -155,12 +157,30 @@ def test_deletion_that_can_slide_right_shares_a_locus_with_the_record_it_slides_
     assert loci == [Locus("chr1", 20, 26, (deletion_a, snp_a), (complex_b,), ())]
 
 
+def test_deletion_joins_a_record_its_ref_leaves_a_gap_to_only_by_its_span(
+    tmp_path: Path,
+) -> None:
+    # doc/specs/loci.md, "How it is verified", 1-based: reference 20-29 GCAGAGAGTC. A's
+    # `21 CAG C` deletes the AG at 22-23, which slides right to 26-27, so its span is 21-27
+    # and touches B's `28 T C`. By their REFs, 21-23 and 28, a gap of 4 would make two loci
+    # at a chain distance of 0.
+    fasta = write_reference(tmp_path, "T" * 19 + "GCAGAGAGTC" + "T" * 4)
+
+    with IndexedFasta(fasta) as reference:
+        loci = find_loci(tmp_path, reference, ["21 CAG C"], ["28 T C"], chain_distance=0)
+
+    deletion_a = make_record(20, ("CAG", "C"), (20, 27), 0)
+    snp_b = make_record(27, ("T", "C"), (27, 28), 0)
+    assert loci == [Locus("chr1", 20, 28, (deletion_a,), (snp_b,), ())]
+
+
 def test_insertion_shares_a_locus_with_a_record_on_the_base_after_its_anchor(
     tmp_path: Path,
 ) -> None:
     # The third case of doc/spec.md §5.2, reference 10-11 CG: A's `10 C CT` cannot slide and
-    # still spans 10-11, the base after its anchor, which B's `11 G TA` at 11 is on. At a
-    # chain distance of 0 only the span joins them.
+    # still spans 10-11, the base after its anchor, which B's `11 G TA` at 11 is on. Their
+    # REFs, 10 and 11, already touch, so they would share a locus without the span too: the
+    # test checks the spans parse_vcf gives.
     fasta = write_reference(tmp_path, "A" * 9 + "CG" + "A" * 4)
 
     with IndexedFasta(fasta) as reference:
