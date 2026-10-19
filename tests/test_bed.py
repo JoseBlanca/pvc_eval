@@ -60,17 +60,17 @@ def test_parse_bed_reads_lines_that_end_in_carriage_return(tmp_path: Path) -> No
         ),
         (
             "chr1\t1e3\t2000",
-            "the start, 1e3, is not a whole number. A BED line gives its start and its end as"
+            "the start, '1e3', is not a whole number. A BED line gives its start and its end as"
             " whole numbers of 0 or more; correct the line and run again.",
         ),
         (
             "chr1\t\u00b2\t2000",
-            "the start, \u00b2, is not a whole number. A BED line gives its start and its end as"
+            "the start, '\u00b2', is not a whole number. A BED line gives its start and its end as"
             " whole numbers of 0 or more; correct the line and run again.",
         ),
         (
             "chr1\t100\t-20",
-            "the end, -20, is not a whole number. A BED line gives its start and its end as"
+            "the end, '-20', is not a whole number. A BED line gives its start and its end as"
             " whole numbers of 0 or more; correct the line and run again.",
         ),
         (
@@ -81,7 +81,7 @@ def test_parse_bed_reads_lines_that_end_in_carriage_return(tmp_path: Path) -> No
         ),
         (
             "chrUn\t100\t200",
-            "the contig chrUn is not in the reference. Keep only the reference's contigs in the"
+            "the contig 'chrUn' is not in the reference. Keep only the reference's contigs in the"
             " BED, for instance with `awk -F'\\t' 'NR == FNR {{keep[$1]; next}} $1 in keep'"
             " ref.fa.fai {path} > kept.bed`, where ref.fa.fai is the .fai of the --reference"
             " FASTA, and run again with kept.bed.",
@@ -185,4 +185,15 @@ def test_parse_bed_says_to_rename_a_contig_named_in_another_style(
         f" '{named}'. Name the BED's contigs as the reference does, for instance with"
         f" `awk -F'\\t' -v OFS='\\t' '{command.format()}' {path} > renamed.bed`, and run again"
         " with renamed.bed."
+    )
+
+
+def test_parse_bed_quotes_a_contig_so_that_a_byte_order_mark_shows(tmp_path: Path) -> None:
+    path = write_bed(tmp_path, ["\ufeffchr1\t0\t10"])
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_bed(path, _CONTIGS))
+
+    assert str(raised.value).startswith(
+        f"{path}, line 1: the contig '\\ufeffchr1' is not in the reference."
     )

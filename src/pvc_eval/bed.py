@@ -102,7 +102,7 @@ def _parse_bed_line(
 def _parse_position(text: str, column: str, where: str) -> int:
     if not (text.isascii() and text.isdigit()):
         raise PvcEvalInputError(
-            f"{where} the {column}, {text}, is not a whole number. A BED line gives its start"
+            f"{where} the {column}, {text!r}, is not a whole number. A BED line gives its start"
             " and its end as whole numbers of 0 or more; correct the line and run again."
         )
     return int(text)
@@ -124,7 +124,7 @@ def _make_contig_message(
         # Decided by the owner on 19 October 2026: the run stops, over skipping such lines
         # with a warning, also for GIAB's BED against a reference cut to one chromosome.
         return (
-            f"{where} the contig {contig} is not in the reference. Keep only the reference's"
+            f"{where} the contig {contig!r} is not in the reference. Keep only the reference's"
             " contigs in the BED, for instance with"
             " `awk -F'\\t' 'NR == FNR {keep[$1]; next} $1 in keep'"
             f" ref.fa.fai {path} > kept.bed`, where ref.fa.fai is the .fai"
