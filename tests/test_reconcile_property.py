@@ -5,12 +5,13 @@ indel, phased in a phase set of its own for each record of A, and the records th
 kept whole. Every row is then same genotype, reference in both, missing in both, invalid in
 both or too complex, each of the last three only where file A has its cause.
 
-The decomposition is a function of these tests, make_decomposed_lines, checked first on
+The decomposition is a function of these tests, _make_decomposed_lines, checked first on
 cases worked by hand.
 """
 
 from collections.abc import Iterator, Sequence
 from contextlib import ExitStack
+from dataclasses import dataclass
 
 import pytest
 from hypothesis import given, settings
@@ -32,7 +33,16 @@ _BASES = "ACGT"
 type _Edit = tuple[int, str, str]
 
 
-def make_decomposed_lines(vcf_records: Sequence[VcfRecord], reference: IndexedFasta) -> list[str]:
+@dataclass(frozen=True, slots=True)
+class _Piece:
+    """A record of file B decomposed from one edit: one replaced base or one indel."""
+
+    pos_1based: int
+    ref: str
+    alt: str
+
+
+def _make_decomposed_lines(vcf_records: Sequence[VcfRecord], reference: IndexedFasta) -> list[str]:
     """The VCF lines of file B, `CHROM POS REF ALT GT...` as CaseFiles reads them, made
     from file A's records by decomposing each that nothing touches into records of one
     replaced base or one indel (doc/specs/reconciliation.md §9).
@@ -66,21 +76,21 @@ def make_decomposed_lines(vcf_records: Sequence[VcfRecord], reference: IndexedFa
     placed_lines: list[tuple[int, int, str]] = []
     for place, vcf_record in enumerate(vcf_records):
         contig = vcf_record.contig
-        if _is_touched(vcf_records, edits, place):
+        if _is_record_touched(vcf_records, edits, place):
             line = f"{contig} {_format_whole_line(vcf_record)}"
             placed_lines.append((contig_places[contig], vcf_record.start + 1, line))
             continue
-        alts_of_piece: dict[tuple[int, str, str], set[int]] = {}
+        alts_of_piece: dict[_Piece, set[int]] = {}
         for allele_index, edit in enumerate(edits[place], start=1):
             for piece in _make_pieces(contig, edit, reference):
                 alts_of_piece.setdefault(piece, set()).add(allele_index)
-        for (pos_1based, ref, alt), allele_indices in alts_of_piece.items():
+        for piece, allele_indices in alts_of_piece.items():
             gts = [
                 _format_piece_genotype(vcf_genotype, allele_indices, place + 1)
                 for vcf_genotype in vcf_record.genotypes
             ]
-            line = f"{contig} {pos_1based} {ref} {alt} {' '.join(gts)}"
-            placed_lines.append((contig_places[contig], pos_1based, line))
+            line = f"{contig} {piece.pos_1based} {piece.ref} {piece.alt} {' '.join(gts)}"
+            placed_lines.append((contig_places[contig], piece.pos_1based, line))
     return [line for *_, line in sorted(placed_lines, key=lambda placed: placed[:2])]
 
 
@@ -94,7 +104,7 @@ def _find_edit(vcf_record: VcfRecord, allele_index: int) -> _Edit:
     return vcf_record.start + num_prefix, ref[: len(ref) - num_suffix], alt[: len(alt) - num_suffix]
 
 
-def _is_touched(
+def _is_record_touched(
     vcf_records: Sequence[VcfRecord], edits: Sequence[Sequence[_Edit]], place: int
 ) -> bool:
     """Whether an edit a sample carries at the record at place touches one it carries at
@@ -105,7 +115,7 @@ def _is_touched(
             if other_place == place or other_record.contig != vcf_records[place].contig:
                 continue
             other_carried = _get_carried_edits(other_record, edits[other_place], sample_index)
-            if any(_is_touching(edit, other) for edit in carried for other in other_carried):
+            if any(_is_edit_touching(edit, other) for edit in carried for other in other_carried):
                 return True
     return False
 
@@ -124,7 +134,7 @@ def _get_carried_edits(
     ]
 
 
-def _is_touching(edit: _Edit, other: _Edit) -> bool:
+def _is_edit_touching(edit: _Edit, other: _Edit) -> bool:
     """Whether two edits overlap or lie next to each other: their replaced stretches,
     an insertion's being the point it goes in at, share or meet at a position."""
     start, ref, _ = edit
@@ -144,15 +154,13 @@ def _format_whole_line(vcf_record: VcfRecord) -> str:
     return f"{vcf_record.start + 1} {ref} {','.join(alts)} {' '.join(gts)}"
 
 
-def _make_pieces(
-    contig: str, edit: _Edit, reference: IndexedFasta
-) -> Iterator[tuple[int, str, str]]:
-    """The pieces of one edit on contig, each as (POS, REF, ALT), POS 1-based."""
+def _make_pieces(contig: str, edit: _Edit, reference: IndexedFasta) -> Iterator[_Piece]:
+    """The pieces of one edit on contig."""
     start, ref, alt = edit
     num_aligned = min(len(ref), len(alt))
     for offset in range(num_aligned):
         if ref[offset] != alt[offset]:
-            yield start + offset + 1, ref[offset], alt[offset]
+            yield _Piece(start + offset + 1, ref[offset], alt[offset])
     if len(alt) == len(ref):
         return
     # The anchor is the last aligned position, or the base before the edit when none is.
@@ -162,10 +170,10 @@ def _make_pieces(
         # At the contig's first base, VCF anchors on the base after the indel, at POS 1.
         after = len(deleted)
         after_base = reference.get_bases(contig, after, after + 1)
-        yield 1, deleted + after_base, inserted + after_base
+        yield _Piece(1, deleted + after_base, inserted + after_base)
         return
     anchor_base = reference.get_bases(contig, anchor, anchor + 1)
-    yield anchor + 1, anchor_base + deleted, anchor_base + inserted
+    yield _Piece(anchor + 1, anchor_base + deleted, anchor_base + inserted)
 
 
 def _count_shared(first: str, second: str) -> int:
@@ -261,7 +269,7 @@ def test_make_decomposed_lines_decomposes_each_record_nothing_touches(
     reference = case_files.write_reference(1, bases)
     num_samples = len(lines_a[0].split()) - 3
     records_a = case_files.write_and_parse_records(reference, lines_a, num_samples=num_samples)
-    assert make_decomposed_lines(records_a, reference) == expected_lines_b
+    assert _make_decomposed_lines(records_a, reference) == expected_lines_b
 
 
 def test_make_decomposed_lines_reads_and_writes_each_records_contig(
@@ -273,7 +281,7 @@ def test_make_decomposed_lines_reads_and_writes_each_records_contig(
     records_a = case_files.write_and_parse_records(
         reference, ["chr1 3 A G 0/1", "chr2 2 CGT C 0/1"], has_chrom=True
     )
-    assert make_decomposed_lines(records_a, reference) == [
+    assert _make_decomposed_lines(records_a, reference) == [
         "chr1 3 A G 0|1:1",
         "chr2 2 CGT C 0|1:2",
     ]
@@ -332,7 +340,7 @@ def test_a_file_against_its_decomposition_gives_only_the_outcomes_of_itself(
         case_files = CaseFiles(tmp_path_factory.mktemp("case"), stack)
         reference = case_files.write_reference(1, bases)
         records_a = case_files.write_and_parse_records(reference, lines_a, num_samples=num_samples)
-        lines_b = make_decomposed_lines(records_a, reference)
+        lines_b = _make_decomposed_lines(records_a, reference)
         records_b = case_files.write_and_parse_records(
             reference, lines_b, num_samples=num_samples, has_chrom=True
         )
