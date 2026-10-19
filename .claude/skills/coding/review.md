@@ -139,7 +139,8 @@ The section "Simple code" and "Records, types and names" of `python.md`.
 - The same logic in two places that will have to change together. Dead
   code, commented-out code, a `TODO` with no issue.
 - Names against `doc/spec.md` §2: a name the spec says not to use, one
-  thing with two names, a name that does not say what the value is.
+  thing with two names, a name that does not say what the value is, a
+  function or method not named with a verb for what it does.
 - Types: a function without its annotations, which ty does not demand
   and `python.md` does; `Any`, a `cast` or an ignore without its reason, a bare string
   for a closed set, a dict carrying what a dataclass should, an `object()`

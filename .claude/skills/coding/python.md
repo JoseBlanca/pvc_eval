@@ -216,6 +216,12 @@ that pays for it.
   `data`, `tmp`, `val`, `rec`, `n`. A word the spec says not to use, a
   variant for a VCF record, truth for file A, is not used in a name
   either.
+- A function or a method is named for the action it does, with a verb:
+  `get_bases`, `read_vcf_records`, `parse_genotype`, `find_span`, never
+  `bases`, `span` or `length`. The owner asked for this on 19 October
+  2026: a call then reads as what it does, and a noun is left for values.
+  Private helpers follow it too. A property is a value and keeps a noun:
+  `held_region`, `contigs`, `end`.
 - A default that changes an outcome is a named constant with a comment
   that says where it comes from: `RECORD_CAP = 30  # doc/spec.md §5.3`.
 - "No value" that `None` cannot say is a sentinel, below.
