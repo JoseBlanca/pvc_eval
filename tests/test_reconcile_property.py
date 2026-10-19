@@ -240,11 +240,19 @@ def test_make_decomposed_lines_decomposes_each_record_nothing_touches(
     assert make_decomposed_lines(records_a, reference) == expected_lines_b
 
 
+def _make_allele_strategy(num_alts: int) -> st.SearchStrategy[str]:
+    """An allele of a GT: `.` one draw in ten, an index of the record's alleles otherwise."""
+    return st.integers(0, 9).flatmap(
+        lambda draw_number: st.just(".") if draw_number == 0 else st.integers(0, num_alts).map(str)
+    )
+
+
 @st.composite
 def _make_case(draw: st.DrawFn) -> tuple[str, list[str], int, int]:
     """A reference of 4 to 12 bases, from position 1; 1 to 4 VCF lines of file A, sorted by
-    POS, each with 1 or 2 ALTs and an unphased GT per sample; the number of samples, 1 or 2;
-    and a phasing cap. Every POS is 2 or later, so the base before every edit, the anchor
+    POS, each with 1 or 2 ALTs and an unphased GT per sample, `.` in about one allele of
+    ten; the number of samples, 1 or 2; and a phasing cap, 4096 in three cases of five, 1
+    or 2 in the others, so that most rows compare sequences. Every POS is 2 or later, so the base before every edit, the anchor
     of its pieces, is one of the reference's."""
     bases = draw(st.text(_BASES, min_size=4, max_size=12))
     num_samples = draw(st.integers(1, 2))
@@ -258,11 +266,11 @@ def _make_case(draw: st.DrawFn) -> tuple[str, list[str], int, int]:
             st.text(_BASES, max_size=3).map(lambda tail, anchor=ref[0]: anchor + tail),
         ).filter(lambda alt, ref=ref: alt != ref)
         alts = draw(st.lists(alt_strategy, min_size=1, max_size=2, unique=True))
-        allele = st.sampled_from([".", *map(str, range(len(alts) + 1))])
+        allele = _make_allele_strategy(len(alts))
         gts = [f"{draw(allele)}/{draw(allele)}" for _ in range(num_samples)]
         lines.append((pos, f"{pos} {ref} {','.join(alts)} {' '.join(gts)}"))
     lines.sort(key=lambda numbered: numbered[0])
-    phasing_cap = draw(st.sampled_from([1, 2, PHASING_CAP]))
+    phasing_cap = draw(st.sampled_from([PHASING_CAP, PHASING_CAP, PHASING_CAP, 1, 2]))
     return bases, [line for _, line in lines], num_samples, phasing_cap
 
 
