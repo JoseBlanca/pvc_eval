@@ -9,7 +9,7 @@ yields the loci they keep.
 
 from bisect import bisect_right
 from collections import defaultdict
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 
 from pvc_eval.bed import parse_bed
@@ -17,20 +17,21 @@ from pvc_eval.locus import Locus
 
 
 class Regions:
-    """The regions of a --regions BED, by contig, with those that overlap or lie next to
-    each other merged. Positions are 0-based and half-open.
+    """Regions of the genome, by contig, with those that overlap or lie next to each other
+    merged. Positions are 0-based and half-open.
 
-    intervals: by contig, the regions as (start, end), sorted, with a gap of at least one
-        position between each and the next.
+    intervals: by contig, the regions as (start, end), in any order.
     """
 
     __slots__ = ("_ends", "_starts")
 
-    def __init__(self, intervals: Mapping[str, Sequence[tuple[int, int]]]) -> None:
-        self._starts = {
-            contig: [start for start, _ in spans] for contig, spans in intervals.items()
-        }
-        self._ends = {contig: [end for _, end in spans] for contig, spans in intervals.items()}
+    def __init__(self, intervals: Mapping[str, Iterable[tuple[int, int]]]) -> None:
+        self._starts: dict[str, list[int]] = {}
+        self._ends: dict[str, list[int]] = {}
+        for contig, spans in intervals.items():
+            merged_spans = _make_merged_spans(spans)
+            self._starts[contig] = [start for start, _ in merged_spans]
+            self._ends[contig] = [end for _, end in merged_spans]
 
     def overlaps(self, contig: str, start: int, end: int) -> bool:
         """Whether `[start, end)` of contig, 0-based and half-open, shares at least one
@@ -46,7 +47,7 @@ def read_regions(path: Path, contigs: Sequence[str]) -> Regions:
     """The regions of a --regions BED, read whole, since a BED such as GIAB's comes sorted
     by contig name rather than in the `.fai`'s order.
 
-    contigs: the reference's contig names, in the `.fai`'s order.
+    contigs: the reference's contig names.
 
     Raises PvcEvalInputError as parse_bed does, a line on a contig the reference lacks
     among them.
@@ -54,7 +55,7 @@ def read_regions(path: Path, contigs: Sequence[str]) -> Regions:
     spans_by_contig: defaultdict[str, list[tuple[int, int]]] = defaultdict(list)
     for bed_line in parse_bed(path, contigs):
         spans_by_contig[bed_line.contig].append((bed_line.start, bed_line.end))
-    return Regions({contig: _merge(spans) for contig, spans in spans_by_contig.items()})
+    return Regions(spans_by_contig)
 
 
 def select_loci(loci: Iterator[Locus], regions: Regions | None) -> Iterator[Locus]:
@@ -68,7 +69,7 @@ def select_loci(loci: Iterator[Locus], regions: Regions | None) -> Iterator[Locu
             yield locus
 
 
-def _merge(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+def _make_merged_spans(spans: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
     """The spans of one contig sorted, with those that overlap or lie next to each other
     merged into one."""
     merged: list[tuple[int, int]] = []

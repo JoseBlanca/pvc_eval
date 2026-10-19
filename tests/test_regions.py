@@ -9,7 +9,7 @@ and the region at 110 to 200 is the BED line `chr1 109 200`.
 from pathlib import Path
 
 from pvc_eval.locus import Locus
-from pvc_eval.regions import read_regions, select_loci
+from pvc_eval.regions import Regions, read_regions, select_loci
 from pvc_eval.vcf import VcfGenotype, VcfRecord
 
 _CONTIGS = ("chr1", "chr2")
@@ -126,3 +126,9 @@ def test_unsorted_bed_with_overlapping_and_adjacent_lines(tmp_path: Path) -> Non
         ("chr2", 4, 5): True,
         ("chr2", 5, 6): False,
     }
+
+
+def test_regions_sorts_and_merges_what_it_is_given() -> None:
+    regions = Regions({"chr1": [(300, 400), (100, 300), (150, 160)]})
+
+    assert [regions.overlaps("chr1", 150, 160), regions.overlaps("chr1", 200, 210)] == [True, True]
