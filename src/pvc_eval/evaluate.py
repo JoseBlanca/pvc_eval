@@ -6,7 +6,7 @@ Public: evaluate_pair, the outcome of two sample results; PairEvaluation, what i
 make_outcome_rows, the rows of a reconciled locus.
 """
 
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 
 from pvc_eval.kind import Kind
@@ -42,14 +42,12 @@ def evaluate_pair(result_a: SampleResult, result_b: SampleResult) -> PairEvaluat
     is_reference_b = len(result_b) == 1 and _is_all_ref(first_b)
     if is_reference_a and is_reference_b:
         return PairEvaluation(Outcome.REFERENCE_IN_BOTH, first_a, first_b)
-    for outcome, is_match in (
-        (Outcome.SAME_GENOTYPE, _is_same_genotype),
-        (Outcome.SAME_ALLELES, _is_same_alt_set),
-    ):
-        for genotype_a in result_a:
-            for genotype_b in result_b:
-                if is_match(genotype_a, genotype_b):
-                    return PairEvaluation(outcome, genotype_a, genotype_b)
+    same_genotype = _find_first_pair(result_a, result_b, _is_same_genotype)
+    if same_genotype is not None:
+        return PairEvaluation(Outcome.SAME_GENOTYPE, *same_genotype)
+    same_alleles = _find_first_pair(result_a, result_b, _is_same_alt_set)
+    if same_alleles is not None:
+        return PairEvaluation(Outcome.SAME_ALLELES, *same_alleles)
     if is_reference_b:
         return PairEvaluation(Outcome.ONLY_IN_A, first_a, first_b)
     if is_reference_a:
@@ -127,6 +125,20 @@ def _get_missing_outcome(
         return Outcome.MISSING_IN_A
     if is_missing_b:
         return Outcome.MISSING_IN_B
+    return None
+
+
+def _find_first_pair(
+    possible_a: Sequence[LocusGenotype],
+    possible_b: Sequence[LocusGenotype],
+    is_match: Callable[[LocusGenotype, LocusGenotype], bool],
+) -> tuple[LocusGenotype, LocusGenotype] | None:
+    """The first pair of possible genotypes that match, A's in order and, for each, B's in
+    order (§5), or None when no pair does."""
+    for genotype_a in possible_a:
+        for genotype_b in possible_b:
+            if is_match(genotype_a, genotype_b):
+                return genotype_a, genotype_b
     return None
 
 
