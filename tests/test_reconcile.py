@@ -183,6 +183,24 @@ CASES = {
         alleles=("CAGT",),
         result_a=((MISSING, MISSING),),
     ),
+    # Beside R1: an insertion inside the `*` record's REF, 10-11, replaces no position of
+    # it, so it does not cover the `*`, carried or where the haplotype is missing.
+    "R1-beside-insertion-inside-star-ref-does-not-cover": Case(
+        ref_start=10,
+        bases="CGT",
+        locus=(10, 11),
+        lines_a=["10 C CA 1|0", "10 CG C,* 2|1"],
+        alleles=("CG",),
+        result_a=CONTRADICTING,
+    ),
+    "R1-beside-missing-insertion-inside-star-ref-does-not-cover": Case(
+        ref_start=10,
+        bases="CGT",
+        locus=(10, 11),
+        lines_a=["10 C CA ./.", "10 CG C,* 0/2"],
+        alleles=("CG",),
+        result_a=CONTRADICTING,
+    ),
     # R2, reference 19-24 TAAAAG, locus 19-23.
     "R2-gatk-deletion-and-star": Case(
         ref_start=19,

@@ -387,7 +387,8 @@ def _is_star_covered(
             if vcf_record.alleles[candidate] == _SPANNING_DELETION:
                 continue
             edit = _make_edit(vcf_record, candidate)
-            if edit is None:
+            # An insertion replaces no position, so it covers no `*`.
+            if edit is None or edit.is_insertion:
                 continue
             start, end = edit.start, edit.end
             if edit.is_deletion:
