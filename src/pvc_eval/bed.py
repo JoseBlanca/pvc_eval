@@ -64,6 +64,12 @@ def _parse_bed_line(
 ) -> BedLine:
     where = f"{path}, line {line_number}:"
     columns = line.rstrip("\r\n").split("\t")
+    if len(columns) < 3 and len(line.split()) >= 3:
+        raise PvcEvalInputError(
+            f"{where} has its columns separated by spaces, and a BED separates them by tabs."
+            f" Convert it with `awk -v OFS='\\t' '{{$1 = $1}} 1' {path} > tabs.bed` and run"
+            " again with tabs.bed."
+        )
     if len(columns) < 3:
         raise PvcEvalInputError(
             f"{where} has {len(columns)} column{'s' if len(columns) > 1 else ''}, and a BED"

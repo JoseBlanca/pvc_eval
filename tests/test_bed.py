@@ -126,3 +126,16 @@ def test_parse_bed_refuses_a_gzipped_bed(tmp_path: Path) -> None:
         f" is compressed, decompress it with `gunzip -c {path} > file.bed` and give file.bed"
         " instead; if it is text in another encoding, convert it to UTF-8; and run again."
     )
+
+
+def test_parse_bed_refuses_a_line_separated_by_spaces(tmp_path: Path) -> None:
+    path = write_bed(tmp_path, ["chr1\t0\t10", "chr1 100  200"])
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_bed(path, _CONTIGS))
+
+    assert str(raised.value) == (
+        f"{path}, line 2: has its columns separated by spaces, and a BED separates them by"
+        f" tabs. Convert it with `awk -v OFS='\\t' '{{$1 = $1}} 1' {path} > tabs.bed` and run"
+        " again with tabs.bed."
+    )
