@@ -35,7 +35,6 @@ def make_record(start: int, alleles: tuple[str, ...], span: tuple[int, int]) -> 
         qual=None,
         genotypes=(genotype,),
         line_number=3,
-        ref_mismatch=False,
         span=span,
     )
 

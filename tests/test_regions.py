@@ -50,7 +50,6 @@ def test_record_with_no_alt_reaching_past_the_locus_does_not_count(tmp_path: Pat
         qual=None,
         genotypes=(genotype,),
         line_number=3,
-        ref_mismatch=False,
         span=(99, 130),
     )
     locus = Locus("chr1", 99, 120, (no_alt,), (), ())

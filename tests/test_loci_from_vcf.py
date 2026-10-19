@@ -82,7 +82,6 @@ def make_record(
         qual=None,
         genotypes=(HOMOZYGOUS_ALT,),
         line_number=FIRST_RECORD_LINE + index_in_file,
-        ref_mismatch=False,
         span=span,
     )
 

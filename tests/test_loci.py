@@ -40,7 +40,6 @@ def make_record(
         qual=None,
         genotypes=(),
         line_number=line_number,
-        ref_mismatch=False,
         span=span,
     )
 
