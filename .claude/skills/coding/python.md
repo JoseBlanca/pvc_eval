@@ -80,6 +80,7 @@ The configuration, in `pyproject.toml`:
 
 ```toml
 [tool.ruff]
+include = ["*.py", "*.pyi"]
 line-length = 100
 src = ["src", "tests"]
 
@@ -104,6 +105,11 @@ markers = ["slow: takes more than a few seconds; deselect with -m 'not slow'"]
 source = ["pvc_eval"]
 branch = true
 ```
+
+`include` keeps ruff to Python files. ruff 0.17 also formats the Python
+blocks inside Markdown, and on 19 October 2026 it wanted to rewrap a
+signature in `doc/spec.md`: the code of a spec or a skill is written for
+its reader, and the formatter does not decide its lines.
 
 The rule set is listed and not `ALL`, so that a new version of ruff does
 not turn on rules nobody chose. `B` catches mutable defaults and closures
