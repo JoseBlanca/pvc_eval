@@ -16,6 +16,7 @@ from pvc_eval.fasta import IndexedFasta
 from pvc_eval.locus import Locus
 from pvc_eval.outcome import InvalidReason
 from pvc_eval.reconcile import (
+    PHASING_CAP,
     TOO_COMPLEX,
     ReconciledLocus,
     SampleResult,
@@ -202,6 +203,15 @@ CASES = {
         result_a=CONTRADICTING,
     ),
     # R2, reference 19-24 TAAAAG, locus 19-23.
+    # Beside R1: a deletion of 10 that ends before the `*` at 11 does not cover it.
+    "R1-beside-deletion-ending-before-star-does-not-cover": Case(
+        ref_start=9,
+        bases="CAGTC",
+        locus=(9, 12),
+        lines_a=["9 CA C 0/1", "11 G A,* 1/2"],
+        alleles=("CAGT",),
+        result_a=CONTRADICTING,
+    ),
     "R2-gatk-deletion-and-star": Case(
         ref_start=19,
         bases="TAAAAG",
@@ -299,6 +309,24 @@ CASES = {
         result_a=((1, 1),),
     ),
     # R5, reference 51-54 TAGC, locus 51-53.
+    # Beside R4, the insertion first: the T goes in between 11 and 12, which the MNP
+    # replaces, and second: the T goes in at the start of the deleted G.
+    "R4-beside-insertion-inside-a-later-mnp-collides": Case(
+        ref_start=10,
+        bases="CAAAG",
+        locus=(10, 14),
+        lines_a=["11 A AT 1/1", "11 AAA TTT 1/1"],
+        alleles=("CAAAG",),
+        result_a=CONTRADICTING,
+    ),
+    "R4-beside-insertion-at-start-of-an-earlier-deletion": Case(
+        ref_start=10,
+        bases="CGA",
+        locus=(10, 12),
+        lines_a=["10 CG C 1/1", "10 C CT 1/1"],
+        alleles=("CGA", "CTA"),
+        result_a=((1, 1),),
+    ),
     "R5-insertion-after-anchor": Case(
         ref_start=51,
         bases="TAGC",
@@ -356,6 +384,33 @@ CASES = {
         lines_a=["30 A T 0|1:7", "32 G C 0|1:8", "34 A G 1|0:7"],
         alleles=("ACGTA", "ACGTG", "TCCTA", "ACCTG", "TCGTA"),
         result_a=((1, 2), (3, 4)),
+    ),
+    # Beside R7: `./1` makes a block, and MISSING sorts after every index.
+    "R7-beside-dot-one-makes-a-block": Case(
+        ref_start=30,
+        bases="ACG",
+        locus=(30, 32),
+        lines_a=["30 A T ./1", "32 G C 0/1"],
+        alleles=("ACG", "TCC", "TCG"),
+        result_a=((1, MISSING), (2, MISSING)),
+    ),
+    # Beside R7: the PS of a genotype written with `/` is ignored.
+    "R7-beside-ps-of-unphased-genotypes-ignored": Case(
+        ref_start=30,
+        bases="ACG",
+        locus=(30, 32),
+        lines_a=["30 A T 0/1:7", "32 G C 0/1:7"],
+        alleles=("ACG", "TCC", "ACC", "TCG"),
+        result_a=((0, 1), (2, 3)),
+    ),
+    # Beside R7: three blocks, assignment 1 swapping the second and 2 the third (§4.1).
+    "R7-beside-three-blocks-in-order": Case(
+        ref_start=30,
+        bases="ACGTA",
+        locus=(30, 34),
+        lines_a=["30 A T 0/1", "32 G C 0/1", "34 A G 0/1"],
+        alleles=("ACGTA", "TCCTG", "ACCTA", "TCGTG", "ACGTG", "TCCTA", "ACCTG", "TCGTA"),
+        result_a=((0, 1), (2, 3), (4, 5), (6, 7)),
     ),
     # R8, reference 40-44 CAAAG, locus 40-44.
     "R8-edits-that-cancel": Case(
@@ -421,6 +476,21 @@ def test_reconcile_reconciles_thirteen_blocks_R9(reader: Reader) -> None:  # noq
     assert len(reconciled.alleles) == 8192
 
 
+def test_reconcile_counts_no_block_for_a_homozygous_genotype(reader: Reader) -> None:
+    # 13 blocks and a 1/1: 4096 assignments, within the cap; every haplotype carries the A
+    # at 43, so the reference is no haplotype.
+    reference = reader.make_reference(30, R9_BASES)
+    lines = [*make_snp_lines(13, "0/1"), "43 C A 1/1"]
+    locus = make_locus((30, 44), reader.read_records(reference, lines))
+
+    reconciled = reconcile(locus, get_locus_bases(reference, locus), pair_samples(1))
+
+    possible_genotypes = reconciled.results_a[0]
+    assert isinstance(possible_genotypes, tuple)
+    assert len(possible_genotypes) == 4096
+    assert len(reconciled.alleles) == 8193
+
+
 def test_reconcile_gives_one_assignment_to_one_phase_set_R9(reader: Reader) -> None:  # noqa: N802 -- the label of the case of §4.4 in the test's id
     reference = reader.make_reference(30, R9_BASES)
     locus = make_locus((30, 44), reader.read_records(reference, make_snp_lines(14, "0|1:5")))
@@ -456,11 +526,13 @@ def test_reconcile_gives_too_complex_over_a_phasing_cap_it_is_given(
         ([*make_snp_lines(13, "0/1"), "43 C A 3/1", "44 A T 0/0"], InvalidReason.REF_MISMATCH),
         ([*make_snp_lines(14, "0/1"), "44 G T 3/1"], InvalidReason.MALFORMED_GT),
         ([*make_snp_lines(14, "0/1"), "44 G T 1"], InvalidReason.PLOIDY_MISMATCH),
+        (["30 A C 3/1", "31 C A 1"], InvalidReason.MALFORMED_GT),
     ],
     ids=[
         "R9-malformed-and-ref-mismatch-is-ref-mismatch",
         "R9-malformed-over-cap-is-malformed",
         "R9-other-ploidy-over-cap-is-ploidy-mismatch",
+        "malformed-before-ploidy-mismatch",
     ],
 )
 def test_reconcile_gives_the_first_reason_that_applies(
@@ -633,6 +705,51 @@ def test_reconcile_raises_for_bases_of_another_length_than_the_locus(reader: Rea
 
     with pytest.raises(ValueError, match="locus_bases has 2 bases, and the locus, 29-32, has 3"):
         reconcile(locus, "AC", pair_samples(1))
+
+
+@pytest.mark.parametrize(
+    ("phasing_cap", "result"),
+    [(1, TOO_COMPLEX), (PHASING_CAP, CONTRADICTING)],
+    ids=["over-cap-too-complex", "within-cap-contradicting"],
+)
+def test_reconcile_gives_too_complex_before_contradicting_records(
+    reader: Reader, phasing_cap: int, result: SampleResult
+) -> None:
+    # Two blocks, and two deletions, of 33-34 and of 34-35, that collide on every haplotype.
+    reference = reader.make_reference(30, R9_BASES)
+    lines = ["30 A C 0/1", "31 C A 0/1", "32 GTA G 1/1", "33 TAC T 1/1"]
+    locus = make_locus((30, 44), reader.read_records(reference, lines))
+
+    reconciled = reconcile(
+        locus, get_locus_bases(reference, locus), pair_samples(1), phasing_cap=phasing_cap
+    )
+
+    assert reconciled.results_a == {0: result}
+
+
+def test_reconcile_reads_each_file_with_its_own_ploidy(reader: Reader) -> None:
+    reference = reader.make_reference(30, "ACG")
+    records_a = reader.read_records(reference, ["30 A T 0/1"])
+    records_b = reader.read_records(reference, ["30 A T 1"], ploidy=1)
+    locus = make_locus((30, 32), records_a, records_b)
+    expected = ReconciledLocus(
+        locus=locus, alleles=("ACG", "TCG"), results_a={0: ((0, 1),)}, results_b={0: ((1,),)}
+    )
+
+    reconciled = reconcile(locus, get_locus_bases(reference, locus), pair_samples(1), ploidy_b=1)
+    reconciled_loci = list(reconcile_loci(iter([locus]), reference, pair_samples(1), ploidy_b=1))
+
+    assert reconciled == expected
+    assert reconciled_loci == [expected]
+
+
+def test_reconcile_loci_passes_the_phasing_cap_on(reader: Reader) -> None:
+    reference = reader.make_reference(30, "ACG")
+    locus = make_locus((30, 32), reader.read_records(reference, ["30 A T 0/1", "32 G C 0/1"]))
+
+    reconciled_loci = list(reconcile_loci(iter([locus]), reference, pair_samples(1), phasing_cap=1))
+
+    assert [reconciled.results_a for reconciled in reconciled_loci] == [{0: TOO_COMPLEX}]
 
 
 def test_reconcile_loci_raises_for_a_ploidy_when_the_stream_starts(reader: Reader) -> None:
