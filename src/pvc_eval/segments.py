@@ -10,7 +10,7 @@ StrFinderParameters, the parameters of the finder.
 
 import bisect
 from collections import deque
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, fields
 from enum import Enum
 
@@ -226,7 +226,7 @@ def _find_maximal_scoring_subsequences(
 
 
 def _make_open_subsequence(
-    stack: list[_OpenSubsequence], before: int, through: int, index: int
+    stack: Sequence[_OpenSubsequence], before: int, through: int, index: int
 ) -> tuple[_OpenSubsequence, int]:
     """The open subsequence that a positive score at index makes, and how many of the open
     subsequences under it stay on the stack: the ones above those it absorbs. Rules 2 to 4
@@ -249,7 +249,7 @@ def _make_open_subsequence(
     return open_one, staying
 
 
-def _find_smaller_before(stack: list[_OpenSubsequence], before: int, top: int) -> int:
+def _find_smaller_before(stack: Sequence[_OpenSubsequence], before: int, top: int) -> int:
     """The index of the highest open subsequence under top whose total before is under
     before, or -1. It hops down the links, past the subsequences whose total before is
     not."""
@@ -312,7 +312,7 @@ def _make_candidates(
             yield _Candidate(start=start, end=end, period=period, score=score)
 
 
-def _is_covered_by_half(candidate: _Candidate, kept: list[_Candidate]) -> bool:
+def _is_covered_by_half(candidate: _Candidate, kept: Sequence[_Candidate]) -> bool:
     """Whether a kept candidate of a shorter period overlaps at least half of a candidate.
     kept is in order of start, and so of end, as one period's candidates are."""
     length = candidate.end - candidate.start
@@ -328,7 +328,7 @@ def _is_covered_by_half(candidate: _Candidate, kept: list[_Candidate]) -> bool:
 
 
 def _drop_covered_candidates(
-    queue: deque[_Candidate], testable_to: int, kept_shorter: list[list[_Candidate]]
+    queue: deque[_Candidate], testable_to: int, kept_shorter: Sequence[Sequence[_Candidate]]
 ) -> Iterator[_Candidate]:
     """Take from the queue, in order, the candidates that end at or before testable_to, and
     yield those that no kept candidate of kept_shorter overlaps by at least half (step 1's
