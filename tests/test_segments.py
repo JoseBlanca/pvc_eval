@@ -2129,6 +2129,31 @@ def test_a_requested_span_keeps_an_str_region_it_overlaps_by_one_base(
     assert got == ([str_segment] if is_kept else [])
 
 
+# The hull ends at the furthest end of any member, not at the end of the member listed
+# last: the period-1 G's lie inside the (TGG) repeat and are listed after it. The segments
+# are what `pvc dev type-regions --min-copies 5,5,4,4,4,3` gave, pvc at bbcc9f4, with the
+# members (59, 101, TGG) and (75, 80, G) its BED lists.
+_INNER_LAST_MEMBER = _filler(60) + "GGTGGTGGTGGTGGTGGGGGTGGTAGTGGTGGTGGTGGTGGT" + _filler(60)
+
+
+def test_a_bundles_hull_ends_at_its_furthest_member_end(tmp_path: Path) -> None:
+    expected = [
+        (0, 59, "generic", None),
+        (59, 102, "str-bundle", None),
+        (102, 162, "generic", None),
+    ]
+    assert _find_segments_in_fasta(
+        "inner", _INNER_LAST_MEMBER, StrFinderParameters(), tmp_path
+    ) == (expected)
+    (bundle,) = _get_of_type(
+        _find_segments(_INNER_LAST_MEMBER, StrFinderParameters()), RegionType.STR_BUNDLE
+    )
+    assert bundle.members == (
+        _BundleMember(start=59, end=101, motif="TGG"),
+        _BundleMember(start=75, end=80, motif="G"),
+    )
+
+
 def test_an_empty_contig_has_no_segments(tmp_path: Path) -> None:
     with IndexedFasta(_write_fasta(tmp_path, {"empty": "", "chr1": "ACGT"})) as reference:
         assert list(segment_contig(reference, "empty")) == []
