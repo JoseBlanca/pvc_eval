@@ -6,6 +6,7 @@ The spec's cases give positions 1-based and inclusive; loci and STR regions are 
 is (99, 120) and an interval at 90 to 101 is the BED line `chr1 89 101`.
 """
 
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -181,3 +182,25 @@ def test_read_strata_refuses_a_line_with_no_class(tmp_path: Path, line: str) -> 
         f"{path}, line 2: has no fourth column, which names the class of its interval. Give"
         " each line of the --strata BED its class and run again."
     )
+
+
+def test_strata_holds_less_than_200_bytes_per_line(tmp_path: Path) -> None:
+    # 20,000 lines of four classes, disjoint, as GIAB's strata are within a class. One
+    # frozenset of classes per stretch held about 470 bytes per line on 19 October 2026.
+    classes = ("GCrich", "homopolymer", "lowmappability", "segdup")
+    lines = [
+        f"chr1\t{1_000 * index}\t{1_000 * index + 500}\t{classes[index % 4]}"
+        for index in range(20_000)
+    ]
+    path = write_bed(tmp_path, lines)
+    read_strata(path, _CONTIGS)  # so that what the first call allocates is not counted
+
+    tracemalloc.start()
+    try:
+        strata = read_strata(path, _CONTIGS)
+        retained, _ = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert strata.stratum(Locus("chr1", 1_000, 1_001, (), (), ())) == "homopolymer"
+    assert retained / len(lines) < 200
