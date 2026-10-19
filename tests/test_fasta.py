@@ -12,7 +12,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from pvc_eval.errors import PvcEvalInputError
-from pvc_eval.fasta import BLOCK_BASES, FastaWindow, IndexedFasta
+from pvc_eval.fasta import FastaWindow, IndexedFasta
 
 # Lines of five bases, a last line shorter than the others, lower-case bases, a contig
 # whose last line has no line end. Its .fai is what `samtools faidx one.fa` (samtools
@@ -514,7 +514,6 @@ def test_a_window_extends_forward_and_backward_and_starts_again_far_away(window_
                 expected_bases,
                 expected_held,
             )
-            assert window.resident_bases == expected_held[2] - expected_held[1]
 
 
 def test_a_new_buffer_starts_a_block_clear_of_the_requests(window_fa: Path) -> None:
@@ -550,12 +549,22 @@ def test_requests_a_block_apart_hold_one_block_at_most(window_fa: Path) -> None:
         assert held_regions == [("chr1", start, start + 4) for start in range(0, 36, 5)]
 
 
+@pytest.mark.parametrize("block_bases", [0, -1])
+def test_a_block_of_less_than_one_base_is_a_value_error(window_fa: Path, block_bases: int) -> None:
+    with (
+        IndexedFasta(window_fa) as indexed_fasta,
+        pytest.raises(
+            ValueError, match=f"^block_bases must be 1 or more, not {re.escape(str(block_bases))}$"
+        ),
+    ):
+        FastaWindow(indexed_fasta, block_bases=block_bases)
+
+
 def test_an_empty_request_reads_nothing(window_fa: Path) -> None:
     with IndexedFasta(window_fa) as indexed_fasta:
         window = FastaWindow(indexed_fasta, block_bases=4)
         assert window.get_bases("chr1", 5, 5) == ""
         assert window.held_region is None
-        assert window.resident_bases == 0
 
 
 def test_evicted_bases_are_read_again_when_asked_for(window_fa: Path) -> None:
@@ -571,8 +580,8 @@ def test_evicted_bases_are_read_again_when_asked_for(window_fa: Path) -> None:
         assert window.held_region == ("chr1", 10, 16)
         window.evict_before(25)
         assert window.held_region is None
-        assert window.resident_bases == 0
         assert window.get_bases("chr1", 18, 21) == "GTN"
+        assert window.held_region == ("chr1", 18, 22)
 
 
 def test_a_window_raises_for_a_region_outside_its_contig(window_fa: Path) -> None:
@@ -631,10 +640,6 @@ def test_every_window_answer_is_the_slice_and_eviction_drops_what_it_says(
                 assert held_region is None or held_region[1] >= start
             else:
                 assert window.get_bases(contig, start, end) == contigs[contig][start:end].upper()
-            held_region = window.held_region
-            assert window.resident_bases == (
-                0 if held_region is None else held_region[2] - held_region[1]
-            )
 
 
 def test_a_forward_walk_with_eviction_holds_a_few_blocks(tmp_path: Path) -> None:
@@ -650,9 +655,16 @@ def test_a_forward_walk_with_eviction_holds_a_few_blocks(tmp_path: Path) -> None
             assert (
                 window.get_bases("chr1", start, start + 20) == contigs["chr1"][start : start + 20]
             )
+            if start == 0:
+                # The default block is 64 Ki bases, read ahead of the first request.
+                assert window.held_region == ("chr1", 0, 65_536)
             window.evict_before(start - 100)
-            most_held = max(most_held, window.resident_bases)
-    assert 0 < most_held <= 2 * BLOCK_BASES
+            held_region = window.held_region
+            assert held_region is not None
+            most_held = max(most_held, held_region[2] - held_region[1])
+    # The 100 bases behind the walk, the request and a block read ahead stay under two
+    # blocks of the default 64 Ki bases.
+    assert most_held <= 2 * 65_536
 
 
 def test_threads_each_with_a_window_over_one_indexed_fasta_agree(tmp_path: Path) -> None:

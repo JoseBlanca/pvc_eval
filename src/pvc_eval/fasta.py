@@ -282,6 +282,8 @@ class FastaWindow:
     """
 
     def __init__(self, indexed_fasta: IndexedFasta, *, block_bases: int = BLOCK_BASES) -> None:
+        if block_bases < 1:
+            raise ValueError(f"block_bases must be 1 or more, not {block_bases}")
         self._indexed_fasta = indexed_fasta
         self._block_bases = block_bases
         self._contig: str | None = None
@@ -341,8 +343,3 @@ class FastaWindow:
         if self._contig is None or not self._buffer:
             return None
         return self._contig, self._start, self._start + len(self._buffer)
-
-    @property
-    def resident_bases(self) -> int:
-        """The number of bases the buffer holds."""
-        return len(self._buffer)
