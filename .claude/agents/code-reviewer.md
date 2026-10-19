@@ -16,7 +16,12 @@ You did not write this code. Assume it has defects until you have checked.
 
 First, if you were given a worktree of your own, check out the commit you
 were given, confirm it with `git rev-parse HEAD`, since such a worktree
-starts on `main`, and run `uv sync`.
+starts on `main`, and run `uv sync`. If you were told to read the
+session's worktree instead, never run `git checkout`, `git switch` or
+`git reset` there: on 19 October 2026 a reviewer's checkout left that
+worktree on a detached HEAD, and the commits made after it were left off
+their branch. To look at another commit, use `git show <commit>:<path>`
+or a copy in your scratchpad.
 
 Then read `.claude/skills/coding/review.md`, the top and the section of
 your category; `.claude/skills/coding/python.md`; the milestone in the
