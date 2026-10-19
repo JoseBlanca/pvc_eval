@@ -162,3 +162,27 @@ def test_parse_bed_refuses_a_file_it_cannot_read(tmp_path: Path) -> None:
     assert str(raised.value) == (
         f"{path} cannot be read: permission denied. Allow reading it and run again."
     )
+
+
+@pytest.mark.parametrize(
+    ("contig", "contigs", "named", "command"),
+    [
+        ("1", ("chr1", "chr2"), "chr1", '$1 !~ /^(#|track|browser|chr)/ {{$1 = "chr" $1}} 1'),
+        ("chr1", ("1", "2"), "1", '$1 !~ /^(#|track|browser)/ {{sub(/^chr/, "", $1)}} 1'),
+    ],
+    ids=["chr-missing", "chr-extra"],
+)
+def test_parse_bed_says_to_rename_a_contig_named_in_another_style(
+    tmp_path: Path, contig: str, contigs: tuple[str, ...], named: str, command: str
+) -> None:
+    path = write_bed(tmp_path, [f"{contig}\t100\t200"])
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_bed(path, contigs))
+
+    assert str(raised.value) == (
+        f"{path}, line 1: the contig '{contig}' is not in the reference, which names it"
+        f" '{named}'. Name the BED's contigs as the reference does, for instance with"
+        f" `awk -F'\\t' -v OFS='\\t' '{command.format()}' {path} > renamed.bed`, and run again"
+        " with renamed.bed."
+    )

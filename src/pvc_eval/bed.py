@@ -94,15 +94,7 @@ def _parse_bed_line(
             " greater than its start; correct the line and run again."
         )
     if contig not in reference_contigs:
-        # Decided by the owner on 19 October 2026: the run stops, over skipping such lines
-        # with a warning, also for GIAB's BED against a reference cut to one chromosome.
-        raise PvcEvalInputError(
-            f"{where} the contig {contig} is not in the reference. Keep only the reference's"
-            " contigs in the BED, for instance with"
-            " `awk -F'\\t' 'NR == FNR {keep[$1]; next} $1 in keep'"
-            f" ref.fa.fai {path} > kept.bed`, where ref.fa.fai is the .fai"
-            " of the --reference FASTA, and run again with kept.bed."
-        )
+        raise PvcEvalInputError(_make_contig_message(contig, where, path, reference_contigs))
     name = columns[3] if len(columns) > 3 and columns[3] else None
     return BedLine(contig=contig, start=start, end=end, name=name, line_number=line_number)
 
@@ -114,3 +106,33 @@ def _parse_position(text: str, column: str, where: str) -> int:
             " and its end as whole numbers of 0 or more; correct the line and run again."
         )
     return int(text)
+
+
+def _make_contig_message(
+    contig: str, where: str, path: Path, reference_contigs: frozenset[str]
+) -> str:
+    """The message for a line on a contig the reference lacks."""
+    # A BED that names chr1 as 1, or 1 as chr1: keeping only the reference's contigs
+    # would keep no line, so the message says to rename them.
+    if f"chr{contig}" in reference_contigs:
+        named = f"chr{contig}"
+        command = '$1 !~ /^(#|track|browser|chr)/ {$1 = "chr" $1} 1'
+    elif contig.startswith("chr") and contig.removeprefix("chr") in reference_contigs:
+        named = contig.removeprefix("chr")
+        command = '$1 !~ /^(#|track|browser)/ {sub(/^chr/, "", $1)} 1'
+    else:
+        # Decided by the owner on 19 October 2026: the run stops, over skipping such lines
+        # with a warning, also for GIAB's BED against a reference cut to one chromosome.
+        return (
+            f"{where} the contig {contig} is not in the reference. Keep only the reference's"
+            " contigs in the BED, for instance with"
+            " `awk -F'\\t' 'NR == FNR {keep[$1]; next} $1 in keep'"
+            f" ref.fa.fai {path} > kept.bed`, where ref.fa.fai is the .fai"
+            " of the --reference FASTA, and run again with kept.bed."
+        )
+    return (
+        f"{where} the contig {contig!r} is not in the reference, which names it {named!r}."
+        " Name the BED's contigs as the reference does, for instance with"
+        f" `awk -F'\\t' -v OFS='\\t' '{command}' {path} > renamed.bed`, and run again with"
+        " renamed.bed."
+    )
