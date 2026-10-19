@@ -9,6 +9,7 @@ from pvc_eval.vcf import (
     MALFORMED_GT,
     MISSING,
     VcfGenotype,
+    normalise,
     parse_genotype,
     read_samples,
     read_vcf_records,
@@ -238,3 +239,23 @@ def test_file_without_chrom_line_stops_the_run(tmp_path: Path, text: str, messag
         read_samples(path)
     with pytest.raises(PvcEvalInputError, match=message):
         list(read_vcf_records(path, CONTIGS))
+
+
+def test_lower_case_alleles_are_read_in_upper_case_and_normalise_alike(tmp_path: Path) -> None:
+    # VCF bases are case-insensitive; the reference is upper case.
+    path = write_vcf(
+        tmp_path,
+        "chr1\t4\t.\taa\ta\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t4\t.\tAA\tA\t.\t.\t.\tGT\t0/1\t0/1\n",
+    )
+
+    lower, upper = read_vcf_records(path, CONTIGS)
+
+    assert lower.alleles == ("AA", "A")
+    assert (normalise(lower, "GAAAAT").start, normalise(lower, "GAAAAT").alleles) == (
+        0,
+        ("GA", "G"),
+    )
+    assert (normalise(upper, "GAAAAT").start, normalise(upper, "GAAAAT").alleles) == (
+        0,
+        ("GA", "G"),
+    )

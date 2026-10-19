@@ -52,7 +52,8 @@ class VcfRecord:
     """One line of a VCF file.
 
     start: the first position REF covers, 0-based; `end` is one past the last.
-    alleles: REF first, then the ALTs, as written; `*` is a spanning deletion.
+    alleles: REF first, then the ALTs, as written but in upper case; `*` is a spanning
+        deletion.
     qual: QUAL, or None for `.`.
     genotypes: one per sample, in the order of the header; a MALFORMED_GT keeps no GQ.
     line_number: the 1-based line of the file, for messages.
@@ -251,7 +252,8 @@ def _is_symbolic(alt: str) -> bool:
 def _parse_record(
     fields: list[str], contig: str, start: int, alts: tuple[str, ...], line_number: int
 ) -> VcfRecord:
-    alleles = (fields[3], *alts)
+    # VCF bases are case-insensitive, and the reference is compared in upper case.
+    alleles = (fields[3].upper(), *(alt.upper() for alt in alts))
     genotypes: list[VcfGenotype | MALFORMED_GT] = []
     if len(fields) > NUM_FIXED_COLUMNS:
         keys = fields[8].split(":")
@@ -301,12 +303,13 @@ def _int_or_none(value: str | None) -> int | None:
 def normalise(record: VcfRecord, contig_sequence: str) -> VcfRecord:
     """The record trimmed and, when it is an indel, left-aligned.
 
-    contig_sequence: the record's contig in the reference, in upper case.
+    contig_sequence: the record's contig in the reference, in upper case, as the
+        record's alleles are.
 
     A record whose REF differs from the reference is returned unchanged and marked
     ref_mismatch, since its alleles cannot be placed on the reference (§5.2).
     """
-    if contig_sequence[record.start : record.end] != record.alleles[0].upper():
+    if contig_sequence[record.start : record.end] != record.alleles[0]:
         return replace(record, ref_mismatch=True)
     return left_align(trim(record), contig_sequence)
 
