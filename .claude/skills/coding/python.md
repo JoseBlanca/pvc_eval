@@ -80,6 +80,7 @@ The configuration, in `pyproject.toml`:
 
 ```toml
 [tool.ruff]
+include = ["*.py", "*.pyi"]
 line-length = 100
 src = ["src", "tests"]
 
@@ -104,6 +105,11 @@ markers = ["slow: takes more than a few seconds; deselect with -m 'not slow'"]
 source = ["pvc_eval"]
 branch = true
 ```
+
+`include` keeps ruff to Python files. ruff 0.17 also formats the Python
+blocks inside Markdown, and on 19 October 2026 it wanted to rewrap a
+signature in `doc/spec.md`: the code of a spec or a skill is written for
+its reader, and the formatter does not decide its lines.
 
 The rule set is listed and not `ALL`, so that a new version of ruff does
 not turn on rules nobody chose. `B` catches mutable defaults and closures
@@ -210,6 +216,39 @@ that pays for it.
   `data`, `tmp`, `val`, `rec`, `n`. A word the spec says not to use, a
   variant for a VCF record, truth for file A, is not used in a name
   either.
+- A function or a method is named for the action it does, with a verb:
+  `get_bases`, `parse_vcf`, `find_span`, never `bases`, `span` or
+  `length`. The owner asked for this on 19 October 2026: a call then reads
+  as what it does, and a noun is left for values. Private helpers follow
+  it too. A property is a value and keeps a noun: `held_region`,
+  `contigs`, `end`.
+- The verbs come from this table, so that one verb means one thing in the
+  whole project, as `doc/spec.md` §2 does for the nouns. The owner asked
+  for it on 19 October 2026, after `read` and `parse` had been used for the
+  same work in the VCF reader. When no verb fits, a row is added here, with
+  its meaning, in the same commit as the code that first uses it.
+
+  | verb | means |
+  |---|---|
+  | read | take bytes or lines from a file, without interpreting them |
+  | parse | turn text into values or objects of pvc_eval |
+  | write | put text or bytes into a file |
+  | get | return something held, or cheap to work out from it |
+  | find | search for something, or work out where it is |
+  | check | test a condition and raise when it fails |
+  | make | build a new value, object or message |
+  | count | return how many of something there are |
+  | trim, drop, evict | remove part of a value or of what is held |
+  | sort | put in order |
+  | format | turn a value into text for a person |
+  | is | answer a yes-or-no question about a value, returning a bool |
+  | open | open a file and return it, to be read or written |
+
+- Public is only what another module or the user calls: everything else
+  starts with an underscore, functions, classes and constants alike. The
+  owner asked for it on 19 October 2026: a small public surface is one a
+  user can learn, and one that can change inside without breaking anyone.
+  A module's docstring names its public names.
 - A default that changes an outcome is a named constant with a comment
   that says where it comes from: `RECORD_CAP = 30  # doc/spec.md §5.3`.
 - "No value" that `None` cannot say is a sentinel, below.
@@ -338,7 +377,7 @@ of the row, and the run goes on.
   it, and `raise ... from err` when one is turned into another.
 - `assert` is for what the code itself guarantees and a test would catch,
   never for an input, since `python -O` removes it.
-- Logging in the library, `logger = logging.getLogger(__name__)`, set up
+- Logging in the library, `_logger = logging.getLogger(__name__)`, set up
   only in `cli.py`. `print` only in `cli.py`.
 
 ## Tests
@@ -358,6 +397,11 @@ of the row, and the run goes on.
   record phased, nothing missing; a parameter left at its default in every
   test, so the code could ignore it. When in doubt, break the code on
   purpose and see the test fail.
+- A test calls the public function where the behaviour can be seen
+  there. It may call a private function when the rule is much clearer
+  there than through the public one, as the spans of `doc/spec.md` §5.2
+  are on `_find_span` rather than through a whole VCF file; a private
+  function is not made public for its tests.
 - One test per behaviour, named for the behaviour and its outcome:
   `test_insertion_before_repeat_pulls_repeat_into_locus`. Cases of one
   rule go in one `pytest.mark.parametrize` with `ids`.

@@ -76,6 +76,10 @@ Can each test fail, and are the numbers the change claims true?
   the right value.
 - Run `uv run pytest --cov --cov-report=term-missing` and read the lines of
   the change that no test runs, error branches first.
+- Run every experiment that changes the code with
+  `PYTHONDONTWRITEBYTECODE=1` and with the `__pycache__` of the changed
+  module removed: on 19 October 2026 a stale `.pyc` made a broken line look
+  covered, and fooled two reviewers of the VCF reader for one run each.
 - Put the code back after each experiment and end with `git status` clean.
 
 ## correctness
@@ -135,7 +139,12 @@ The section "Simple code" and "Records, types and names" of `python.md`.
 - The same logic in two places that will have to change together. Dead
   code, commented-out code, a `TODO` with no issue.
 - Names against `doc/spec.md` §2: a name the spec says not to use, one
-  thing with two names, a name that does not say what the value is.
+  thing with two names, a name that does not say what the value is, a
+  function or method not named with a verb for what it does, a verb not
+  in the table of `python.md` or used against its meaning there.
+- The public surface: a name without an underscore that no other module
+  and no user calls; a module docstring that does not list its public
+  names.
 - Types: a function without its annotations, which ty does not demand
   and `python.md` does; `Any`, a `cast` or an ignore without its reason, a bare string
   for a closed set, a dict carrying what a dataclass should, an `object()`
