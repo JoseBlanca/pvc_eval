@@ -64,6 +64,11 @@ DEFAULT_SPAN_LIMIT = 10_000
 # with 4 threads each and 0.76 s with 2 each, and each stream in a thread of its own
 # 0.57 s. How two streams share the cores is for the loci or the command-line milestone.
 DEFAULT_NUM_THREADS = 4
+# The most threads parse_vcf takes. Past 4 the measured time stopped falling, and each
+# thread adds its own batches and genotypes to the memory. 256 is far above the cores of
+# the machines pvc_eval is meant for; a larger number is a mistake, which 2**62 showed by
+# reaching the pool as itertools.islice's own ValueError.
+_MAX_NUM_THREADS = 256
 # How many bases on each side of a REF its span is first looked for in. A slide that runs
 # into the end of them looks again in twice as many, up to one more than the span limit, so
 # the bases a record asks the window for are a few times its slide, whatever the limit,
@@ -158,7 +163,7 @@ def parse_vcf(
     span_limit: the most bases a span may reach beyond its REF on either side, a whole
         number of 1 or more, or None for no limit (§5.2). A record whose span would reach further is given its REF as
         its span, and the number of those is logged as a warning at the end.
-    num_threads: how many threads parse the sample columns, a whole number of 1 or more.
+    num_threads: how many threads parse the sample columns, a whole number from 1 to 256.
         The calling thread reads the lines, checks them and gives them their spans. With 1
         it parses the sample columns too, and no pool is made: the run is serial, as a
         test or a profile may want. The records are the same
@@ -188,15 +193,17 @@ def parse_vcf(
     taken as absent, and those are counted in a warning at the end too. Raises
     ValueError, when the stream starts, for a span_limit
     that is neither None nor a whole number of 1 or more, and for a num_threads that is not
-    a whole number of 1 or more.
+    a whole number from 1 to 256.
     """
     # §5.2: a limit of 0 would cut every insertion, whose span holds the base after it.
     if span_limit is not None and not _is_whole_number_from_1(span_limit):
         raise ValueError(
             f"span_limit must be a whole number of 1 or more, or None, not {span_limit!r}"
         )
-    if not _is_whole_number_from_1(num_threads):
-        raise ValueError(f"num_threads must be a whole number of 1 or more, not {num_threads!r}")
+    if not (_is_whole_number_from_1(num_threads) and num_threads <= _MAX_NUM_THREADS):
+        raise ValueError(
+            f"num_threads must be a whole number from 1 to {_MAX_NUM_THREADS}, not {num_threads!r}"
+        )
     with closing(_parse_records_in_file_order(path, reference, span_limit, num_threads)) as records:
         yield from _sort_by_span_start(records, span_limit)
 

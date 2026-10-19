@@ -1267,15 +1267,18 @@ def test_with_threads_an_error_comes_after_the_records_before_it(
 
 
 @pytest.mark.parametrize(
-    "num_threads", [0, -1, 1.5, "4", True], ids=["zero", "negative", "fraction", "text", "bool"]
+    "num_threads",
+    [0, -1, 257, 2**62, 1.5, "4", True],
+    ids=["zero", "negative", "above_256", "huge", "fraction", "text", "bool"],
 )
-def test_a_num_threads_that_is_not_a_whole_number_of_1_or_more_is_a_value_error(
+def test_a_num_threads_that_is_not_a_whole_number_from_1_to_256_is_a_value_error(
     tmp_path: Path, reference: IndexedFasta, num_threads: object
 ) -> None:
     path = write_vcf(tmp_path, make_snp_line("chr1", 1))
 
     with pytest.raises(
-        ValueError, match=rf"^num_threads must be a whole number of 1 or more, not {num_threads!r}$"
+        ValueError,
+        match=rf"^num_threads must be a whole number from 1 to 256, not {num_threads!r}$",
     ):
         list(parse_vcf(path, reference, num_threads=num_threads))  # ty: ignore[invalid-argument-type]  # a wrong type on purpose
 
