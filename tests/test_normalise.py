@@ -138,12 +138,17 @@ def test_span_covers_every_place_the_record_could_be_written(
         # An A inserted after the G slides right past 10001 As, to the T.
         ("G" + "A" * 10001 + "T", 0, ("G", "GA"), None),
         ("G" + "A" * 9999 + "T", 0, ("G", "GA"), (0, 10001)),
+        # The A at 10003, deleted after two shared As, slides 10002 bases left to 1, and
+        # its anchor, the G at 0, is 10001 bases left of the REF: a slide counted from
+        # the REF's start, without the shared bases, would stop one base short of it.
+        ("G" + "A" * 10003 + "CT", 10001, ("AAAC", "AAC", "TAAG"), None),
     ],
     ids=[
         "deletion_beyond_10_kb",
         "deletion_at_10_kb",
         "insertion_beyond_10_kb",
         "insertion_at_10_kb",
+        "deletion_beyond_10_kb_of_a_long_ref",
     ],
 )
 def test_span_that_reaches_more_than_10_kb_beyond_its_ref_is_none(
