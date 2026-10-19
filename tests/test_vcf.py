@@ -598,3 +598,14 @@ def test_reference_is_asked_once_for_each_contig_with_records(tmp_path: Path) ->
     list(parse_vcf(path, CONTIGS, get_contig_sequence))
 
     assert contigs_asked == ["chr1", "chr2"]
+
+
+def test_gt_with_an_index_the_record_lacks_or_one_allele_is_kept_as_its_case(
+    tmp_path: Path,
+) -> None:
+    # The record has one ALT, so 2 is no allele of it.
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/2\t1\n")
+
+    (record,) = parse_vcf(path, CONTIGS, REFERENCE.__getitem__)
+
+    assert record.genotypes == (MALFORMED_GT, HAPLOID_GT)
