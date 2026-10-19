@@ -691,22 +691,19 @@ PEAK_MARGIN = 4096
 
 
 def find_peak_memory(make_loci: Callable[[int], Iterator[Locus]], count: int) -> int:
-    """The least of three peaks tracemalloc traces while the loci of make_loci(count) are
-    made and passed, after one call on a small input, so that what the first call
-    allocates is not counted."""
+    """The peak tracemalloc traces while the loci of make_loci(count) are made and passed,
+    after one call on a small input, so that what the first call allocates is not
+    counted."""
     for _locus in make_loci(10):
         pass
-    peaks = []
-    for _ in range(3):
-        tracemalloc.start()
-        try:
-            for _locus in make_loci(count):
-                pass
-            _, peak = tracemalloc.get_traced_memory()
-        finally:
-            tracemalloc.stop()
-        peaks.append(peak)
-    return min(peaks)
+    tracemalloc.start()
+    try:
+        for _locus in make_loci(count):
+            pass
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    return peak
 
 
 def is_peak_flat(smaller_peak: int, larger_peak: int) -> bool:
