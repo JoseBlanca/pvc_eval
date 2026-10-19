@@ -151,6 +151,10 @@ def _check_copy_floors(copy_floors: object) -> None:
             )
 
 
+# A stretch of a contig, `[start, end)`, 0-based and half-open.
+type _Span = tuple[int, int]
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _Candidate:
     """A repeat step 1 finds: the stretch `[start, end)`, 0-based and half-open, its
@@ -424,7 +428,7 @@ def _get_motif(candidate: _Candidate, bases: str) -> str:
     return bases[candidate.start : candidate.start + candidate.period].upper()
 
 
-def _find_cut_or_span(candidate: _Candidate, bases: str) -> tuple[int, int]:
+def _find_cut_or_span(candidate: _Candidate, bases: str) -> _Span:
     """A candidate's cut, or its detected span when it has no cut, as positions of the
     contig whose bases are bases, 0-based and half-open."""
     cut = _find_cut(_get_span_bases(candidate, bases), _get_motif(candidate, bases))
@@ -520,7 +524,7 @@ def _is_compound(motif: str) -> bool:
     )
 
 
-def _find_cut(span_bases: str, motif: str) -> tuple[int, int] | None:
+def _find_cut(span_bases: str, motif: str) -> _Span | None:
     """The cut of a detected span, given as its bases, as offsets into them, `[start,
     end)`, or None when it has none (doc/specs/str_finder.md step 6; pvc
     segment_criteria.rs, minimal_trim)."""
@@ -662,10 +666,6 @@ def _make_str_segment(
     return _StrSegment(start=start, end=end, motif=motif, purity=purity)
 
 
-# A stretch of a contig, `[start, end)`, 0-based and half-open.
-type _Span = tuple[int, int]
-
-
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _Segment:
     """A segment of a contig as step 8 makes it, `[start, end)`, 0-based and half-open,
@@ -731,7 +731,7 @@ def _find_features(
     satellites = [
         run for run in _make_repeat_runs(candidates) if run[1] - run[0] > parameters.max_str_len
     ]
-    satellites, members, str_segments = _drop_absorbed_features(
+    satellites, members, str_segments = _make_grown_satellites(
         satellites, classification.bundle_members, classification.str_segments, distance
     )
     features = [
@@ -776,6 +776,8 @@ def _make_repeat_runs(candidates: Iterable[_Candidate]) -> list[_Span]:
     """The repeat runs of doc/specs/str_finder.md step 7: the detected spans of the
     candidates, those that overlap or abut joined into one, by start; 0-based and
     half-open (pvc region_typing/mod.rs, coverage_runs)."""
+    # After step 3 every candidate ends after its start; the test mirrors pvc's
+    # coverage_runs.
     return _make_runs(
         (candidate.start, candidate.end)
         for candidate in candidates
@@ -783,7 +785,7 @@ def _make_repeat_runs(candidates: Iterable[_Candidate]) -> list[_Span]:
     )
 
 
-def _make_grown_satellites(
+def _make_satellites_absorbing(
     satellites: Sequence[_Span], span: _Span, bundle_distance: int
 ) -> list[_Span] | None:
     """The satellites once a feature's span is absorbed, or None when no satellite reaches
@@ -799,11 +801,14 @@ def _make_grown_satellites(
     ]
     if not reached:
         return None
-    grown = (min(start, *(s[0] for s in reached)), max(end, *(s[1] for s in reached)))
-    return _make_runs([*(s for s in satellites if s not in reached), grown])
+    grown = (
+        min(start, *(satellite[0] for satellite in reached)),
+        max(end, *(satellite[1] for satellite in reached)),
+    )
+    return _make_runs([*(satellite for satellite in satellites if satellite not in reached), grown])
 
 
-def _drop_absorbed_features(
+def _make_grown_satellites(
     satellites: Sequence[_Span],
     members: Sequence[_Candidate],
     str_segments: Sequence[_StrSegment],
@@ -821,14 +826,14 @@ def _drop_absorbed_features(
         is_absorbed = False
         kept_members: list[_Candidate] = []
         for member in members_left:
-            after = _make_grown_satellites(grown, (member.start, member.end), bundle_distance)
+            after = _make_satellites_absorbing(grown, (member.start, member.end), bundle_distance)
             if after is None:
                 kept_members.append(member)
             else:
                 grown, is_absorbed = after, True
         kept_str_segments: list[_StrSegment] = []
         for segment in str_segments_left:
-            after = _make_grown_satellites(grown, (segment.start, segment.end), bundle_distance)
+            after = _make_satellites_absorbing(grown, (segment.start, segment.end), bundle_distance)
             if after is None:
                 kept_str_segments.append(segment)
             else:

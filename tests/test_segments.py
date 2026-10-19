@@ -21,7 +21,6 @@ from pvc_eval.segments import (
     StrFinderParameters,
     _BundleMember,
     _Candidate,
-    _drop_absorbed_features,
     _drop_near_contig_ends,
     _drop_under_copy_floor,
     _find_bundles,
@@ -37,6 +36,7 @@ from pvc_eval.segments import (
     _is_in_cluster,
     _make_bundle_member,
     _make_clusters,
+    _make_grown_satellites,
     _make_repeat_runs,
     _make_runs,
     _Rejection,
@@ -1436,7 +1436,7 @@ def test_absorption_by_sweep_joins_satellites_that_abut_after_growing_at_radius_
     # which StrFinderParameters refuses and the absorption step takes as a plain number.
     # The member overlaps only the second satellite; grown, it abuts the first, and the two
     # merge. pvc's half that runs the sweep is dropped: the port has only the fixed point.
-    satellites, members, str_segments = _drop_absorbed_features(
+    satellites, members, str_segments = _make_grown_satellites(
         [(21, 86), (87, 88)], [_make_candidate(86, 88, 2, 10)], [], 0
     )
     assert satellites == [(21, 88)]
@@ -1464,7 +1464,7 @@ def test_a_long_array_is_one_satellite_and_swallows_the_locus_inside_it() -> Non
     assert satellites[0].end - satellites[0].start >= 2000
     assert not _get_of_type(segments, RegionType.STR)
 
-    # The control: above the cap, the same tract is an STR segment.
+    # The control: above the cap, the same repeat is an STR segment.
     segments = _partition(bases, replace(_PVC_DEFAULT_CONFIG, max_str_len=10_000))
     assert len(_get_of_type(segments, RegionType.STR)) == 1
     assert not _get_of_type(segments, RegionType.SATELLITE)
@@ -1572,9 +1572,10 @@ def test_the_dinucleotide_copy_floor_is_exactly_six() -> None:
 
 
 def test_a_rejected_repeat_leaves_no_hole() -> None:
-    # pvc's two assertions hold of the one satellite the port gives here: the candidate of
-    # period 1 runs over the whole contig, the ATATAT paid for by the C's and G's, has no
-    # cut, and is 126 bases long.
+    # pvc's two assertions hold of the one satellite the port gives here, as they hold of
+    # pvc's own partition: neither checks the type. The candidate of period 1 runs over the
+    # whole contig, the ATATAT paid for by the C's and G's, has no cut, and is 126 bases
+    # long, over max_str_len.
     bases = "C" * 60 + "ATATAT" + "G" * 60
     segments = _partition(bases, _PVC_DEFAULT_CONFIG)
     assert not _get_of_type(segments, RegionType.STR)
@@ -1591,8 +1592,9 @@ def test_an_empty_contig_has_no_regions() -> None:
     assert _find_segments("", _PVC_DEFAULT_CONFIG) == []
 
 
-def _make_contig_with_tracts_at(offsets: Iterable[int], length: int) -> str:
-    """pvc's contig_with_tracts_at (mod.rs 2540): (AT)x10 at each offset, in filler."""
+def _make_contig_with_at_repeats(offsets: Iterable[int], length: int) -> str:
+    """pvc's contig_with_tracts_at (mod.rs 2540): an (AT)x10 repeat at each offset, in
+    filler."""
     bases = _filler(length)
     for offset in offsets:
         bases = _put(bases, offset, "AT" * 10)
@@ -1600,27 +1602,29 @@ def _make_contig_with_tracts_at(offsets: Iterable[int], length: int) -> str:
 
 
 def test_two_close_tracts_become_one_bundle_carrying_both() -> None:
-    segments = _partition(_make_contig_with_tracts_at([60, 90], 240), _PVC_DEFAULT_CONFIG)
+    segments = _partition(_make_contig_with_at_repeats([60, 90], 240), _PVC_DEFAULT_CONFIG)
     bundles = _get_of_type(segments, RegionType.STR_BUNDLE)
     assert len(bundles) == 1
     bundle = bundles[0]
     assert len(bundle.members) == 2
     assert bundle.start <= 60
     assert bundle.end >= 110
-    assert all(bundle.start <= m.start and m.end <= bundle.end for m in bundle.members)
+    assert all(
+        bundle.start <= member.start and member.end <= bundle.end for member in bundle.members
+    )
     assert all(member.motif in ("AT", "TA") for member in bundle.members)
     assert not _get_of_type(segments, RegionType.STR)
 
 
-def _partition_two_close_tracts(cap: int) -> list[_Segment]:
+def _partition_two_close_repeats(cap: int) -> list[_Segment]:
     """pvc's two_close_tracts_capped_at (mod.rs 2603), without the counts."""
-    bases = _make_contig_with_tracts_at([60, 90], 240)
+    bases = _make_contig_with_at_repeats([60, 90], 240)
     return _partition(bases, replace(_PVC_DEFAULT_CONFIG, max_bundle_len=cap))
 
 
 def test_a_bundle_longer_than_the_cap_is_a_satellite_and_is_counted_as_one() -> None:
     # pvc's four assertions on the counts are dropped: the port keeps none.
-    (hull,) = _get_of_type(_partition_two_close_tracts(sys.maxsize), RegionType.STR_BUNDLE)
+    (hull,) = _get_of_type(_partition_two_close_repeats(sys.maxsize), RegionType.STR_BUNDLE)
     hull_length = hull.end - hull.start
     for cap, is_satellite in [
         (hull_length - 1, True),
@@ -1630,7 +1634,7 @@ def test_a_bundle_longer_than_the_cap_is_a_satellite_and_is_counted_as_one() -> 
     ]:
         (at_hull,) = [
             segment
-            for segment in _partition_two_close_tracts(cap)
+            for segment in _partition_two_close_repeats(cap)
             if (segment.start, segment.end) == (hull.start, hull.end)
         ]
         assert (at_hull.region_type is RegionType.SATELLITE) == is_satellite, cap
@@ -1638,7 +1642,7 @@ def test_a_bundle_longer_than_the_cap_is_a_satellite_and_is_counted_as_one() -> 
 
 def test_a_bundle_at_a_contig_end_is_dropped_unless_capped() -> None:
     def get_types(offsets: list[int], cap: int) -> list[str]:
-        bases = _make_contig_with_tracts_at(offsets, 200)
+        bases = _make_contig_with_at_repeats(offsets, 200)
         return _get_types(_partition(bases, replace(_PVC_DEFAULT_CONFIG, max_bundle_len=cap)))
 
     assert get_types([0, 30], 100) == ["generic"]
@@ -1647,7 +1651,7 @@ def test_a_bundle_at_a_contig_end_is_dropped_unless_capped() -> None:
     assert get_types([0, 30], 10) == ["satellite", "generic"]
 
     # One base in from the right end; the C continues neither AT nor TA.
-    bases = _make_contig_with_tracts_at([149, 179], 200)[:199] + "C"
+    bases = _make_contig_with_at_repeats([149, 179], 200)[:199] + "C"
     (bundle,) = _get_of_type(_partition(bases, _PVC_DEFAULT_CONFIG), RegionType.STR_BUNDLE)
     assert bundle.end == 199
 
@@ -1661,7 +1665,7 @@ def test_the_hull_ends_past_a_ragged_last_member() -> None:
 
 
 def test_three_chained_tracts_become_one_bundle_of_three() -> None:
-    segments = _partition(_make_contig_with_tracts_at([60, 110, 160], 300), _CATALOG_CONFIG)
+    segments = _partition(_make_contig_with_at_repeats([60, 110, 160], 300), _CATALOG_CONFIG)
     (bundle,) = _get_of_type(segments, RegionType.STR_BUNDLE)
     assert len(bundle.members) == 3
     assert bundle.start <= 60
@@ -1669,7 +1673,7 @@ def test_three_chained_tracts_become_one_bundle_of_three() -> None:
 
 
 def test_a_tract_clear_of_a_bundle_is_still_admitted() -> None:
-    segments = _partition(_make_contig_with_tracts_at([60, 90, 400], 600), _PVC_DEFAULT_CONFIG)
+    segments = _partition(_make_contig_with_at_repeats([60, 90, 400], 600), _PVC_DEFAULT_CONFIG)
     assert len(_get_of_type(segments, RegionType.STR_BUNDLE)) == 1
     str_segments = _get_of_type(segments, RegionType.STR)
     assert len(str_segments) == 1
@@ -1727,24 +1731,24 @@ def test_the_resident_partition_reproduces_the_golden_catalog() -> None:
         return one[0] == other[0] and one[1] < other[2] and other[1] < one[2]
 
     missed = [
-        locus
-        for locus in golden
-        if not any(overlaps(locus, other) for other in found)
-        and not any(overlaps(locus, satellite) for satellite in satellites)
+        golden_str
+        for golden_str in golden
+        if not any(overlaps(golden_str, other) for other in found)
+        and not any(overlaps(golden_str, satellite) for satellite in satellites)
     ]
     assert missed == []
 
 
 def _make_windowing_fixture() -> str:
-    """pvc's windowing_fixture (mod.rs 3071): four (AT)x10 tracts and a 1200-base (AT)
+    """pvc's windowing_fixture (mod.rs 3071): four (AT)x10 repeats and a 1200-base (AT)
     array at 4000, in 6000 bases of filler."""
-    bases = _make_contig_with_tracts_at([990, 1990, 2020, 3500], 6000)
+    bases = _make_contig_with_at_repeats([990, 1990, 2020, 3500], 6000)
     return _put(bases, 4000, "AT" * 600)
 
 
 def _make_chained_cluster(span: int, length: int) -> str:
-    """pvc's chained_cluster (mod.rs 3089): (AT)x10 tracts every 50 bases from 1000."""
-    return _make_contig_with_tracts_at(range(1000, 1000 + span - 20 + 1, 50), length)
+    """pvc's chained_cluster (mod.rs 3089): (AT)x10 repeats every 50 bases from 1000."""
+    return _make_contig_with_at_repeats(range(1000, 1000 + span - 20 + 1, 50), length)
 
 
 def _make_genome_segments(segments: Iterable[_Segment]) -> list[GenomeSegment]:
@@ -1767,7 +1771,7 @@ def test_a_bed_returns_the_same_findings_the_whole_genome_run_does() -> None:
     # The port segments the whole contig whatever spans are asked for, and a span only
     # chooses which STR regions come back (`str-regions --regions`); generic regions do
     # not come back at all.
-    bases = _make_contig_with_tracts_at([], 8000)
+    bases = _make_contig_with_at_repeats([], 8000)
     bases = _put(bases, 1000, "AT" * 1500)
     whole = _partition(bases, _CATALOG_CONFIG)
     (truth,) = _get_of_type(whole, RegionType.SATELLITE)
@@ -1786,7 +1790,7 @@ def test_a_bed_returns_the_same_findings_the_whole_genome_run_does() -> None:
 
 
 def _make_micro_near_satellite(micro_left: bool, gap: int) -> str:
-    """pvc's micro_near_satellite (mod.rs 3192): a (CAG)x8 tract gap bases from a
+    """pvc's micro_near_satellite (mod.rs 3192): a (CAG)x8 repeat gap bases from a
     1300-base (AT) array, on its left or its right."""
     if micro_left:
         micro_at, array_at = 1000, 1000 + 24 + gap
@@ -1805,14 +1809,14 @@ def test_a_microsatellite_beside_a_satellite_is_absorbed_into_it(micro_left: boo
     satellite = segments[1]
     assert satellite.end - satellite.start >= 1300 + near + 24
 
-    # The control: far from the array, the same tract is an STR segment.
+    # The control: far from the array, the same repeat is an STR segment.
     types = _get_types(_partition(_make_micro_near_satellite(micro_left, far), _PVC_DEFAULT_CONFIG))
     assert "str" in types
     assert "satellite" in types
 
 
 def test_absorption_tracks_the_bundle_radius() -> None:
-    def find_first_locus_gap(radius: int) -> int | None:
+    def find_first_str_gap(radius: int) -> int | None:
         parameters = replace(_PVC_DEFAULT_CONFIG, bundle_distance=radius)
         for gap in range(1, radius * 3 + 1):
             segments = _find_segments(_make_micro_near_satellite(True, gap), parameters)
@@ -1822,7 +1826,7 @@ def test_absorption_tracks_the_bundle_radius() -> None:
 
     previous = 0
     for radius in [10, 15, 20, 30]:
-        gap = find_first_locus_gap(radius)
+        gap = find_first_str_gap(radius)
         assert gap is not None, radius
         assert gap > previous, radius
         previous = gap
@@ -1856,7 +1860,7 @@ def test_the_satellite_cap_applies_to_the_cleaned_coverage_not_the_raw() -> None
 @pytest.mark.parametrize(
     "requested",
     [(900, 1100), (1995, 2100), (4500, 4800), (3000, 3600), (1, 6000)],
-    ids=["tract", "bundle", "satellite", "interior", "whole"],
+    ids=["str", "bundle", "satellite", "interior", "whole"],
 )
 def test_a_bed_does_not_change_what_things_are(requested: tuple[int, int]) -> None:
     # pvc's assertion on the type at each edge of what comes back holds of the STR regions
@@ -1884,7 +1888,7 @@ def test_a_bed_does_not_change_what_things_are(requested: tuple[int, int]) -> No
 
 
 @pytest.mark.parametrize(
-    "requested", [(900, 1100), (1995, 2100), (3000, 3600)], ids=["tract", "bundle", "interior"]
+    "requested", [(900, 1100), (1995, 2100), (3000, 3600)], ids=["str", "bundle", "interior"]
 )
 def test_a_bed_span_is_tiled_by_what_comes_back(requested: tuple[int, int]) -> None:
     # Dropped: the first segment starting at or before the span and the last ending at or
@@ -1913,15 +1917,17 @@ def test_generic_clips_at_the_edge_and_findings_come_back_whole() -> None:
     assert bundle.start < 1994
     # The members are the whole contig's bundle's: GenomeSegment does not carry them.
     (members,) = [other.members for other in whole if other.start == bundle.start]
-    assert all(bundle.start <= m.start and m.end <= bundle.end for m in members)
+    assert all(bundle.start <= member.start and member.end <= bundle.end for member in members)
 
 
 def test_a_locus_straddling_the_bed_edge_is_emitted_whole() -> None:
     bases = _make_windowing_fixture()
-    (locus,) = _get_of_type(_find_requested(bases, [(900, 1000)]), RegionType.STR)
-    assert locus.end > 1000
+    (str_region,) = _get_of_type(_find_requested(bases, [(900, 1000)]), RegionType.STR)
+    assert str_region.end > 1000
     whole = _partition(bases, _PVC_DEFAULT_CONFIG)
-    assert [o for o in _make_genome_segments(whole) if o.start == locus.start] == [locus]
+    assert [other for other in _make_genome_segments(whole) if other.start == str_region.start] == [
+        str_region
+    ]
 
 
 def test_two_spans_sharing_a_scan_span_do_not_leak_the_gap_between_them() -> None:
@@ -1948,7 +1954,7 @@ def test_a_feature_is_absorbed_with_fewer_than_the_bundle_distance_bases_between
     member: _Candidate, is_absorbed: bool
 ) -> None:
     # The satellite is [100, 200); the bundle distance 15. doc/specs/str_finder.md step 7.
-    satellites, members, _ = _drop_absorbed_features([(100, 200)], [member], [], 15)
+    satellites, members, _ = _make_grown_satellites([(100, 200)], [member], [], 15)
     if is_absorbed:
         assert (satellites, members) == ([(min(member.start, 100), max(member.end, 200))], [])
     else:
@@ -1963,7 +1969,7 @@ def test_absorption_is_repeated_until_a_pass_absorbs_nothing() -> None:
     far = _make_candidate(60, 80, 2, 1)
     near = _make_candidate(82, 90, 2, 1)
     str_segment = _StrSegment(start=20, end=50, motif="CA", purity=1.0)
-    satellites, members, str_segments = _drop_absorbed_features(
+    satellites, members, str_segments = _make_grown_satellites(
         [(100, 200), (400, 500)], [far, near], [str_segment], 15
     )
     assert satellites == [(20, 200), (400, 500)]
@@ -1972,7 +1978,7 @@ def test_absorption_is_repeated_until_a_pass_absorbs_nothing() -> None:
 
 
 def test_absorption_merges_satellites_that_a_feature_reaches_on_both_sides() -> None:
-    satellites, members, _ = _drop_absorbed_features(
+    satellites, members, _ = _make_grown_satellites(
         [(0, 120), (140, 300)], [_make_candidate(125, 135, 2, 1)], [], 15
     )
     assert satellites == [(0, 300)]
@@ -2232,7 +2238,7 @@ def test_a_bundles_hull_ends_at_its_furthest_member_end(tmp_path: Path) -> None:
 def test_bundles_the_bundle_distance_apart_stay_two(
     bundle_distance: int, expected: list[tuple[int, int, str, str | None]], tmp_path: Path
 ) -> None:
-    bases = _make_contig_with_tracts_at([60, 90, 126, 156], 270)
+    bases = _make_contig_with_at_repeats([60, 90, 126, 156], 270)
     parameters = StrFinderParameters(bundle_distance=bundle_distance)
     assert _find_segments_in_fasta("pairs", bases, parameters, tmp_path) == expected
 
