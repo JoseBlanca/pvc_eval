@@ -130,3 +130,51 @@ reader can find pvc's code.
   work will meet on a whole chromosome.
 - pvc's two tests of absorption that the plan named do not fail when absorption stops after one pass;
   a test of the port's own does.
+
+## Milestone 4: `read_str_regions` and the `str-regions` command
+
+Commits 2835af6 to d16ba92, with main merged in at d06e02c. `src/pvc_eval/cli.py`, pvc_eval's first
+command line, with the `pvc_eval` entry point; `read_str_regions` and `write_str_regions` in
+`src/pvc_eval/segments.py`; `tests/test_str_regions.py`.
+
+- `uv run pvc_eval str-regions --reference ref.fa --output str.bed [--regions r.bed]` writes the BED
+  of the spec; its rows on the worked cases equal pvc's at bbcc9f4. `read_str_regions` reads it back
+  to the same STR regions.
+- The `--help` and the error messages were read by the `first-reader` subagent as a user would; six
+  of seven messages were clear at once, and the help now says what the BED's columns are and what an
+  STR segment, a bundle and a satellite are.
+- Checks on d16ba92, with main merged: ruff and ty clean, `pytest -q` "679 passed". The loci
+  session's test of `build_loci` on `segment_contig`, skipped on main, runs and passes here.
+
+**Changed in the spec during the milestone**, each in a commit of its own before the code:
+- `write_str_regions` is public: the command needs one entry point into `pvc_eval.segments`.
+- The errors of the command: an `--output` that cannot be written is checked before any contig is
+  segmented; a command line that cannot be parsed keeps argparse's message and exit status 2.
+- How a BED is read: a line is a header only when its first field is `track` or `browser`, so a
+  contig may be named `trackA`; whitespace-only lines, empty trailing columns and a byte-order mark
+  read as nothing.
+- `--regions` is read by `pvc_eval.bed.parse_bed`, the reader the loci brought into main, so a BED
+  means the same to `str-regions` and `compare`, gzipped or not.
+
+**What the review found and is fixed.** No blocker.
+- *Errors.* Most faults of `--output` ended in a traceback, one of them after the whole genome was
+  segmented; a contig whose name starts with `track` or `browser` was skipped without a word.
+- *Tests.* Rows under `--regions` were not tested to come in `.fai` order (a writer following the
+  regions file passed, and wrote a BED `read_str_regions` refuses); an empty motif, three error
+  messages and Windows line ends had no test.
+- *Design.* Each BED line looked its contig up in a tuple, 16 times slower than a set on a
+  3,366-contig reference.
+- The spec reviewer compared the command's BED with pvc's binary on 2,300 generated contigs, with and
+  without `--regions`: identical.
+
+**Not taken.** Moving the writer out of `pvc_eval.segments` (`python.md` keeps file writing in the
+table and the command line): the spec places it there, and the move can come with `compare`'s
+command line. The pattern that turns field names into option names in the command's messages: a test
+pins every one.
+
+**What the owner should know.** An empty `--regions` BED stops the run. For an hour of this
+milestone the spec said it wrote a BED of header lines only; adopting the loci's shared reader, which
+refuses one, made the two commands agree.
+- A `--regions` BED that starts with a byte-order mark is refused, and the remedy the message gives
+  would drop its first region. The fault is in `pvc_eval.bed.parse_bed`, the loci's shared reader;
+  it was reported to the loci session on 19 October 2026 and not changed here.

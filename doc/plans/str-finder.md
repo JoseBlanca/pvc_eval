@@ -121,7 +121,7 @@ periods admitted are two ranges; the ported tests set them equal, so only the sp
 would show them confused, and it is added as a test here (`scan_min_period` 1, `min_period` 2: a
 satellite).
 
-- [ ] 4. `read_str_regions` and the `str-regions` command
+- [x] 4. `read_str_regions` and the `str-regions` command
 
 **What it gives.** A user can run `uv run pvc_eval str-regions --reference ref.fa --output str.bed`
 and read the BED back with `read_str_regions`, for `compare --str-regions` later.
