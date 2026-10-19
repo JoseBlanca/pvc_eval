@@ -532,7 +532,32 @@ def test_span_beyond_10_kb_is_the_ref_and_counted(
 
     assert placed(beyond) == (10001, ("AA", "A"), (10001, 10003), False)
     assert placed(within) == (10000, ("AA", "A"), (0, 10002), False)
-    assert "1 VCF record could slide more than 10 kb" in caplog.text
+    assert (
+        "a.vcf: 1 VCF record, at line 3, could slide more than 10,000 bases along the"
+        " reference and was given only its REF as its span;"
+    ) in caplog.text
+
+
+def test_spans_beyond_10_kb_are_counted_in_one_warning_from_the_first(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    homopolymer = "G" + "A" * 10002 + "T"
+    reference = {"chr1": homopolymer, "chr2": homopolymer}
+    path = write_vcf(
+        tmp_path,
+        "chr1\t10002\t.\tAA\tA\t.\t.\t.\tGT\t0/1\t0/1\n"
+        "chr2\t10002\t.\tAA\tA\t.\t.\t.\tGT\t0/1\t0/1\n",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        records = list(read_vcf_records(path, CONTIGS, reference.__getitem__))
+
+    assert [placed(record)[2] for record in records] == [(10001, 10003), (10001, 10003)]
+    assert len(caplog.records) == 1
+    assert (
+        "a.vcf: 2 VCF records, the first at line 3, could slide more than 10,000 bases along"
+        " the reference and each was given only its REF as its span;"
+    ) in caplog.text
 
 
 def test_soft_masked_reference_gives_no_mismatch_and_the_same_spans(tmp_path: Path) -> None:

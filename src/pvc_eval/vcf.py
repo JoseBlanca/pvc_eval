@@ -185,6 +185,7 @@ def _records_in_file_order(
     num_symbolic = 0
     num_not_numbers = 0
     num_beyond_reach = 0
+    first_beyond_reach_line = 0
     sequence_contig = ""
     sequence = ""
     with closing(_numbered_lines(path)) as numbered_lines:
@@ -221,7 +222,9 @@ def _records_in_file_order(
                 fields, contig, pos_1based - 1, alts, line_number, sequence
             )
             num_not_numbers += num_record_not_numbers
-            num_beyond_reach += is_beyond_reach
+            if is_beyond_reach:
+                num_beyond_reach += 1
+                first_beyond_reach_line = first_beyond_reach_line or line_number
             yield pos_1based - 1, record
     if num_symbolic:
         logger.warning(
@@ -238,13 +241,19 @@ def _records_in_file_order(
             _count(num_not_numbers, "QUAL or GQ value"),
         )
     if num_beyond_reach:
+        if num_beyond_reach == 1:
+            which, given = f"at line {first_beyond_reach_line}", "was given"
+        else:
+            which, given = f"the first at line {first_beyond_reach_line}", "each was given"
         logger.warning(
-            "%s: %s could slide more than 10 kb along the reference, and %s given only"
+            "%s: %s, %s, could slide more than %s bases along the reference and %s only"
             " its REF as its span; another spelling of the same event further along may"
             " fall into another locus and be compared apart.",
             path,
             _count(num_beyond_reach, "VCF record"),
-            "was" if num_beyond_reach == 1 else "were each",
+            which,
+            f"{MAX_SPAN_REACH:,}",
+            given,
         )
 
 
