@@ -76,8 +76,8 @@ def make_outcome_rows(
         result_a = reconciled.results_a[sample_pair.index_a]
         result_b = reconciled.results_b[sample_pair.index_b]
         evaluation = evaluate_pair(result_a, result_b)
-        quality_a, gq_a = _find_lowest_quality(locus.records_a, sample_pair.index_a)
-        quality_b, gq_b = _find_lowest_quality(locus.records_b, sample_pair.index_b)
+        quality_a, gq_a = _find_lowest_qual_and_gq(locus.records_a, sample_pair.index_a)
+        quality_b, gq_b = _find_lowest_qual_and_gq(locus.records_b, sample_pair.index_b)
         yield OutcomeRow(
             contig=locus.contig,
             start=locus.start,
@@ -190,7 +190,7 @@ def _count_records_with_alt(records: Iterable[VcfRecord]) -> int:
     return sum(1 for vcf_record in records if len(vcf_record.alleles) > 1)
 
 
-def _find_lowest_quality(
+def _find_lowest_qual_and_gq(
     records: Iterable[VcfRecord], sample_index: int
 ) -> tuple[float | None, int | None]:
     """The lowest QUAL and the lowest GQ among the records at which the sample's VCF
