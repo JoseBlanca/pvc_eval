@@ -13,7 +13,7 @@ that is too wide joins unrelated events in one row, which is *same genotype* onl
 agree. This spec gives `build_loci` in full: how it merges its inputs,
 what it holds while it works, what it does at each boundary, and what it raises. After it come the
 three things read from a locus once it is built: whether `--regions` selects it, its kind and its
-stratum. Two points are open, in the list at the end.
+stratum. No point is open.
 
 `doc/spec.md` §3, §4 and §5.3 already give the rules of the loci, the `Locus` type and the
 signature of `build_loci`. This spec decides, beyond them:
@@ -254,7 +254,10 @@ It skips blank lines and lines that start with `#`, `track` or `browser`, as `re
 does, and uses the first three columns of the others. Regions that overlap or lie next to each other
 are merged. It raises `PvcEvalInputError`, naming the file and line and how to put it right, for a
 line with fewer than three columns, a start or end that is not a whole number, or an end not after
-its start. A region on a contig the reference lacks is **Open 1**.
+its start, and for a line on a contig the reference lacks. The last stops the run at the first such
+line even when the reference was cut to one chromosome and the BED is GIAB's, which covers chr1–22,
+X and Y: the message names the contig and says to keep only the reference's contigs in the BED, and
+how (decided by the owner on 19 October 2026, over skipping such lines with a warning).
 
 `select_loci` yields, in their order, the loci that share a position with the regions, and every
 locus when `regions` is None.
@@ -305,7 +308,9 @@ from the region types of `locus.str_regions`: `satellite`, `str-bundle`, `str` o
 region with no region type, from a `--str-regions` BED without a fourth column, raises
 `PvcEvalInputError`. Its message names the region and says that `--strata pvc` needs the types that
 `pvc_eval str-regions` writes. A locus holding no STR region is `generic` and raises nothing, so
-the error comes at the first locus that holds an untyped region (**Open 2**).
+the error comes at the first locus that holds an untyped region, after the rows of earlier loci are
+written (decided by the owner on 19 October 2026, over reading the BED once before the comparison
+to find an untyped line before any row is written).
 
 With a BED, `read_strata` reads it whole, as `read_regions` does, with the same refusals, plus one
 for a line with no fourth column. `Strata.stratum` gives the classes of the intervals that share at
@@ -376,35 +381,6 @@ until `segment_contig` exists on the branch.
 sections; a region list read from an unsorted BED with overlapping lines; each refusal of
 `read_regions` and `read_strata`; the strata cases of `doc/spec.md` §7.2 at `pvc_stratum`; and
 one locus of each kind, including a *too complex* one, which is §7.2's.
-
-## Open points
-
-**Open 1. A `--regions` or `--strata` BED that names a contig the reference lacks.** GIAB's BEDs
-cover chr1–22, X and Y. A user who compares one chromosome against a reference cut to it gives a
-BED naming 23 contigs the reference lacks. `read_str_regions` stops the run for the same fault
-(`doc/spec.md` §4), but its BED is made for the reference, and these are not. The options:
-
-- *Skip and warn*: the lines on those contigs are skipped and counted in one warning that names the
-  contigs, for `--regions` and `--strata` alike. The comparison runs on what is left. When no line is
-  kept, as with a BED written for another naming (`1` against `chr1`), the run stops with an error
-  instead, since every locus would be skipped or `.`.
-- *Error*: the run stops at the first such line, naming it. The user filters the BED first.
-
-I recommend skipping with the warning: it runs the common case of a cut reference, and still
-stops the run when the naming is wrong. Until the owner decides, the implementer builds that.
-
-**Open 2. `--strata pvc` with a `--str-regions` BED that has no types.** `pvc_stratum` finds the
-missing type at the first locus that holds an untyped region, after the rows of earlier loci are
-written, and the run then stops. The options:
-
-- *Stop there*, as above: nothing more to build, and the user loses the rows written.
-- *Check first*: with `--strata pvc` and `--str-regions`, `compare` reads the BED's lines once
-  before the comparison and stops at the first line with no type, before any row is written. The
-  BED is read twice.
-
-I recommend checking first, which belongs to the spec of `compare`; `pvc_stratum` raises in either
-case, since it can be called from the Python API. Until the owner decides, the implementer builds
-`pvc_stratum` as this spec gives it, which both options need.
 
 ## Not in this spec
 
