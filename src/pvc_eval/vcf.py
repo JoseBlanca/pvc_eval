@@ -341,11 +341,12 @@ type _ParsedGt = tuple[tuple[int | MISSING, ...], bool]
 _MISSING_GT: _ParsedGt = ((MISSING,) * PLOIDY, False)
 
 
-# GTs repeat: the 3,662,000 of the 5 Mb, 200-sample benchmark input are 24 distinct pairs
-# of GT and number of alleles, so each is parsed once and its genotypes share one alleles
-# tuple. That makes parse_vcf 21% faster on that input, and its peak memory with no span
-# limit 383 MB instead of 615 MB. The cache is bounded and holds only immutable values, and
-# lru_cache is safe to share between threads.
+# GTs repeat, so each pair of GT and number of alleles is parsed once and the genotypes
+# with it share one alleles tuple. Only the genotype cache's misses reach this function,
+# 451,284 of 3,625,400 genotypes on the 5 Mb, 200-sample GATK-like benchmark input, and
+# there this cache still makes parse_vcf 8.9% faster (1.469 s against 1.601 s) and its peak
+# memory with no span limit 132.6 MiB instead of 160.4 MiB. The cache is bounded and holds
+# only immutable values, and lru_cache is safe to share between threads.
 @functools.lru_cache(maxsize=1024)
 def _parse_gt(gt: str, num_alleles: int) -> _ParsedGt | MALFORMED_GT | HAPLOID_GT:
     """What a GT field says whatever the sample's PS and GQ: its alleles and whether it is
