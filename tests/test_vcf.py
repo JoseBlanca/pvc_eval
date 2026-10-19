@@ -208,11 +208,11 @@ def test_unsorted_file_stops_the_run_naming_both_lines(
 ) -> None:
     path = write_vcf(
         tmp_path,
-        "chr1\t20\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t15\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+        "chr1\t12\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t9\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
     )
 
     with pytest.raises(
-        PvcEvalInputError, match=r"chr1:15 \(line 4\) comes after chr1:20 \(line 3\)"
+        PvcEvalInputError, match=r"chr1:9 \(line 4\) comes after chr1:12 \(line 3\)"
     ):
         list(parse_vcf(path, reference))
 
@@ -889,21 +889,38 @@ def test_each_stream_reads_through_a_window_of_its_own(
     assert all(first == second for first, second in pairs)
 
 
-def test_ref_past_the_end_of_its_contig_differs_from_the_reference(
-    tmp_path: Path, reference: IndexedFasta
+@pytest.mark.parametrize(
+    ("line", "where"),
+    [
+        ("chr2\t8\t.\tGG\tG", "line 3: the REF of chr2:8 reaches past"),
+        ("chr2\t12\t.\tG\tT", "line 3: the REF of chr2:12 reaches past"),
+    ],
+    ids=["runs_over_the_end", "starts_past_the_end"],
+)
+def test_ref_past_the_end_of_its_contig_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta, line: str, where: str
 ) -> None:
-    # chr2 has 8 bases: the first REF runs one base past its end, the second starts after.
-    path = write_vcf(
-        tmp_path,
-        "chr2\t8\t.\tGG\tG\t.\t.\t.\tGT\t0/1\t0/1\nchr2\t12\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+    # chr2 has 8 bases.
+    path = write_vcf(tmp_path, f"{line}\t.\t.\t.\tGT\t0/1\t0/1\n")
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == (
+        f"{path}, {where} the end of chr2, which has 8 bases in the reference, so the VCF"
+        " looks made on another reference. Compare against the reference the VCF was"
+        " called on."
     )
 
-    records = parse_vcf(path, reference)
 
-    assert [get_placement(record) for record in records] == [
-        (7, ("GG", "G"), (7, 9), True),
-        (11, ("G", "T"), (11, 12), True),
-    ]
+def test_ref_on_the_last_base_of_its_contig_is_read(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(tmp_path, "chr2\t7\t.\tGG\tG\t.\t.\t.\tGT\t0/1\t0/1\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    assert get_placement(record) == (6, ("GG", "G"), (0, 8), False)
 
 
 def test_soft_masked_reference_gives_no_mismatch_and_the_same_spans(

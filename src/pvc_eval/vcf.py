@@ -148,18 +148,19 @@ def parse_vcf(
     no limit from BLOCK_BASES before it, to a block after the furthest base read, and
     once a slide reaches further back, up to a block more behind.
 
-    A record whose REF differs from the reference, or runs past the end of its contig, is
-    marked ref_mismatch and given its trimmed REF as its span: such a record makes its
-    locus invalid for every sample of its file (§5.4), so its slide is not looked for.
+    A record whose REF differs from the reference is marked ref_mismatch and given its
+    trimmed REF as its span: such a record makes its locus invalid for every sample of
+    its file (§5.4), so its slide is not looked for.
 
     Raises PvcEvalInputError, when the stream reaches it, for a VCF record on a contig
-    the reference lacks, for records out of the `.fai`'s contig order or out of position
-    order, for a file with no #CHROM line after its ## lines, for a line that does not
-    hold a VCF record, and for one whose number of sample columns differs from the
-    number of samples the #CHROM line names. A blank line is skipped. A record with a symbolic
-    allele is skipped, and the number skipped is logged as a warning at the end (§9). A
-    QUAL or GQ that is not a number is taken as absent, and those are counted in a
-    warning at the end too. Raises ValueError, when the stream starts, for a span_limit
+    the reference lacks or whose REF reaches past the end of its contig, for records out
+    of the `.fai`'s contig order or out of position order, for a file with no #CHROM line
+    after its ## lines, for a line that does not hold a VCF record, and for one whose
+    number of sample columns differs from the number of samples the #CHROM line names. A
+    blank line is skipped. A record with a symbolic allele is skipped, and the number
+    skipped is logged as a warning at the end (§9). A QUAL or GQ that is not a number is
+    taken as absent, and those are counted in a warning at the end too. Raises
+    ValueError, when the stream starts, for a span_limit
     that is neither None nor a whole number of 1 or more.
     """
     # §5.2: a limit of 0 would cut every insertion, whose span holds the base after it.
@@ -247,6 +248,16 @@ def _parse_records_in_file_order(
             if pos_1based == 0:
                 raise _make_pos_error(fields[1], path, line_number)
             pos = pos_1based - 1
+            contig_length = reference.get_length(contig)
+            # §5.2: a REF past the end of its contig means the VCF was made on another
+            # reference, as a contig the reference lacks does.
+            if pos + len(fields[3]) > contig_length:
+                raise PvcEvalInputError(
+                    f"{path}, line {line_number}: the REF of {contig}:{pos_1based} reaches past"
+                    f" the end of {contig}, which has {contig_length} bases in the reference,"
+                    " so the VCF looks made on another reference. Compare against the"
+                    " reference the VCF was called on."
+                )
             # §5.2: with a limit, no base before pos - span_limit - 1 is needed again. This
             # record and every later one of the contig have their POS at pos or after (the
             # file is sorted), their trimmed REF too, and their span is looked for at most
@@ -257,7 +268,7 @@ def _parse_records_in_file_order(
             evict_distance = BLOCK_BASES if span_limit is None else span_limit + 1
             reference_window.evict_before(pos - evict_distance)
             record, num_record_not_numbers, is_beyond_reach = _parse_record(
-                fields, contig, pos, alts, line_number, reference, reference_window, span_limit
+                fields, contig, pos, alts, line_number, reference_window, contig_length, span_limit
             )
             num_not_numbers += num_record_not_numbers
             if is_beyond_reach:
@@ -460,22 +471,19 @@ def _parse_record(
     pos: int,
     alts: tuple[str, ...],
     line_number: int,
-    reference: IndexedFasta,
     reference_window: FastaWindow,
+    contig_length: int,
     span_limit: int | None,
 ) -> tuple[VcfRecord, int, bool]:
     """The VCF record of a line, normalised and with its span; how many of its QUAL and
     GQ values were taken as absent for not being numbers; and whether its span was cut
     to its REF for reaching more than span_limit beyond it.
 
-    pos: the 0-based position of POS.
+    pos: the 0-based position of POS; the REF lies within the contig.
     """
     # VCF bases are case-insensitive, and the window gives the reference in upper case.
     alleles = (fields[3].upper(), *(alt.upper() for alt in alts))
-    contig_length = reference.get_length(contig)
-    # A REF that runs past the end of the contig gets fewer bases, and differs.
-    ref_end = min(pos + len(alleles[0]), contig_length)
-    ref_bases = reference_window.get_bases(contig, min(pos, ref_end), ref_end)
+    ref_bases = reference_window.get_bases(contig, pos, pos + len(alleles[0]))
     ref_mismatch = ref_bases != alleles[0]
     start, trimmed = _trim(pos, alleles)
     ref_span = (start, start + len(trimmed[0]))
