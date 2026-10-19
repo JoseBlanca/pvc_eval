@@ -19,6 +19,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import TextIO
 
+from pvc_eval.bed import parse_bed
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
 
@@ -1027,12 +1028,17 @@ def _parse_bed_region(
             f" made for, or remove the lines of {contig}, and run again."
         )
     if end > length:
-        raise PvcEvalInputError(
-            f"{where}: the end, {end}, is past the end of {contig}, which has {length} bases in"
-            " the reference. Use the reference the BED was made for, or correct the line, and"
-            " run again."
-        )
+        raise PvcEvalInputError(_make_past_contig_end_message(where, end, contig, length))
     return contig, start, end
+
+
+def _make_past_contig_end_message(where: str, end: int, contig: str, length: int) -> str:
+    """The message for a BED line whose end is past its contig's length."""
+    return (
+        f"{where}: the end, {end}, is past the end of {contig}, which has {length} bases in the"
+        " reference. Use the reference the BED was made for, or correct the line, and run"
+        " again."
+    )
 
 
 def _parse_bed_position(name: str, column: str, where: str) -> int:
@@ -1131,20 +1137,24 @@ def _check_str_region_order(
         )
 
 
-def _parse_requested_regions(path: Path, reference: IndexedFasta) -> dict[str, list[_Span]]:
-    """The regions of a --regions BED, by contig, each `(start, end)`, 0-based and
-    half-open, in the order of the file, which need not be sorted. Columns after the third
-    are ignored.
+def _find_requested_spans(path: Path, reference: IndexedFasta) -> dict[str, list[_Span]]:
+    """The regions of a --regions BED, read by pvc_eval.bed.parse_bed, by contig, each
+    `(start, end)`, 0-based and half-open, in the order of the file, which need not be
+    sorted (doc/specs/str_finder.md, "The str-regions command").
 
-    Raises PvcEvalInputError, naming the file and the line, as _read_bed_lines and
-    _parse_bed_region do.
+    Raises PvcEvalInputError for what parse_bed refuses, and, naming the file and the line,
+    for an end past its contig's length.
     """
     contig_lengths = _get_contig_lengths(reference)
     requested: dict[str, list[_Span]] = {}
-    for line_number, columns in _read_bed_lines(path):
-        where = f"{path}, line {line_number}"
-        contig, start, end = _parse_bed_region(columns, where, contig_lengths)
-        requested.setdefault(contig, []).append((start, end))
+    for bed_line in parse_bed(path, reference.contigs):
+        length = contig_lengths[bed_line.contig]
+        if bed_line.end > length:
+            where = f"{path}, line {bed_line.line_number}"
+            raise PvcEvalInputError(
+                _make_past_contig_end_message(where, bed_line.end, bed_line.contig, length)
+            )
+        requested.setdefault(bed_line.contig, []).append((bed_line.start, bed_line.end))
     return requested
 
 
@@ -1165,10 +1175,8 @@ def write_str_regions(
     output when complete. A run stopped by an error or by Ctrl-C removes the `.tmp` and leaves
     output as it was; one killed by a signal leaves the `.tmp` behind.
 
-    Raises PvcEvalInputError, naming the file and the line, for a --regions BED that cannot
-    be read, a line of it with fewer than three columns, a start or end that is not a whole
-    number, an end not after its start, a contig the reference lacks or an end past its
-    length; for a byte of the FASTA that is not a letter; and, before any contig is
+    Raises PvcEvalInputError for a --regions BED that pvc_eval.bed.parse_bed refuses, an
+    empty one among them, and for one with an end past its contig's length; for a byte of the FASTA that is not a letter; and, before any contig is
     segmented, for an output that is a directory or whose `.tmp` cannot be made.
     """
     if regions is None:
@@ -1177,7 +1185,7 @@ def write_str_regions(
             contig: [(0, length)] for contig, length in _get_contig_lengths(reference).items()
         }
     else:
-        requested = _parse_requested_regions(regions, reference)
+        requested = _find_requested_spans(regions, reference)
     temporary = Path(f"{output}.tmp")
     bed = _open_temporary_output(output, temporary)
     try:

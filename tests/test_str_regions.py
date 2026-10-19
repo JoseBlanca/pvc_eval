@@ -1,6 +1,7 @@
 """The `pvc_eval str-regions` command and read_str_regions (doc/specs/str_finder.md,
 "read_str_regions" and "The str-regions command")."""
 
+import gzip
 import os
 import re
 import subprocess
@@ -263,38 +264,43 @@ def test_a_contig_the_regions_do_not_name_is_not_segmented(
 
 
 def _make_regions_errors(regions: Path) -> list[tuple[str, list[str], str]]:
-    """Each refusal of a --regions BED: its id, its lines, and the message."""
-    remedy = " Correct the line or remove it, and run again."
+    """Each refusal of a --regions BED: its id, its lines, and the message. All but the end
+    past the contig's length are pvc_eval.bed.parse_bed's."""
+    number = (
+        " A BED line gives its start and its end as whole numbers of 0 or more; correct the"
+        " line and run again."
+    )
     return [
         (
             "contig_not_in_reference",
             ["four_a\t0\t10", "chrX\t0\t10"],
-            f"{regions}, line 2: contig chrX is not in the reference. Use the reference the BED"
-            " was made for, or remove the lines of chrX, and run again.",
+            f"{regions}, line 2: the contig 'chrX' is not in the reference. Keep only the"
+            " reference's contigs in the BED, for instance with"
+            " `awk -F'\\t' 'NR == FNR {keep[$1]; next} $1 in keep'"
+            f" ref.fa.fai {regions} > kept.bed`, where ref.fa.fai is the .fai of the"
+            " --reference FASTA, and run again with kept.bed.",
         ),
         (
             "start_not_a_number",
             ["four_a\tten\t20"],
-            f"{regions}, line 1: the start is 'ten', and it must be a whole number of 0 or"
-            f" more.{remedy}",
+            f"{regions}, line 1: the start, 'ten', is not a whole number.{number}",
         ),
         (
             "start_negative",
             ["four_a\t-1\t20"],
-            f"{regions}, line 1: the start is '-1', and it must be a whole number of 0 or"
-            f" more.{remedy}",
+            f"{regions}, line 1: the start, '-1', is not a whole number.{number}",
         ),
         (
             "end_not_a_number",
             ["four_a\t10\t2e1"],
-            f"{regions}, line 1: the end is '2e1', and it must be a whole number of 0 or"
-            f" more.{remedy}",
+            f"{regions}, line 1: the end, '2e1', is not a whole number.{number}",
         ),
         (
             "end_at_start",
             ["four_a\t10\t10"],
-            f"{regions}, line 1: the end, 10, is not after the start, 10, and a region holds at"
-            f" least one base.{remedy}",
+            f"{regions}, line 1: the end, 10, is not after the start, 10. A BED line covers the"
+            " positions from its start up to its end, 0-based and half-open, so its end is"
+            " greater than its start; correct the line and run again.",
         ),
         (
             "end_past_contig",
@@ -306,16 +312,39 @@ def _make_regions_errors(regions: Path) -> list[tuple[str, list[str], str]]:
         (
             "two_columns",
             ["four_a\t10"],
-            f"{regions}, line 1 has 2 tab-separated columns, and a BED line needs at least"
-            f" three: contig, start and end.{remedy}",
+            f"{regions}, line 1: has 2 columns, and a BED line needs at least three, separated"
+            " by tabs: the contig, the start and the end. Correct the line or remove it, and"
+            " run again.",
         ),
         (
             "one_column",
+            ["four_a"],
+            f"{regions}, line 1: has 1 column, and a BED line needs at least three, separated"
+            " by tabs: the contig, the start and the end. Correct the line or remove it, and"
+            " run again.",
+        ),
+        (
+            "columns_separated_by_spaces",
             ["four_a 10 20"],
-            f"{regions}, line 1 has 1 tab-separated column, and a BED line needs at least"
-            f" three: contig, start and end.{remedy}",
+            f"{regions}, line 1: has its columns separated by spaces, and a BED separates them"
+            " by tabs. Convert it with `awk -v OFS='\\t' '{$1 = $1} 1'"
+            f" {regions} > tabs.bed` and run again with tabs.bed.",
+        ),
+        (
+            "no_region",
+            ["# only a comment", "track name=x", ""],
+            f"{regions} holds no BED line: it is empty, or holds only blank lines, comments, and"
+            " track and browser lines. Give a BED with at least one line of contig, start and"
+            " end, separated by tabs, and run again.",
         ),
     ]
+
+
+def test_a_gzipped_regions_bed_is_read(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    regions = tmp_path / "regions.bed.gz"
+    regions.write_bytes(gzip.compress(b"twice\t220\t300\n"))
+    lines = _run_str_regions(tmp_path, capsys, "--regions", str(regions))
+    assert lines == [*_DEFAULT_HEADER, "twice\t209\t231\tstr\tCA"]
 
 
 _REGIONS_ERROR_IDS = [case[0] for case in _make_regions_errors(Path("regions.bed"))]
