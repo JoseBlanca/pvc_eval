@@ -361,7 +361,11 @@ traded events of §5.3, one locus at chain distance 1 and two at 0; adjacent SNP
 record with no ALT, which starts no locus; an insertion next to a repeat pulling it in; two complex
 records at the two ends of a repeat. The traded events and the second and third cases of §5.2 are
 also run from VCF text and a FASTA in `tmp_path` through `parse_vcf`, so that the spans `parse_vcf`
-computes are the ones the loci rely on.
+computes are the ones the loci rely on. In those two cases of §5.2 the records' REFs already touch,
+so they share a locus even without the span. One more case is joined by the span alone: reference
+20–29 `GCAGAGAGTC`, file A `21 CAG C`, file B `28 T C`, chain distance 0. A's deletion of 22–23
+slides right to 26–27, so its span is 21–27 and the two records are one locus, 21–28; by their REFs
+alone, 21–23 and 28, they would leave a gap of 4 and make two.
 
 **What it reads, at `build_loci`.** The record streams and the segments are iterators that count
 what is read from them. When the *k*-th locus is yielded, counting from 1, from 100,000 SNPs
