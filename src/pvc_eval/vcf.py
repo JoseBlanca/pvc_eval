@@ -7,7 +7,8 @@ converted here, and nowhere else.
 
 import gzip
 import logging
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Iterator, Sequence
+from contextlib import closing
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TextIO
@@ -84,8 +85,8 @@ def read_samples(path: Path) -> tuple[str, ...]:
 
     Raises PvcEvalInputError when the file has no #CHROM line after its ## lines.
     """
-    with _open_text(path) as lines:
-        return _read_header(enumerate(lines, start=1), path)
+    with closing(_numbered_lines(path)) as numbered_lines:
+        return _read_header(numbered_lines, path)
 
 
 def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
@@ -106,8 +107,7 @@ def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
     previous_order: tuple[int, int] | None = None
     previous_where = ""
     num_symbolic = 0
-    with _open_text(path) as lines:
-        numbered_lines = enumerate(lines, start=1)
+    with closing(_numbered_lines(path)) as numbered_lines:
         num_samples = len(_read_header(numbered_lines, path))
         for line_number, line in numbered_lines:
             if line.startswith("#") or not line.strip():
@@ -165,6 +165,33 @@ def parse_genotype(
     return VcfGenotype(
         alleles=tuple(alleles), phased="|" in gt, phase_set=phase_set, quality=quality
     )
+
+
+def _numbered_lines(path: Path) -> Generator[tuple[int, str]]:
+    """The lines of a VCF file, plain or bgzipped, each with its 1-based number.
+
+    Raises PvcEvalInputError for a file that is not UTF-8 text, a BCF among them, and
+    for a gzip file that is cut short or damaged.
+    """
+    # Text is decoded and decompressed in blocks, so a fault is found somewhere after the
+    # last line read, and only that is known.
+    line_number = 0
+    try:
+        with _open_text(path) as lines:
+            for line_number, line in enumerate(lines, start=1):
+                yield line_number, line
+    except UnicodeDecodeError as err:
+        raise PvcEvalInputError(
+            f"{path} is not UTF-8 text: a byte at or after line {line_number + 1} cannot be read"
+            " as UTF-8. If it is a BCF file, convert it to a VCF with"
+            " `bcftools view -Oz -o file.vcf.gz file.bcf`; if it is a VCF in another"
+            " encoding, convert it to UTF-8; and run again."
+        ) from err
+    except (EOFError, gzip.BadGzipFile) as err:
+        raise PvcEvalInputError(
+            f"{path} is a gzip file cut short or damaged at or after line {line_number + 1}."
+            " Compress or copy it again, and run again."
+        ) from err
 
 
 def _open_text(path: Path) -> TextIO:

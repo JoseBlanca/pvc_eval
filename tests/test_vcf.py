@@ -259,3 +259,23 @@ def test_lower_case_alleles_are_read_in_upper_case_and_normalise_alike(tmp_path:
         0,
         ("GA", "G"),
     )
+
+
+def test_file_that_is_not_utf8_text_stops_the_run(tmp_path: Path) -> None:
+    path = tmp_path / "a.vcf"
+    # A Latin-1 é in a sample name.
+    path.write_bytes(HEADER.replace("HG003", "HG003-\xe9").encode("latin-1"))
+
+    with pytest.raises(PvcEvalInputError, match=r"a.vcf .*not UTF-8.*bcftools view -Oz"):
+        read_samples(path)
+    with pytest.raises(PvcEvalInputError, match=r"a.vcf .*not UTF-8.*bcftools view -Oz"):
+        list(read_vcf_records(path, CONTIGS))
+
+
+def test_truncated_gzip_file_stops_the_run(tmp_path: Path) -> None:
+    whole = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n" * 50, gzipped=True)
+    path = tmp_path / "cut.vcf.gz"
+    path.write_bytes(whole.read_bytes()[:-20])
+
+    with pytest.raises(PvcEvalInputError, match=r"cut.vcf.gz .*gzip"):
+        list(read_vcf_records(path, CONTIGS))
