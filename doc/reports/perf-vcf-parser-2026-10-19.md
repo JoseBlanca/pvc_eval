@@ -205,6 +205,76 @@ threads against 35 MB, or 67 MB with smaller batches at 1.19 s. About 30 lines a
 numbers, measured after P1 to P3, since those may change what is left to share among
 threads.
 
+*What P4 gave* (commit f7a6d1f on branch `perf/threads`, measured 19 October 2026 from
+17:04 to 17:22, against d6631f8, which holds P1 to P3). The owner's to decide: it is not
+merged. `parse_vcf` takes `num_threads`, where 1 makes no pool; it was 1 by default when
+measured, and is 4 by the owner's choice of 19 October 2026. The calling
+thread reads the lines, checks them and gives them their spans. The sample columns of each
+batch of 64 lines are parsed on a `ThreadPoolExecutor`, with `map` and two batches per
+thread taken ahead, and the batches come back in the file's order. The two module-level
+`lru_cache`s become dicts that each thread keeps for the run, in a `threading.local` made
+for each call, started again past 4,096 genotypes. An input error is kept until the records
+of the lines before it are given, as before. The four digests equal the README's at 1 and 8
+threads, and the GIL stays off.
+
+The code adds 239 lines to `vcf.py` and removes 68, part of it moved. A reader of
+`parse_vcf` now follows five more pieces: a line is first placed (`_PlacedLine`, a record
+without its genotypes), the lines are batched (`_batch_lines`, which keeps an input error
+in `_ReadStatus`), the batches are mapped in order (`_map_in_order`), each batch is parsed
+(`_parse_batch`, with the caches of its thread), and the warnings' counts gather in
+`_ReadStatus`. Three tests are added: one thread against four over 3,000 generated lines,
+records and warnings equal; an error after the records before it, at 1 and 4 threads; and
+`num_threads` checked.
+
+One thread builds 515,559 genotypes of 3,625,400 on the GATK-like input, where the shared
+caches built 451,284; eight threads build 604,124. Batches with caches of their own were
+tried first, and cost 6.9% on one thread, since they share less.
+
+Each input was timed in two hyperfine calls, base first and then base last, 10 runs (5 for
+the 64 Mb input); the two calls' means, against the base of the same call:
+
+| input | span limit | threads | wall time | change | peak memory |
+|---|---|---|---|---|---|
+| 5 Mb, GATK-like | 10 kb | base | 1.481 s, 1.506 s | | 36.8 MB |
+| | | 1 | 1.527 s, 1.533 s | +3.1%, +1.8% | 37.7 MB |
+| | | 2 | 0.735 s, 0.732 s | −50.4%, −51.4% | 50.6 MB |
+| | | 4 | 0.503 s, 0.453 s | −66.0%, −69.9% | 59.0 MB |
+| | | 8 | 0.469 s, 0.460 s | −68.3%, −69.4% | 63.6 MB |
+| | | 16 | 0.473 s, 0.471 s | −68.1%, −68.7% | 71.2 MB |
+| 5 Mb, GATK-like | none | base | 1.610 s, 1.593 s | | 140.5 MB |
+| | | 1 | 1.632 s, 1.664 s | +1.4%, +4.4% | 147.1 MB |
+| | | 2 | 0.872 s, 0.889 s | −45.8%, −44.2% | 165.5 MB |
+| | | 4 | 0.649 s, 0.654 s | −59.7%, −59.0% | 172.4 MB |
+| | | 8 | 0.644 s, 0.622 s | −60.0%, −60.9% | 174.7 MB |
+| | | 16 | 0.620 s, 0.613 s | −61.5%, −61.5% | 177.1 MB |
+| 64 Mb | 10 kb | base | 13.227 s, 13.119 s | | 37.3 MB |
+| | | 1 | 13.078 s, 13.164 s | −1.1%, +0.3% | |
+| | | 2 | 5.810 s, 6.129 s | −56.1%, −53.3% | |
+| | | 4 | 3.989 s, 3.900 s | −69.8%, −70.3% | |
+| | | 8 | 4.329 s, 4.395 s | −67.3%, −66.5% | 64.1 MB |
+| | | 16 | 3.959 s, 4.414 s | −70.1%, −66.4% | |
+| one sample | 10 kb | base | 0.752 s, 0.741 s | | |
+| | | 1 | 0.802 s, 0.783 s | +6.5%, +5.7% | |
+| | | 8 | 0.711 s, 0.718 s | −5.5%, −3.0% | |
+
+Peak memory is the median of 3 maximum resident set sizes. The time stops falling at 4
+threads: what is left is the calling thread's own work, reading, decompressing and
+splitting the lines and giving the spans. At the default limit the peak at 8 threads is
+the same on the 5 Mb and the 64 Mb input, 64 MB against 37 MB, so it does not grow with the
+input. With no limit the peak is 34 MB higher at 8 threads, since each thread's genotypes
+are shared only among its own batches. CPU time (user and system, hyperfine's) at 8 threads
+against 1: 1.90 to 1.94 s against 1.52 s on the GATK-like input at 10 kb, 2.14 to 2.34 s
+against 1.63 s with no limit, 20.9 to 21.2 s against 13.1 s on the 64 Mb input.
+
+On one thread the change costs 1% to 4% on the inputs of 200 samples, and 6% on the
+one-sample input, which pays for building `_PlacedLine` and a VcfRecord apart, about
+0.4 µs a record (cProfile). The one-sample input gains 3% to 6% with 8 threads.
+
+The one-minute load average was 3.6 to 6.2. Processes of other sessions held one to three
+cores throughout: a Python process of the worktree `agent-af14ddb48b2528f87`, at times one
+of `str-finder`, `mediaanalysisd` and `CGPDFService`. Each pair was timed in both orders,
+which shares that load between the two sides; the 16-thread runs had 15 free cores at most.
+
 **P5. A genotype record that is not frozen** (`vcf.py:62-76`, the owner's decision). The
 frozen dataclass's constructor sets each field through `object.__setattr__`, four calls per
 genotype, about 10% of the cpu profile. Not freezing it removes them and the guarantee that a

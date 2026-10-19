@@ -243,6 +243,9 @@ that pays for it.
   | format | turn a value into text for a person |
   | is | answer a yes-or-no question about a value, returning a bool |
   | open | open a file and return it, to be read or written |
+  | batch | group the items of a stream into lists of a fixed length, the last perhaps shorter |
+  | map | apply a function to each item of a stream, giving the results in the order of the items |
+  | log | send a message to the logger, for the user |
 
 - Public is only what another module or the user calls: everything else
   starts with an underscore, functions, classes and constants alike. The
