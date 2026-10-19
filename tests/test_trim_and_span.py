@@ -157,12 +157,12 @@ def test_span_that_reaches_more_than_10_kb_beyond_its_ref_is_none(
     assert find_span(start, alleles, contig) == expected
 
 
-def build_haplotype(contig: str, start: int, ref: str, alt: str) -> str:
+def make_haplotype(contig: str, start: int, ref: str, alt: str) -> str:
     return contig[:start] + alt + contig[start + len(ref) :]
 
 
 @st.composite
-def draw_contig_and_record(draw: st.DrawFn) -> tuple[str, int, tuple[str, ...]]:
+def make_contig_and_record(draw: st.DrawFn) -> tuple[str, int, tuple[str, ...]]:
     """A contig, and a record on it whose REF agrees with it: up to three ALTs, each of
     them any sequence or `*`."""
     # Two letters, so that repeats, where indels slide, are common.
@@ -179,7 +179,7 @@ def draw_contig_and_record(draw: st.DrawFn) -> tuple[str, int, tuple[str, ...]]:
     return contig, start, (contig[start:end], *alts)
 
 
-@given(draw_contig_and_record())
+@given(make_contig_and_record())
 def test_trimming_keeps_the_sequence_each_alt_gives(
     case: tuple[str, int, tuple[str, ...]],
 ) -> None:
@@ -189,12 +189,12 @@ def test_trimming_keeps_the_sequence_each_alt_gives(
 
     for alt, trimmed_alt in zip(alleles[1:], trimmed[1:], strict=True):
         if alt != "*":
-            assert build_haplotype(
-                contig, trimmed_start, trimmed[0], trimmed_alt
-            ) == build_haplotype(contig, start, alleles[0], alt)
+            assert make_haplotype(contig, trimmed_start, trimmed[0], trimmed_alt) == make_haplotype(
+                contig, start, alleles[0], alt
+            )
 
 
-@given(draw_contig_and_record())
+@given(make_contig_and_record())
 def test_span_contains_the_trimmed_ref(case: tuple[str, int, tuple[str, ...]]) -> None:
     contig, start, alleles = case
     trimmed_start, trimmed = trim(start, alleles)
@@ -207,7 +207,7 @@ def test_span_contains_the_trimmed_ref(case: tuple[str, int, tuple[str, ...]]) -
 
 
 @st.composite
-def draw_contig_and_indel(draw: st.DrawFn) -> tuple[str, str, int]:
+def make_contig_and_indel(draw: st.DrawFn) -> tuple[str, str, int]:
     """A contig, the haplotype one indel gives on it, and the indel's size: the number of
     bases inserted, or minus the number deleted."""
     contig = draw(st.text(alphabet="AC", min_size=2, max_size=30))
@@ -235,13 +235,13 @@ def find_left_anchored_spellings(
             alt = ref + indel_haplotype[start + 1 : start + 1 + size]
         if (
             len(ref) == 1 - min(size, 0)
-            and build_haplotype(contig, start, ref, alt) == indel_haplotype
+            and make_haplotype(contig, start, ref, alt) == indel_haplotype
         ):
             spellings.append((start, ref, alt))
     return spellings
 
 
-@given(draw_contig_and_indel())
+@given(make_contig_and_indel())
 def test_every_spelling_of_one_indel_spans_from_the_first_to_the_last(
     case: tuple[str, str, int],
 ) -> None:

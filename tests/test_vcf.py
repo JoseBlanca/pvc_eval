@@ -12,8 +12,8 @@ from pvc_eval.vcf import (
     VcfGenotype,
     VcfRecord,
     parse_genotype,
-    read_samples,
-    read_vcf_records,
+    parse_vcf,
+    parse_vcf_samples,
 )
 
 CONTIGS = ("chr1", "chr2")
@@ -90,7 +90,7 @@ def test_records_are_read_with_0_based_starts(tmp_path: Path, gzipped: bool) -> 
         gzipped=gzipped,
     )
 
-    first, second = read_vcf_records(path, CONTIGS, REFERENCE.__getitem__)
+    first, second = parse_vcf(path, CONTIGS, REFERENCE.__getitem__)
 
     assert (first.contig, first.start, first.end, first.alleles) == (
         "chr1",
@@ -111,7 +111,7 @@ def test_records_are_read_with_0_based_starts(tmp_path: Path, gzipped: bool) -> 
 
 
 def test_samples_are_read_from_the_header(tmp_path: Path) -> None:
-    assert read_samples(write_vcf(tmp_path, "")) == ("HG002", "HG003")
+    assert parse_vcf_samples(write_vcf(tmp_path, "")) == ("HG002", "HG003")
 
 
 def test_unsorted_file_stops_the_run_naming_both_lines(tmp_path: Path) -> None:
@@ -123,7 +123,7 @@ def test_unsorted_file_stops_the_run_naming_both_lines(tmp_path: Path) -> None:
     with pytest.raises(
         PvcEvalInputError, match=r"chr1:15 \(line 4\) comes after chr1:20 \(line 3\)"
     ):
-        list(read_vcf_records(path, CONTIGS, REFERENCE.__getitem__))
+        list(parse_vcf(path, CONTIGS, REFERENCE.__getitem__))
 
 
 def test_contigs_out_of_the_reference_order_stop_the_run(tmp_path: Path) -> None:
@@ -133,14 +133,14 @@ def test_contigs_out_of_the_reference_order_stop_the_run(tmp_path: Path) -> None
     )
 
     with pytest.raises(PvcEvalInputError, match="not sorted"):
-        list(read_vcf_records(path, CONTIGS, REFERENCE.__getitem__))
+        list(parse_vcf(path, CONTIGS, REFERENCE.__getitem__))
 
 
 def test_contig_missing_from_the_reference_stops_the_run(tmp_path: Path) -> None:
     path = write_vcf(tmp_path, "chrUn\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n")
 
     with pytest.raises(PvcEvalInputError, match="contig chrUn is not in the reference"):
-        list(read_vcf_records(path, CONTIGS, REFERENCE.__getitem__))
+        list(parse_vcf(path, CONTIGS, REFERENCE.__getitem__))
 
 
 @pytest.mark.parametrize(
@@ -163,7 +163,7 @@ def test_symbolic_alleles_are_skipped_and_counted(
     )
 
     with caplog.at_level(logging.WARNING):
-        records = list(read_vcf_records(path, CONTIGS, REFERENCE.__getitem__))
+        records = list(parse_vcf(path, CONTIGS, REFERENCE.__getitem__))
 
     assert [(record.start, record.alleles) for record in records] == [(6, ("A", "T"))]
     assert "skipped 1 VCF record with symbolic alleles" in caplog.text
@@ -196,7 +196,7 @@ def test_line_that_is_not_a_vcf_record_stops_the_run(
     path = write_vcf(tmp_path, line)
 
     with pytest.raises(PvcEvalInputError, match=message):
-        list(read_vcf_records(path, CONTIGS, REFERENCE.__getitem__))
+        list(parse_vcf(path, CONTIGS, REFERENCE.__getitem__))
 
 
 @pytest.mark.parametrize(
@@ -216,7 +216,7 @@ def test_line_with_other_samples_than_the_header_stops_the_run(
     with pytest.raises(
         PvcEvalInputError, match=rf"a.vcf, line 3: the line has {found} .* names 2 samples\."
     ):
-        list(read_vcf_records(path, CONTIGS, REFERENCE.__getitem__))
+        list(parse_vcf(path, CONTIGS, REFERENCE.__getitem__))
 
 
 def test_sites_only_file_gives_records_without_genotypes(tmp_path: Path) -> None:
@@ -227,7 +227,7 @@ def test_sites_only_file_gives_records_without_genotypes(tmp_path: Path) -> None
         encoding="utf-8",
     )
 
-    (record,) = read_vcf_records(path, CONTIGS, REFERENCE.__getitem__)
+    (record,) = parse_vcf(path, CONTIGS, REFERENCE.__getitem__)
 
     assert (record.start, record.alleles, record.genotypes) == (4, ("A", "T"), ())
 
@@ -241,7 +241,7 @@ def test_blank_lines_are_skipped(tmp_path: Path) -> None:
         "chr1\t7\t.\tA\tG\t.\t.\t.\tGT\t0/1\t0/1\n",
     )
 
-    assert [record.start for record in read_vcf_records(path, CONTIGS, REFERENCE.__getitem__)] == [
+    assert [record.start for record in parse_vcf(path, CONTIGS, REFERENCE.__getitem__)] == [
         4,
         6,
     ]
@@ -260,9 +260,9 @@ def test_file_without_chrom_line_stops_the_run(tmp_path: Path, text: str, messag
     path.write_text(text, encoding="utf-8")
 
     with pytest.raises(PvcEvalInputError, match=message):
-        read_samples(path)
+        parse_vcf_samples(path)
     with pytest.raises(PvcEvalInputError, match=message):
-        list(read_vcf_records(path, CONTIGS, REFERENCE.__getitem__))
+        list(parse_vcf(path, CONTIGS, REFERENCE.__getitem__))
 
 
 def test_lower_case_alleles_are_read_in_upper_case_and_normalise_alike(tmp_path: Path) -> None:
@@ -272,7 +272,7 @@ def test_lower_case_alleles_are_read_in_upper_case_and_normalise_alike(tmp_path:
         "chr1\t4\t.\taa\ta\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t4\t.\tAA\tA\t.\t.\t.\tGT\t0/1\t0/1\n",
     )
 
-    lower, upper = read_vcf_records(path, CONTIGS, REFERENCE.__getitem__)
+    lower, upper = parse_vcf(path, CONTIGS, REFERENCE.__getitem__)
 
     assert get_placement(lower) == get_placement(upper) == (3, ("AA", "A"), (2, 5), False)
 
@@ -283,9 +283,9 @@ def test_file_that_is_not_utf8_text_stops_the_run(tmp_path: Path) -> None:
     path.write_bytes(HEADER.replace("HG003", "HG003-\xe9").encode("latin-1"))
 
     with pytest.raises(PvcEvalInputError, match=r"a.vcf .*not UTF-8.*bcftools view -Oz"):
-        read_samples(path)
+        parse_vcf_samples(path)
     with pytest.raises(PvcEvalInputError, match=r"a.vcf .*not UTF-8.*bcftools view -Oz"):
-        list(read_vcf_records(path, CONTIGS, REFERENCE.__getitem__))
+        list(parse_vcf(path, CONTIGS, REFERENCE.__getitem__))
 
 
 def test_truncated_gzip_file_stops_the_run(tmp_path: Path) -> None:
@@ -294,7 +294,7 @@ def test_truncated_gzip_file_stops_the_run(tmp_path: Path) -> None:
     path.write_bytes(whole.read_bytes()[:-20])
 
     with pytest.raises(PvcEvalInputError, match=r"cut.vcf.gz .*gzip"):
-        list(read_vcf_records(path, CONTIGS, REFERENCE.__getitem__))
+        list(parse_vcf(path, CONTIGS, REFERENCE.__getitem__))
 
 
 @pytest.mark.parametrize(
@@ -322,7 +322,7 @@ def test_qual_or_gq_that_is_not_a_number_is_absent_and_counted(
     path = write_vcf(tmp_path, f"chr1\t5\t.\tA\tT\t{qual}\t.\t.\tGT:GQ\t0/1:{gq}\t0/1\n")
 
     with caplog.at_level(logging.WARNING):
-        (record,) = read_vcf_records(path, CONTIGS, REFERENCE.__getitem__)
+        (record,) = parse_vcf(path, CONTIGS, REFERENCE.__getitem__)
 
     genotype = record.genotypes[0]
     assert isinstance(genotype, VcfGenotype)
@@ -336,7 +336,7 @@ def test_qual_or_gq_that_is_not_a_number_is_absent_and_counted(
 def test_sample_without_gt_has_both_haplotypes_missing(tmp_path: Path) -> None:
     path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGQ:PS\t30:7\t.:.\n")
 
-    (record,) = read_vcf_records(path, CONTIGS, REFERENCE.__getitem__)
+    (record,) = parse_vcf(path, CONTIGS, REFERENCE.__getitem__)
 
     assert record.genotypes == (
         VcfGenotype(alleles=(MISSING, MISSING), phased=False, phase_set="7", quality=30),
@@ -347,7 +347,7 @@ def test_sample_without_gt_has_both_haplotypes_missing(tmp_path: Path) -> None:
 def test_phase_set_dot_is_none(tmp_path: Path) -> None:
     path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGT:PS\t0|1:.\t1|0:12\n")
 
-    (record,) = read_vcf_records(path, CONTIGS, REFERENCE.__getitem__)
+    (record,) = parse_vcf(path, CONTIGS, REFERENCE.__getitem__)
 
     assert record.genotypes == (
         VcfGenotype(alleles=(0, 1), phased=True, phase_set=None, quality=None),
@@ -358,7 +358,7 @@ def test_phase_set_dot_is_none(tmp_path: Path) -> None:
 def test_alt_dot_gives_a_record_with_ref_only(tmp_path: Path) -> None:
     path = write_vcf(tmp_path, "chr1\t5\t.\tA\t.\t.\t.\t.\tGT\t0/0\t0/0\n")
 
-    (record,) = read_vcf_records(path, CONTIGS, REFERENCE.__getitem__)
+    (record,) = parse_vcf(path, CONTIGS, REFERENCE.__getitem__)
 
     assert (record.start, record.alleles) == (4, ("A",))
 
@@ -369,7 +369,7 @@ def test_records_at_the_same_pos_both_come_out(tmp_path: Path) -> None:
         "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/0\nchr1\t5\t.\tA\tAC\t.\t.\t.\tGT\t0/0\t0/1\n",
     )
 
-    records = list(read_vcf_records(path, CONTIGS, REFERENCE.__getitem__))
+    records = list(parse_vcf(path, CONTIGS, REFERENCE.__getitem__))
 
     assert [get_placement(record) for record in records] == [
         (4, ("A", "T"), (4, 5), False),
@@ -385,7 +385,7 @@ def test_bgzipped_file_of_several_gzip_members_is_read_whole(tmp_path: Path) -> 
         + gzip.compress(b"chr1\t7\t.\tA\tG\t.\t.\t.\tGT\t0/1\t0/1\n")
     )
 
-    records = list(read_vcf_records(path, CONTIGS, REFERENCE.__getitem__))
+    records = list(parse_vcf(path, CONTIGS, REFERENCE.__getitem__))
 
     assert [(record.start, record.alleles) for record in records] == [
         (4, ("A", "T")),
@@ -404,7 +404,7 @@ def test_telomeric_breakend_at_pos_0_is_skipped_and_counted(
     )
 
     with caplog.at_level(logging.WARNING):
-        records = list(read_vcf_records(path, CONTIGS, REFERENCE.__getitem__))
+        records = list(parse_vcf(path, CONTIGS, REFERENCE.__getitem__))
 
     assert [(record.start, record.alleles) for record in records] == [(6, ("A", "T"))]
     assert "skipped 1 VCF record with symbolic alleles" in caplog.text
@@ -415,7 +415,7 @@ def test_message_names_the_file_by_the_path_given(tmp_path: Path) -> None:
     path = write_vcf(tmp_path / "calls", "chrUn\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n")
 
     with pytest.raises(PvcEvalInputError) as raised:
-        list(read_vcf_records(path, CONTIGS, REFERENCE.__getitem__))
+        list(parse_vcf(path, CONTIGS, REFERENCE.__getitem__))
 
     assert str(raised.value).startswith(f"{path}, line 3:")
 
@@ -431,7 +431,7 @@ def test_header_of_one_sample_is_named_in_the_singular(tmp_path: Path) -> None:
     with pytest.raises(
         PvcEvalInputError, match=r"0 sample columns, and the #CHROM line names 1 sample\."
     ):
-        list(read_vcf_records(path, CONTIGS, REFERENCE.__getitem__))
+        list(parse_vcf(path, CONTIGS, REFERENCE.__getitem__))
 
 
 def test_ref_that_differs_from_the_reference_is_marked_and_spans_its_ref(tmp_path: Path) -> None:
@@ -441,7 +441,7 @@ def test_ref_that_differs_from_the_reference_is_marked_and_spans_its_ref(tmp_pat
         "chr1\t5\t.\tCA\tC\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t5\t.\tAG\tA\t.\t.\t.\tGT\t0/1\t0/1\n",
     )
 
-    mismatch, match = read_vcf_records(path, CONTIGS, REFERENCE.__getitem__)
+    mismatch, match = parse_vcf(path, CONTIGS, REFERENCE.__getitem__)
 
     assert get_placement(mismatch) == (4, ("CA", "C"), (4, 6), True)
     assert get_placement(match) == (4, ("AG", "A"), (4, 6), False)
@@ -452,7 +452,7 @@ def test_records_are_trimmed_and_never_moved(tmp_path: Path) -> None:
     # sides, is trimmed to AA -> A at 3 and not slid to its left-aligned place.
     path = write_vcf(tmp_path, "chr1\t4\t.\tAAGA\tAGA\t.\t.\t.\tGT\t0/1\t0/1\n")
 
-    (record,) = read_vcf_records(path, CONTIGS, REFERENCE.__getitem__)
+    (record,) = parse_vcf(path, CONTIGS, REFERENCE.__getitem__)
 
     assert get_placement(record) == (3, ("AA", "A"), (2, 5), False)
 
@@ -468,7 +468,7 @@ def test_records_come_out_in_order_of_span_start(tmp_path: Path) -> None:
         "chr1\t4\t.\tA\tAA\t.\t.\t.\tGT\t0/1\t0/1\n",
     )
 
-    records = read_vcf_records(path, ("chr1",), {"chr1": "GAAAAT"}.__getitem__)
+    records = parse_vcf(path, ("chr1",), {"chr1": "GAAAAT"}.__getitem__)
 
     assert [get_placement(record) for record in records] == [
         (3, ("AA", "A"), (0, 5), False),
@@ -494,7 +494,7 @@ def test_record_comes_out_once_no_later_record_can_start_before_it(tmp_path: Pat
         tmp_path, make_snp_line("chr1", 100) + make_snp_line("chr1", 10100) + NOT_A_RECORD
     )
 
-    records = read_vcf_records(path, CONTIGS, LONG_REFERENCE.__getitem__)
+    records = parse_vcf(path, CONTIGS, LONG_REFERENCE.__getitem__)
 
     assert get_placement(next(records)) == (99, ("C", "T"), (99, 100), False)
 
@@ -505,7 +505,7 @@ def test_record_is_held_while_a_later_record_could_start_before_it(tmp_path: Pat
         tmp_path, make_snp_line("chr1", 100) + make_snp_line("chr1", 10099) + NOT_A_RECORD
     )
 
-    records = read_vcf_records(path, CONTIGS, LONG_REFERENCE.__getitem__)
+    records = parse_vcf(path, CONTIGS, LONG_REFERENCE.__getitem__)
 
     with pytest.raises(PvcEvalInputError, match="POS is 'five'"):
         next(records)
@@ -514,7 +514,7 @@ def test_record_is_held_while_a_later_record_could_start_before_it(tmp_path: Pat
 def test_records_held_come_out_at_the_next_contig(tmp_path: Path) -> None:
     path = write_vcf(tmp_path, make_snp_line("chr1", 100) + make_snp_line("chr2", 1) + NOT_A_RECORD)
 
-    records = read_vcf_records(path, CONTIGS, LONG_REFERENCE.__getitem__)
+    records = parse_vcf(path, CONTIGS, LONG_REFERENCE.__getitem__)
 
     assert get_placement(next(records)) == (99, ("C", "T"), (99, 100), False)
 
@@ -532,7 +532,7 @@ def test_span_beyond_10_kb_is_the_ref_and_counted(
     )
 
     with caplog.at_level(logging.WARNING):
-        beyond, within = read_vcf_records(path, CONTIGS, reference.__getitem__)
+        beyond, within = parse_vcf(path, CONTIGS, reference.__getitem__)
 
     assert get_placement(beyond) == (10001, ("AA", "A"), (10001, 10003), False)
     assert get_placement(within) == (10000, ("AA", "A"), (0, 10002), False)
@@ -554,7 +554,7 @@ def test_spans_beyond_10_kb_are_counted_in_one_warning_from_the_first(
     )
 
     with caplog.at_level(logging.WARNING):
-        records = list(read_vcf_records(path, CONTIGS, reference.__getitem__))
+        records = list(parse_vcf(path, CONTIGS, reference.__getitem__))
 
     assert [get_placement(record)[2] for record in records] == [(10001, 10003), (10001, 10003)]
     assert len(caplog.records) == 1
@@ -573,7 +573,7 @@ def test_soft_masked_reference_gives_no_mismatch_and_the_same_spans(tmp_path: Pa
     )
     soft_masked = {"chr1": "GGGaagAGGCAGGGGG", "chr2": "GGGGGGGG"}
 
-    records = read_vcf_records(path, CONTIGS, soft_masked.__getitem__)
+    records = parse_vcf(path, CONTIGS, soft_masked.__getitem__)
 
     assert [get_placement(record) for record in records] == [
         (3, ("AA", "A"), (2, 5), False),
@@ -595,6 +595,6 @@ def test_reference_is_asked_once_for_each_contig_with_records(tmp_path: Path) ->
         contigs_asked.append(contig)
         return REFERENCE[contig]
 
-    list(read_vcf_records(path, CONTIGS, get_contig_sequence))
+    list(parse_vcf(path, CONTIGS, get_contig_sequence))
 
     assert contigs_asked == ["chr1", "chr2"]

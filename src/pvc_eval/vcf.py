@@ -104,16 +104,16 @@ class VcfRecord:
         return self.start + len(self.alleles[0])
 
 
-def read_samples(path: Path) -> tuple[str, ...]:
+def parse_vcf_samples(path: Path) -> tuple[str, ...]:
     """The sample names of a VCF file, in the order of its columns.
 
     Raises PvcEvalInputError when the file has no #CHROM line after its ## lines.
     """
     with closing(_read_numbered_lines(path)) as numbered_lines:
-        return _read_header(numbered_lines, path)
+        return _parse_header(numbered_lines, path)
 
 
-def read_vcf_records(
+def parse_vcf(
     path: Path, contigs: Sequence[str], contig_sequence_of: Callable[[str], str]
 ) -> Iterator[VcfRecord]:
     """The VCF records of a file, plain or bgzipped, normalised and given their spans
@@ -142,7 +142,7 @@ def read_vcf_records(
     QUAL or GQ that is not a number is taken as absent, and those are counted in a
     warning at the end too.
     """
-    with closing(_read_records_in_file_order(path, contigs, contig_sequence_of)) as records:
+    with closing(_parse_records_in_file_order(path, contigs, contig_sequence_of)) as records:
         yield from _sort_by_span_start(records)
 
 
@@ -170,10 +170,10 @@ def _sort_by_span_start(records: Iterable[tuple[int, VcfRecord]]) -> Iterator[Vc
         yield heapq.heappop(held)[2]
 
 
-def _read_records_in_file_order(
+def _parse_records_in_file_order(
     path: Path, contigs: Sequence[str], contig_sequence_of: Callable[[str], str]
 ) -> Generator[tuple[int, VcfRecord]]:
-    """The records of read_vcf_records in the file's order, each with the 0-based
+    """The records of parse_vcf in the file's order, each with the 0-based
     position of its POS."""
     contig_rank = {contig: rank for rank, contig in enumerate(contigs)}
     # The (contig rank, POS) of the previous record, which this one must not come before,
@@ -187,12 +187,12 @@ def _read_records_in_file_order(
     sequence_contig = ""
     sequence = ""
     with closing(_read_numbered_lines(path)) as numbered_lines:
-        num_samples = len(_read_header(numbered_lines, path))
+        num_samples = len(_parse_header(numbered_lines, path))
         for line_number, line in numbered_lines:
             if line.startswith("#") or not line.strip():
                 continue
             fields = line.rstrip("\n").split("\t")
-            contig, pos_1based = _read_position(fields, path, line_number)
+            contig, pos_1based = _parse_position(fields, path, line_number)
             _check_num_samples(fields, num_samples, path, line_number)
             if contig not in contig_rank:
                 raise PvcEvalInputError(
@@ -208,7 +208,7 @@ def _read_records_in_file_order(
                     " and run again."
                 )
             previous_order, previous_where = order, where
-            alts = _read_alts(fields, path, line_number)
+            alts = _parse_alts(fields, path, line_number)
             if any(_is_symbolic(alt) for alt in alts):
                 num_symbolic += 1
                 continue
@@ -327,7 +327,7 @@ def _open_text(path: Path) -> TextIO:
     return path.open(encoding="utf-8")
 
 
-def _read_header(numbered_lines: Iterator[tuple[int, str]], path: Path) -> tuple[str, ...]:
+def _parse_header(numbered_lines: Iterator[tuple[int, str]], path: Path) -> tuple[str, ...]:
     """The sample names of the #CHROM line, read up to it and no further."""
     for line_number, line in numbered_lines:
         if line.startswith("##") or not line.strip():
@@ -358,7 +358,7 @@ def _check_num_samples(fields: list[str], num_samples: int, path: Path, line_num
 
 # A line that is not a VCF record stops the run (a provisional choice: doc/spec.md §3 does
 # not list it), with the column at fault.
-def _read_position(fields: list[str], path: Path, line_number: int) -> tuple[str, int]:
+def _parse_position(fields: list[str], path: Path, line_number: int) -> tuple[str, int]:
     if len(fields) < NUM_FIXED_COLUMNS - 1:
         raise PvcEvalInputError(
             f"{path}, line {line_number}: the line has"
@@ -386,7 +386,7 @@ def _make_pos_error(pos: str, path: Path, line_number: int) -> PvcEvalInputError
     )
 
 
-def _read_alts(fields: list[str], path: Path, line_number: int) -> tuple[str, ...]:
+def _parse_alts(fields: list[str], path: Path, line_number: int) -> tuple[str, ...]:
     """The ALTs of a line, () for `.`, after checking that REF and every ALT hold
     something."""
     if not fields[3]:
@@ -436,8 +436,8 @@ def _parse_record(
     is_beyond_reach = span is None
     if span is None:
         span = ref_span
-    qual = _read_qual(fields[5])
-    genotypes, num_gq_not_numbers = _read_genotypes(fields, len(alleles))
+    qual = _parse_qual(fields[5])
+    genotypes, num_gq_not_numbers = _parse_genotypes(fields, len(alleles))
     record = VcfRecord(
         contig=contig,
         start=start,
@@ -452,7 +452,7 @@ def _parse_record(
     return record, num_not_numbers, is_beyond_reach
 
 
-def _read_genotypes(
+def _parse_genotypes(
     fields: list[str], num_alleles: int
 ) -> tuple[tuple[VcfGenotype | MALFORMED_GT | HAPLOID_GT, ...], int]:
     """The genotypes of a line's sample columns, one per sample, and how many of their GQ
@@ -471,7 +471,7 @@ def _read_genotypes(
         phase_set = values.get("PS")
         if phase_set == ".":
             phase_set = None
-        quality = _read_gq(values.get("GQ"))
+        quality = _parse_gq(values.get("GQ"))
         num_not_numbers += _is_not_a_number(values.get("GQ"), quality)
         if "GT" not in values:
             genotypes.append(
@@ -491,14 +491,14 @@ def _read_genotypes(
 # a value that is not a number is taken as absent and counted, rather than stopping the
 # run (a provisional choice). Only decimal numbers count, not Python's "nan", "inf" or
 # "1_000", and a QUAL must be finite.
-def _read_qual(field: str) -> float | None:
+def _parse_qual(field: str) -> float | None:
     if not DECIMAL_NUMBER.fullmatch(field):
         return None
     qual = float(field)
     return qual if math.isfinite(qual) else None
 
 
-def _read_gq(field: str | None) -> int | None:
+def _parse_gq(field: str | None) -> int | None:
     if field is None or not field.isascii() or not field.isdecimal():
         return None
     return int(field)
@@ -520,8 +520,8 @@ def trim(start: int, alleles: Sequence[str]) -> tuple[int, tuple[str, ...]]:
     sequences = _drop_spanning_deletions(alleles)
     if len(sequences) < 2:
         return start, tuple(alleles)
-    start, trimmed = _trim(start, sequences)
-    return start, _put_back(alleles, trimmed)
+    start, trimmed = _trim_sequences(start, sequences)
+    return start, _make_trimmed_alleles(alleles, trimmed)
 
 
 def find_span(start: int, alleles: Sequence[str], contig_sequence: str) -> Span | None:
@@ -606,7 +606,7 @@ def _count_shared(first: str, second: str) -> int:
     return min(len(first), len(second))
 
 
-def _trim(start: int, alleles: Sequence[str]) -> tuple[int, list[str]]:
+def _trim_sequences(start: int, alleles: Sequence[str]) -> tuple[int, list[str]]:
     trimmed = list(alleles)
     while min(map(len, trimmed)) > 1 and len({allele[-1] for allele in trimmed}) == 1:
         trimmed = [allele[:-1] for allele in trimmed]
@@ -618,11 +618,11 @@ def _trim(start: int, alleles: Sequence[str]) -> tuple[int, list[str]]:
 
 def _drop_spanning_deletions(alleles: Sequence[str]) -> list[str]:
     """The alleles that are sequences. A `*` has no bases and takes no part in trimming;
-    _put_back returns it to its place."""
+    _make_trimmed_alleles returns it to its place."""
     return [allele for allele in alleles if allele != SPANNING_DELETION]
 
 
-def _put_back(alleles: Sequence[str], sequences: list[str]) -> tuple[str, ...]:
+def _make_trimmed_alleles(alleles: Sequence[str], sequences: list[str]) -> tuple[str, ...]:
     """The alleles with the sequences _drop_spanning_deletions took out replaced, in order, by these."""
     replacements = iter(sequences)
     return tuple(

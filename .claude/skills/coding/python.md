@@ -241,6 +241,8 @@ that pays for it.
   | trim, drop, evict | remove part of a value or of what is held |
   | sort | put in order |
   | format | turn a value into text for a person |
+  | is | answer a yes-or-no question about a value, returning a bool |
+  | open | open a file and return it, to be read or written |
 
 - Public is only what another module or the user calls: everything else
   starts with an underscore, functions, classes and constants alike. The
