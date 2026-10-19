@@ -292,6 +292,27 @@ def test_a_record_whose_only_alt_is_star_starts_a_locus() -> None:
     assert run_build_loci((star,)) == [make_locus(9, 10, (star,))]
 
 
+def test_a_satellite_starting_exactly_at_the_chain_distance_joins_the_locus() -> None:
+    first = make_snp(99, line_number=1)
+    second = make_snp(2989, line_number=2)
+    satellite = make_satellite(110, 3000)
+
+    loci = run_build_loci((first, second), (), (satellite,))
+
+    # The locus at 99-100 ends at 100, and 100 + 10 is the satellite's start.
+    assert loci == [make_locus(99, 3000, (first, second), (), (satellite,))]
+
+
+def test_a_satellite_on_the_next_contig_widens_no_reach_on_this_one() -> None:
+    first = make_snp(9, line_number=1)
+    second = make_snp(399, line_number=2)
+    satellite_chr2 = GenomeSegment("chr2", 0, 500, RegionType.SATELLITE, None)
+
+    loci = run_build_loci((first, second), (), (satellite_chr2,))
+
+    assert loci == [make_locus(9, 10, (first,)), make_locus(399, 400, (second,))]
+
+
 def test_an_str_region_at_the_start_of_the_next_contig_is_not_dropped() -> None:
     snp_chr1 = make_snp(29, contig="chr1", line_number=1)
     region_chr2 = make_region(0, 20, contig="chr2")
