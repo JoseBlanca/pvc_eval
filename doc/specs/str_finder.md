@@ -321,6 +321,12 @@ These follow `doc/spec.md` §4, which refuses overlapping regions. `str-regions`
 overlapping regions. A user's BED of repeats that overlap can be merged first with `bedtools merge`,
 which keeps three columns.
 
+**`write_str_regions(reference, output, parameters, regions)`** does what the `str-regions` command
+does, below: it segments the contigs, keeps the STR regions that the requested regions overlap, or all
+of them when there are none, and writes the BED. The command calls it, and it is public because the
+`--regions` reader and the filter it uses are private to `pvc_eval.segments` (added on 19 October
+2026, during the build).
+
 ## The `str-regions` command
 
 ```
