@@ -14,14 +14,15 @@ What exists now that did not:
   `doc/spec.md` §4, which the loci on main already build on.
 - `pvc_eval str-regions`, pvc_eval's first command line, with its `pvc_eval` entry point.
 - 92 of pvc's tests rewritten in Python (90 of the finder's, 2 of the catalogue's flank rule), pvc's
-  two fixtures, and the tests of the port's own: 680 tests pass on the branch, main merged in.
+  two fixtures, and the tests of the port's own: 902 tests pass on the branch, with main as of
+  18ac6a1 merged in at 0ac452d.
 - The whole-port check against pvc, `tests/test_whole_port.py`, which runs in 10 s with a pvc binary
   and GRCh38 named by two environment variables, and is skipped without them.
 - `doc/port_provenance.md`.
 
 What is asked of the owner:
-- **The merge** of `str-finder` into main. Main was merged into the branch at d06e02c, where the
-  only conflicts were the segment contract (main's copy was this branch's first commit, so the
+- **The merge** of `str-finder` into main. Main was merged into the branch at d06e02c and again,
+  with no conflict, at 0ac452d (main at 18ac6a1). At d06e02c the only conflicts were the segment contract (main's copy was this branch's first commit, so the
   branch's version stands) and one line of `pyproject.toml`. The loci's test of `build_loci` on
   `segment_contig` is skipped on main because main has no `segment_contig` yet; it runs and passes
   on the branch.
@@ -48,8 +49,6 @@ What is left open:
   (milestone 3). And step 1 holds a queue that grows by about one candidate per 500 bases on long runs
   of one base (milestone 1).
 - The check over GRCh38 as a whole, after the performance work.
-- `pvc_eval.bed.parse_bed`, already on main, refuses a BED that starts with a byte-order mark; the
-  loci fixed it on their branch (16eff9f), not yet on main. The merge neither adds nor fixes it.
 
 The plan started from commit bec2800, on which `uv sync --locked`, `ruff format --check`,
 `ruff check` and `ty check` pass and `pytest -q` gives "213 passed in 1.38s".
