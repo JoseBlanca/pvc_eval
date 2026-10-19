@@ -93,8 +93,9 @@ def test_pvc_stratum_raises_for_an_str_region_with_no_type(
         pvc_stratum(locus)
 
     assert str(raised.value) == (
-        f"The STR region chr1:{untyped.start + 1}-{untyped.end} has no region type, since the --str-regions BED has no"
-        " fourth column there, and --strata pvc needs the type of every STR region. Give"
+        f"The STR region chr1:{untyped.start + 1}-{untyped.end}, 1-based and inclusive, which"
+        f" the --str-regions BED gives as `chr1 {untyped.start} {untyped.end}`, has no region"
+        " type, since that line has no fourth column, and --strata pvc needs the type of every STR region. Give"
         " --str-regions a BED written by `pvc_eval str-regions`, which has the types, or"
         " leave --str-regions out so that the STR finder runs, and run again."
     )

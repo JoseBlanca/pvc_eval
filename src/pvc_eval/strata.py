@@ -35,10 +35,11 @@ def pvc_stratum(locus: Locus) -> str:
     region_types = set()
     for str_region in locus.str_regions:
         if str_region.region_type is None:
+            contig, start, end = str_region.contig, str_region.start, str_region.end
             raise PvcEvalInputError(
-                f"The STR region {str_region.contig}:{str_region.start + 1}-{str_region.end}"
-                " has no region type, since the --str-regions BED has no fourth column there,"
-                " and --strata pvc needs the type of every STR region. Give --str-regions a"
+                f"The STR region {contig}:{start + 1}-{end}, 1-based and inclusive, which the"
+                f" --str-regions BED gives as `{contig} {start} {end}`, has no region type,"
+                " since that line has no fourth column, and --strata pvc needs the type of every STR region. Give --str-regions a"
                 " BED written by `pvc_eval str-regions`, which has the types, or leave"
                 " --str-regions out so that the STR finder runs, and run again."
             )
