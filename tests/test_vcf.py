@@ -1279,3 +1279,14 @@ def test_a_num_threads_that_is_not_a_whole_number_of_1_or_more_is_a_value_error(
         ValueError, match=rf"^num_threads must be a whole number of 1 or more, not {num_threads!r}$"
     ):
         list(parse_vcf(path, reference, num_threads=num_threads))  # ty: ignore[invalid-argument-type]  # a wrong type on purpose
+
+
+def test_a_pool_of_4_threads_runs_4_items_at_once_and_gives_them_in_order() -> None:
+    # Each item waits until 4 are running, so a pool of fewer threads breaks the barrier.
+    barrier = threading.Barrier(4, timeout=5)
+
+    def wait_for_4(item: int) -> int:
+        barrier.wait()
+        return item
+
+    assert list(vcf._map_in_order(wait_for_4, range(8), 4)) == list(range(8))
