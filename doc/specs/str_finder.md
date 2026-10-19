@@ -26,12 +26,14 @@ pvc finds its regions by two routes. Its **scanning route**, `region_typing::par
 scans a contig's bases. Its **catalogue route** reads a repeat catalogue instead, a Parquet file of
 candidates that `pvc repeat-catalog` builds once per reference. The catalogue route is what `pvc dev
 type-regions` runs, which is pvc's command that writes the regions as a BED. The two routes differ in
-one rule, step 2 below. pvc_eval ports the scanning route and adds that rule, so it gives what `dev
-type-regions` gives, and the **whole-port check** at the end of this spec compares the two over the
-GIAB benchmark regions of GRCh38.
+two places: the catalogue route drops the candidates near a contig end (step 2 below), and it always
+scans periods 1 to 6, whatever periods it then admits (step 1). pvc_eval ports the scanning route
+with both, so it gives what `dev type-regions` gives, under the conditions the **whole-port check**
+states at the end of this spec, where the two are compared over the GIAB benchmark regions of
+GRCh38.
 
 What is asked of the owner: approval of the spec, and the one open point at the end, whether 52 of
-pvc's tests are left out. Two sentences of `doc/spec.md` §5.1 differ from pvc's code and are
+pvc's tests are left out. Three sentences of `doc/spec.md` §5.1 differ from pvc's code and are
 reported before the end.
 
 ## Vocabulary
@@ -63,8 +65,8 @@ scanning route. In step 5, pvc's `typed_regions.md` §2.4 says that bundle membe
 floor, but its code applies the floor (step 3) before bundling.
 
 **1. Find the candidates** (pvc `tandem_repeat.rs`, `find_tandem_repeats`,
-`maximal_scoring_subsequences`, `is_primitive_motif`). For each period *p* from the shortest to the
-longest, and only when *p* is less than the contig's length:
+`maximal_scoring_subsequences`, `is_primitive_motif`). For each period *p* from `scan_min_period`
+to `scan_max_period`, 1 to 6, and only when *p* is less than the contig's length:
 
 - Position *j* ≥ *p* scores the match reward (2) when the bases at *j* and *j − p* are both A, C, G
   or T and equal. Otherwise it scores minus the mismatch penalty (7). Any other letter, N included,
@@ -81,6 +83,15 @@ longest, and only when *p* is less than the contig's length:
 
 The candidates come out in that order, by period and then start. pvc's code describes the scoring
 from its own index, so that its score *k* is position *k + p*; the result is the same.
+
+The periods scanned are not the periods admitted, `min_period` to `max_period` of step 4. pvc's
+catalogue is built by scanning periods 1 to 6 (`repeat_catalog/builder.rs`, `scan_contig`), and `dev
+type-regions --min-period 2` narrows only what is admitted. The candidates of the other periods
+still drop longer ones here, and still make repeat runs at step 7: with `--min-period 2`, a run of
+120 A's is a satellite in `dev type-regions` and generic in pvc's scanning route, which scans the
+admitted periods only (`region_typing/mod.rs`, `partition_resident_in`). pvc's partition tests that
+run at periods 2 to 6 were written for the scanning route, and set the scanned periods to 2 to 6
+too.
 
 **2. Drop the candidates near a contig end** (pvc `repeat_catalog/row.rs`, `row_for_interval`).
 This is the catalogue route's rule, which pvc's `dev type-regions` applies and its scanning route,
@@ -211,6 +222,7 @@ reproduced for its tests.
 
 | field | default | must be |
 |---|---|---|
+| `scan_min_period`, `scan_max_period` | 1, 6 | 1 ≤ `scan_min_period` ≤ `scan_max_period` ≤ 6 |
 | `min_period`, `max_period` | 1, 6 | 1 ≤ `min_period` ≤ `max_period` ≤ 6 |
 | `match_reward`, `mismatch_penalty` | 2, 7 | 1 or more |
 | `scan_min_copies` | 2 | 1 or more |
@@ -222,8 +234,11 @@ reproduced for its tests.
 | `max_str_len` | 100 | `bundle_distance` or more |
 | `max_bundle_len` | 100 | 0 or more |
 
-The limits are pvc's, from `classify`'s asserts and `cli/typed_regions.rs` `walk_config`. A
-`bundle_distance` of 0 makes every candidate fail step 6 and bundles nothing, so pvc refuses it.
+The limits on the periods, `min_purity`, `bundle_distance` and `max_str_len` are pvc's, from
+`classify`'s asserts and `cli/typed_regions.rs` `walk_config`. A `bundle_distance` of 0 makes every
+candidate fail step 6 and bundles nothing, so pvc refuses it. The others are pvc_eval's own: pvc
+leaves the reward and the penalty unbounded and allows `scan_min_copies` of 0, values under which
+the scores no longer find repeats.
 
 ## The Python interface
 
@@ -236,6 +251,8 @@ The parameters, a record checked when it is made. A value outside the table abov
 ```python
 @dataclass(frozen=True, slots=True, kw_only=True)
 class StrFinderParameters:
+    scan_min_period: int = 1
+    scan_max_period: int = 6
     min_period: int = 1
     max_period: int = 6
     match_reward: int = 2
@@ -260,13 +277,14 @@ contigs of one `IndexedFasta` at once.
 
 What it holds, for the largest human contig (chr1 of GRCh38, 248,956,422 bases):
 
-- The bases, as one `str` of one byte per base, about 250 MB.
+- The bases, as one `str` of one byte per base, about 250 MB. While `get_bases` reads them it holds
+  two copies (`fasta.py`, `_read_upper_bytes`), so about 500 MB at that moment.
 - The candidates that survive step 3. pvc's catalogue of GRCh38 holds about 1.8 million of them on
   chr1, at the same copy floors, and 23.6 million on the whole reference. This was counted on the
   catalogue built on 2 September 2026, beside the reference in pvc's `benchmarks/giab`.
-- **Not all the candidates of step 1.** Every stretch of two or more equal bases is one candidate of
-  period 1, which is about 3 positions in 16 of random sequence, or some 47 million on chr1. This is
-  an estimate, not a count. So step 1 must not hold them all, and must still drop exactly what pvc
+- **Not all the candidates of step 1.** Every stretch of two or more equal bases, A, C, G or T, is
+  one candidate of period 1. chr1 has 45.4 million of them, counted on its bases on 19 October 2026,
+  and the candidates of periods 2 to 6 add more. So step 1 must not hold them all, and must still drop exactly what pvc
   drops. Step 3 drops most of them, but a candidate under the copy floor is used at step 1 first: it
   can drop a candidate of a longer period that it covers by half. So step 1 keeps each candidate
   until every longer-period candidate it could drop has been found, and no longer. How to arrange
@@ -282,7 +300,9 @@ line has the contig, start and end, 0-based and half-open, and may have two more
 fourth is the region type, `str`, `str-bundle` or `satellite`. The fifth is the motif, which is
 upper-case A, C, G and T for `str` and `.` for the others. It yields one `GenomeSegment` per line.
 A line of three columns gives `region_type` `None` and `motif` `None`, as `doc/spec.md` §4 says. A
-line of four columns with the type `str` has no motif, and is refused.
+line of four columns with the type `str` has no motif, and is refused. A motif is 1 to 6 bases.
+Columns after the fifth are ignored. pvc's own BED has nine columns and other words for the types,
+`ssr_locus`, `ssr_bundle` and `generic`, so it is refused at its first line, as an unknown type.
 
 The BED must be sorted as the reference is: contigs in the order of the `.fai`, and by start within
 each. `read_str_regions` reads it as a stream and does not sort it, because a BED of every STR
@@ -306,6 +326,7 @@ which keeps three columns.
 
 ```
 pvc_eval str-regions --reference ref.fa --output str.bed [--regions regions.bed]
+                     [--scan-min-period N] [--scan-max-period N]
                      [--min-period N] [--max-period N] [--min-copies N,N,N,N,N,N]
                      [--min-purity X] [--min-score N] [--bundle-distance N]
                      [--contig-end-flank N] [--max-str-len N] [--max-str-bundle-len N]
@@ -315,11 +336,14 @@ pvc_eval str-regions --reference ref.fa --output str.bed [--regions regions.bed]
 Each option sets the field of `StrFinderParameters` with the same meaning, with the same default.
 Where pvc's `dev type-regions` has the option, the name is pvc's, so that the two commands of the
 whole-port check read alike. The exception is `--bundle-distance`, which pvc calls `--flank-bp`;
-in pvc that option moves the bundle distance only. pvc has no option for the contig-end flank.
+in pvc that option moves the bundle distance only. pvc has no option for the contig-end flank or for
+the periods scanned. `dev type-regions` accepts `--scan-match-reward`, `--scan-mismatch-penalty` and
+`--scan-min-copies` and ignores them, because its catalogue was scanned when it was built
+(`repeat_catalog/criteria.rs`, `StrRepeatCriteria::from`); in pvc_eval they act.
 
 It segments every contig of the `.fai`, in its order. With `--regions`, it segments only the contigs
-the regions name, each still whole, because pvc gives the same segments whether or not it is given a
-region list (`doc/spec.md` §5.1). It writes the STR regions, not the generic ones. With `--regions`,
+the regions name, each still whole, so a region list changes what is written and never what a
+segment is. It writes the STR regions, not the generic ones. With `--regions`,
 it writes only those that overlap a region by at least one base, each whole, as pvc's `emit_into`
 does.
 
@@ -419,20 +443,34 @@ The catalogue in pvc's `benchmarks/giab` was built on 2 September 2026, before b
 binary in its `target/release` lacks `pvc dev`. So both are made again for the check: pvc built
 from `git archive bbcc9f4` into a scratch directory, and the catalogue built there with `pvc
 repeat-catalog --reference <link to the FASTA>`, beside links to the FASTA and its `.fai`. pvc's
-repository is not touched. pvc's help for `repeat-catalog --threads` says that one thread builds the
-GRCh38 catalogue in under two minutes, without naming the machine.
+repository is not touched. The review of this spec built it so with `--threads 4` in 43 s, at a
+peak of 22 GB, on this machine on 19 October 2026.
 
 The test runs:
 
 ```
-pvc dev type-regions --reference $PVC_EVAL_GRCH38 --regions $PVC_EVAL_GIAB_BED --output pvc.bed
+pvc dev type-regions --reference $PVC_EVAL_GRCH38 --output pvc.bed
 pvc_eval str-regions --reference $PVC_EVAL_GRCH38 --regions $PVC_EVAL_GIAB_BED \
                      --min-copies 8,6,6,6,5,4 --output pvc_eval.bed
 ```
 
+`dev type-regions` runs over the whole genome, and its rows that overlap a benchmark region by at
+least one base are kept. It is not given `--regions` because with them its catalogue reader loads
+only the rows within a reach of each region (`repeat_catalog/reader.rs`, `rows_for`), and a satellite
+longer than that reach comes back shorter. A 780-base chain of (CA) repeats was a satellite
+2000–2770 over the whole contig and 2567–2770 with a region at 2700–2750. Over the HG002 regions
+the two runs agreed on all 1,530,189 STR regions, so the check would pass either way today, but by
+luck of the data.
+
 `dev type-regions` at its defaults has pvc's calling floors, 8, 6, 6, 6, 5, 4, the copy floors pvc
-uses when it calls genotypes (`doc/spec.md` §5.1), and pvc_eval's other defaults. It writes `ssr_locus`, `ssr_bundle` and `satellite`, which are `str`, `str-bundle` and
-`satellite` here. Its `generic` rows, cut to the regions, are not compared. How long pvc_eval takes
+uses when it calls genotypes (`doc/spec.md` §5.1), and pvc_eval's other defaults. It writes
+`ssr_locus`, `ssr_bundle` and `satellite`, which are `str`, `str-bundle` and `satellite` here, and
+`generic` rows, which are not compared.
+
+pvc_eval equals `dev type-regions` only where both run the same rules: periods scanned 1 to 6, copy
+floors at or above the catalogue's 5, 5, 4, 4, 4, 3 (which pvc refuses to go under, `StrRepeatCriteria::
+serves`), the scan weights 2, 7, 2 the catalogue was built with, and a contig-end flank of 15. The
+check runs there. How long pvc_eval takes
 over chromosomes 1 to 22 is not known before the measurement, so the check is run at the end of the
 build and when the finder changes, not with every commit.
 
@@ -464,6 +502,12 @@ code is the same whichever way they are settled. The owner decides whether §5.1
 - "Within 15 bases", in steps 2 and 3 of §5.1 and in §2's STR bundle, means "with fewer than 15
   bases between them" in pvc's code (`joins_cluster`, `absorb_into`). Two candidates with exactly
   15 bases between them do not bundle.
+
+A third sentence of §5.1 is true of pvc_eval and not of pvc. §5.1 says pvc's two routes "give the
+same partition", and that pvc "gives the same answer whether or not a region list is given". The
+routes differ in step 2 and in the periods scanned (step 1), and `dev type-regions --regions` can
+give a shorter satellite (the whole-port check). pvc_eval segments whole contigs whatever region
+list it is given, so for pvc_eval the second sentence holds.
 
 ## Not in this spec
 

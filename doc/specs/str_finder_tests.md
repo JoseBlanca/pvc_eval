@@ -14,8 +14,9 @@ helpers of pvc's test modules, at the line given. Three configurations recur, wr
 fields of `StrFinderParameters`:
 
 - **params**: pvc's `params()` (segment_criteria.rs 1516), `matched_params(0.8, 0, 5)`. Periods 2
-  to 6, `copy_floors` (10, 5, 4, 3, 3, 3), `min_purity` 0.8, `min_score` 0, `bundle_distance` 5.
-- **catalog**: pvc's `catalog_config()` (mod.rs 1824). Periods 2 to 6, `copy_floors`
+  to 6 admitted, `copy_floors` (10, 5, 4, 3, 3, 3), `min_purity` 0.8, `min_score` 0, `bundle_distance` 5.
+- **catalog**: pvc's `catalog_config()` (mod.rs 1824). Periods 2 to 6, both scanned and admitted,
+  `copy_floors`
   (10, 5, 4, 3, 3, 3), `bundle_distance` 50, `min_purity` 0.8, `min_score` 0, `max_str_len` 1000,
   `max_bundle_len` unbounded (pvc's `u64::MAX`; in Python `sys.maxsize`), scan 2/7/2.
 - **pvc-default**: what pvc's `Default` gives, which pvc_eval's defaults do not. Periods 1 to 6,
@@ -23,7 +24,8 @@ fields of `StrFinderParameters`:
   `max_str_len` 100, `max_bundle_len` 100, scan 2/7/2. A test marked with it passes these values
   explicitly.
 
-Every test of pvc's partition runs with a contig-end flank of 0, which is pvc's scanning route.
+Every test of pvc's partition runs with a contig-end flank of 0, and with the periods scanned equal
+to the periods admitted, which is pvc's scanning route.
 The contig-end flank is a step of its own (step 2), not part of `classify`'s port. So the tests of
 `classify` whose repeat lies 5 bases from a contig end are unchanged by it.
 
@@ -114,7 +116,7 @@ is not ported (**Open 1** of the spec).
 
 | test | line | class | note |
 |---|---|---|---|
-| absorption_by_sweep_joins_satellites_that_abut_after_growing_at_radius_zero | 1591 | B | keep the fixed point's half: at bundle distance 0, satellites [21, 86) and [87, 88) and a member [86, 88) give one satellite [21, 88), the member absorbed; drop the sweep's half |
+| absorption_by_sweep_joins_satellites_that_abut_after_growing_at_radius_zero | 1591 | B | calls the absorption step with a bundle distance of 0 as a plain number, below what `StrFinderParameters` allows; keep the fixed point's half: at bundle distance 0, satellites [21, 86) and [87, 88) and a member [86, 88) give one satellite [21, 88), the member absorbed; drop the sweep's half |
 | a_lone_tract_partitions_as_generic_locus_generic | 2037 | A | catalog |
 | a_long_array_is_one_satellite_and_swallows_the_locus_inside_it | 2081 | B | pvc-default, then `max_str_len` 10000 |
 | abutting_coverage_runs_merge_into_one | 2140 | A | |
@@ -135,8 +137,8 @@ is not ported (**Open 1** of the spec).
 | a_tract_clear_of_a_bundle_is_still_admitted | 2881 | B | pvc-default |
 | a_low_copy_repeat_is_generic_not_a_bundle | 2917 | B | pvc-default |
 | bundle_clusters_regroups_exactly_what_the_split_set_aside | 2938 | A | |
-| the_resident_partition_reproduces_the_golden_catalog | 2977 | B | periods 2 to 6, floors (10, 5, 4, 3, 3, 3), `bundle_distance` 50, `min_purity` 0.8, `max_str_len` 1000, `max_bundle_len` 100, scan 2/7/2; both fixtures |
-| a_bed_returns_the_same_findings_the_whole_genome_run_does | 3120 | A | catalog; the requested spans are a list |
+| the_resident_partition_reproduces_the_golden_catalog | 2977 | B | periods 2 to 6 scanned and admitted, floors (10, 5, 4, 3, 3, 3), `bundle_distance` 50, `min_purity` 0.8, `max_str_len` 1000, `max_bundle_len` 100, scan 2/7/2; both fixtures |
+| a_bed_returns_the_same_findings_the_whole_genome_run_does | 3120 | B | catalog; the requested spans are a list; it asserts a bundle's members, so it runs against the private step that keeps them |
 | a_microsatellite_beside_a_satellite_is_absorbed_into_it | 3230 | B | pvc-default |
 | absorption_tracks_the_bundle_radius | 3316 | B | pvc-default with bundle distance 10, 15, 20 and 30 |
 | the_satellite_cap_applies_to_the_cleaned_coverage_not_the_raw | 3370 | B | pvc-default |
