@@ -86,7 +86,7 @@ def read_samples(path: Path) -> tuple[str, ...]:
                 return tuple(line.rstrip("\n").split("\t")[NUM_FIXED_COLUMNS:])
             if not line.startswith("##"):
                 break
-    raise PvcEvalInputError(f"{path.name} has no #CHROM header line; is it a VCF file?")
+    raise PvcEvalInputError(f"{path} has no #CHROM header line; is it a VCF file?")
 
 
 def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
@@ -100,7 +100,10 @@ def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
     allele is skipped, and the number skipped is logged as a warning at the end (§9).
     """
     contig_rank = {contig: rank for rank, contig in enumerate(contigs)}
-    previous: tuple[int, int, str, int] | None = None  # rank, pos, contig, line
+    # The (contig rank, POS) of the previous record, which this one must not come before,
+    # and where that record is, for the message.
+    previous_order: tuple[int, int] | None = None
+    previous_where = ""
     num_symbolic = 0
     with _open_text(path) as lines:
         for line_number, line in enumerate(lines, start=1):
@@ -110,18 +113,18 @@ def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
             contig, pos_1based = _read_position(fields, path, line_number)
             if contig not in contig_rank:
                 raise PvcEvalInputError(
-                    f"{path.name}, line {line_number}: contig {contig} is not in the reference."
+                    f"{path}, line {line_number}: contig {contig} is not in the reference."
                     " Compare against the reference the VCF was called on."
                 )
-            current = (contig_rank[contig], pos_1based, contig, line_number)
-            if previous is not None and current[:2] < previous[:2]:
+            order = (contig_rank[contig], pos_1based)
+            where = f"{contig}:{pos_1based} (line {line_number})"
+            if previous_order is not None and order < previous_order:
                 raise PvcEvalInputError(
-                    f"{path.name} is not sorted: {contig}:{pos_1based} (line {line_number})"
-                    f" comes after {previous[2]}:{previous[1]} (line {previous[3]})."
+                    f"{path} is not sorted: {where} comes after {previous_where}."
                     " Sort it in the contig order of the reference's .fai and by position,"
                     " and run again."
                 )
-            previous = current
+            previous_order, previous_where = order, where
             alts = _read_alts(fields[4])
             if any(_is_symbolic(alt) for alt in alts):
                 num_symbolic += 1
@@ -131,7 +134,7 @@ def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
         logger.warning(
             "%s: %d VCF records with symbolic alleles (<DEL>, breakends) were skipped;"
             " pvc_eval does not compare structural variants.",
-            path.name,
+            path,
             num_symbolic,
         )
 
@@ -171,7 +174,7 @@ def _open_text(path: Path) -> TextIO:
 def _read_position(fields: list[str], path: Path, line_number: int) -> tuple[str, int]:
     if len(fields) < NUM_FIXED_COLUMNS - 1 or not fields[1].isdecimal():
         raise PvcEvalInputError(
-            f"{path.name}, line {line_number}: not a VCF record; it needs at least eight"
+            f"{path}, line {line_number}: not a VCF record; it needs at least eight"
             " tab-separated columns and a whole number in POS."
         )
     return fields[0], int(fields[1])
@@ -198,14 +201,20 @@ def _parse_record(
             # VCF lets trailing sample fields be dropped, so a key may have no value.
             values = dict(zip(keys, sample_field.split(":"), strict=False))
             phase_set = values.get("PS")
-            genotypes.append(
-                parse_genotype(
-                    values.get("GT", "./."),
-                    len(alleles),
-                    None if phase_set in (None, ".") else phase_set,
-                    _int_or_none(values.get("GQ")),
+            if phase_set == ".":
+                phase_set = None
+            quality = _int_or_none(values.get("GQ"))
+            if "GT" not in values:
+                genotypes.append(
+                    VcfGenotype(
+                        alleles=(MISSING,) * PLOIDY,
+                        phased=False,
+                        phase_set=phase_set,
+                        quality=quality,
+                    )
                 )
-            )
+                continue
+            genotypes.append(parse_genotype(values["GT"], len(alleles), phase_set, quality))
     return VcfRecord(
         contig=contig,
         start=start,
@@ -251,7 +260,7 @@ def trim(record: VcfRecord) -> VcfRecord:
     A `*` allele has no bases and takes no part. A record with fewer than two other
     alleles is returned as it is.
     """
-    sequences = [allele for allele in record.alleles if allele != SPANNING_DELETION]
+    sequences = _sequences(record.alleles)
     if len(sequences) < 2:
         return record
     start, trimmed = _trim(record.start, sequences)
@@ -267,7 +276,7 @@ def left_align(record: VcfRecord, contig_sequence: str) -> VcfRecord:
     and ALTs that would move apart cannot be written as one record (§5.2).
     """
     ref = record.alleles[0]
-    alts = [allele for allele in record.alleles[1:] if allele != SPANNING_DELETION]
+    alts = _sequences(record.alleles[1:])
     if not alts:
         return record
     shifts = {_indel_shift(record.start, ref, alt, contig_sequence) for alt in alts}
@@ -278,11 +287,8 @@ def left_align(record: VcfRecord, contig_sequence: str) -> VcfRecord:
         return record
     new_start = record.start - shift
     flank = contig_sequence[new_start : record.start]
-    moved = [
-        allele if allele == SPANNING_DELETION else (flank + allele)[: len(allele)]
-        for allele in record.alleles
-    ]
-    return trim(replace(record, start=new_start, alleles=tuple(moved)))
+    moved = [(flank + allele)[: len(allele)] for allele in _sequences(record.alleles)]
+    return trim(replace(record, start=new_start, alleles=_put_back(record.alleles, moved)))
 
 
 def _indel_shift(start: int, ref: str, alt: str, contig_sequence: str) -> int | None:
@@ -311,9 +317,15 @@ def _trim(start: int, alleles: Sequence[str]) -> tuple[int, list[str]]:
     return start, trimmed
 
 
-def _put_back(alleles: tuple[str, ...], trimmed: list[str]) -> tuple[str, ...]:
-    """The alleles with each sequence replaced by its trimmed form, `*` left in place."""
-    replacements = iter(trimmed)
+def _sequences(alleles: Sequence[str]) -> list[str]:
+    """The alleles that are sequences. A `*` has no bases and takes no part in trimming or
+    left-aligning; _put_back returns it to its place."""
+    return [allele for allele in alleles if allele != SPANNING_DELETION]
+
+
+def _put_back(alleles: tuple[str, ...], sequences: list[str]) -> tuple[str, ...]:
+    """The alleles with the sequences _sequences took out replaced, in order, by these."""
+    replacements = iter(sequences)
     return tuple(
         allele if allele == SPANNING_DELETION else next(replacements) for allele in alleles
     )
