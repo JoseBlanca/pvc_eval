@@ -43,7 +43,7 @@ pytestmark = pytest.mark.slow
 
 # pvc's calling floors, the defaults of `pvc dev type-regions` (doc/specs/str_finder.md,
 # "The whole-port check").
-_PVC_COPY_FLOORS = "8,6,6,6,5,4"
+_PVC_COPY_FLOORS = (8, 6, 6, 6, 5, 4)
 _SETTINGS = {
     "defaults": (),
     "periods_2_to_5": ("--min-period", "2", "--max-period", "5"),
@@ -128,18 +128,27 @@ def _make_planted_repeat(generator: random.Random) -> str:
     return "".join(bases)
 
 
+def _make_spacer(generator: random.Random, short_chance: float, short_most: int) -> str:
+    """Random bases: 0 to short_most of them with a chance of short_chance, and
+    short_most + 1 to 300 otherwise."""
+    if generator.random() < short_chance:
+        length = generator.randint(0, short_most)
+    else:
+        length = generator.randint(short_most + 1, 300)
+    return _make_random_bases(generator, length)
+
+
 def _make_generated_contig(generator: random.Random) -> str:
-    """Random bases with one to five planted repeats. Half the gaps between repeats are
-    under 26 bases, so that the repeats bundle; three in ten of the flanks at the ends are
-    under 31 bases, so that repeats come near a contig end."""
-    pieces = []
-    for _ in range(generator.randint(1, 5)):
-        gap = generator.randint(0, 25) if generator.random() < 0.5 else generator.randint(20, 300)
-        pieces += [_make_random_bases(generator, gap), _make_planted_repeat(generator)]
-    for at in (0, len(pieces)):
-        near = generator.random() < 0.3
-        flank = generator.randint(0, 30) if near else generator.randint(30, 300)
-        pieces.insert(at, _make_random_bases(generator, flank))
+    """One to five planted repeats, with random bases between them and at both ends. Each
+    gap between two repeats is 0 to 25 bases with a chance of 0.5, so that the repeats
+    bundle, and 26 to 300 otherwise. The flank at each end is 0 to 30 bases with a chance
+    of 0.3, so that a repeat comes near that end of the contig, and 31 to 300 otherwise."""
+    pieces = [_make_spacer(generator, short_chance=0.3, short_most=30)]
+    for index in range(generator.randint(1, 5)):
+        if index:
+            pieces.append(_make_spacer(generator, short_chance=0.5, short_most=25))
+        pieces.append(_make_planted_repeat(generator))
+    pieces.append(_make_spacer(generator, short_chance=0.3, short_most=30))
     return "".join(pieces)
 
 
@@ -191,7 +200,7 @@ def _read_pvc_eval_rows(fasta: Path, output: Path, options: Sequence[str]) -> li
             "--reference",
             str(fasta),
             "--min-copies",
-            _PVC_COPY_FLOORS,
+            ",".join(map(str, _PVC_COPY_FLOORS)),
             "--output",
             str(output),
             *options,
@@ -232,22 +241,30 @@ def grch38_input(tmp_path_factory: pytest.TempPathFactory) -> _Input:
     return pvc, fasta
 
 
-def test_generated_contigs_have_candidates_near_a_contig_end() -> None:
+def test_generated_contigs_have_candidates_near_each_end_of_a_contig() -> None:
     # The plan's "What could go wrong": repeats that never come near a contig end would
-    # leave step 2 untested. 486 candidates that reach pvc's calling floors were dropped at
-    # step 2 on 19 October 2026. That the repeats bundle and make satellites is asserted
-    # where the STR regions are compared.
-    parameters = StrFinderParameters(copy_floors=(8, 6, 6, 6, 5, 4))
-    dropped_near_an_end = 0
+    # leave step 2 untested, and step 2 tests each end on its own. A dropped candidate that
+    # starts in the first half of its contig is counted as near the start, any other as
+    # near the end. On 19 October 2026, 76 were dropped near the start and 41 near the end.
+    parameters = StrFinderParameters(copy_floors=_PVC_COPY_FLOORS)
+    dropped_near_start = 0
+    dropped_near_end = 0
     for bases in _make_generated_contigs().values():
         candidates = _find_candidates(bases, parameters)
-        kept = list(_drop_near_contig_ends(candidates, bases, parameters))
-        dropped_near_an_end += len(candidates) - len(kept)
-    assert dropped_near_an_end > 100
+        kept = set(_drop_near_contig_ends(candidates, bases, parameters))
+        for candidate in candidates:
+            if candidate in kept:
+                continue
+            if candidate.start < len(bases) // 2:
+                dropped_near_start += 1
+            else:
+                dropped_near_end += 1
+    assert dropped_near_start >= 30
+    assert dropped_near_end >= 30
 
 
 # The STR regions compared on 19 October 2026 (STR segments, STR bundles, satellites): on
-# the generated contigs, 568, 41 and 224 at the defaults, 338, 12 and 213 with periods 2 to
+# the generated contigs, 726, 62 and 309 at the defaults, 457, 20 and 294 with periods 2 to
 # 5; on the slices of GRCh38, 1,928, 138 and 23, and 291, 16 and 23.
 @pytest.mark.parametrize("setting", _SETTINGS)
 def test_generated_contigs_give_the_str_regions_of_pvc(
