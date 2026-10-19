@@ -46,7 +46,8 @@ with `uv add --dev` when every review uses it.
 
 ## Present and checked
 
-- **hyperfine 1.20.0** (`/opt/homebrew/bin/hyperfine`): the wall time of a
+- **hyperfine 2.0.0** (`/opt/homebrew/bin/hyperfine`, checked 19 October
+  2026; it was 1.20.0 when this file was first written): the wall time of a
   command, with its spread.
 
       hyperfine -N --warmup 2 --runs 10 --export-json base.json \
@@ -55,8 +56,13 @@ with `uv add --dev` when every review uses it.
   `--no-sync` keeps uv from syncing in the middle of a benchmark. uv's own
   start costs about 5 ms with it and 10 ms without, measured on 3.14 on 19
   October 2026: nothing against a run of seconds, and the same on both
-  sides. Two commands in one call are alternated and compared, which is
-  how a baseline and a candidate in two worktrees are timed.
+  sides. Two commands in one call are compared, but not interleaved:
+  hyperfine runs all the runs of the first, then all of the second, and has
+  no option to alternate them (checked on 2.0.0, 19 October 2026). So a
+  baseline and a candidate in two worktrees are timed in one call and then
+  in a second call with the order reversed; a drift of the machine during
+  a call then favours each side once, and a gain is believed only when both
+  calls show it.
 
 - **`/usr/bin/time -l`** (macOS): the peak memory. The line to read is
   "maximum resident set size", in bytes. Through `uv run` it is the

@@ -12,11 +12,13 @@ genotype is compared with, MISSING, MALFORMED_GT and HAPLOID_GT; and the constan
 and DEFAULT_SPAN_LIMIT.
 """
 
+import functools
 import gzip
 import heapq
 import logging
 import math
 import re
+import sys
 from collections.abc import Generator, Iterable, Iterator, Sequence
 from contextlib import closing
 from dataclasses import dataclass
@@ -307,21 +309,56 @@ def _parse_records_in_file_order(
         )
 
 
+# Whole genotypes repeat too, even with a phase set per sample: on the 5 Mb, 200-sample
+# GATK-like benchmark input, 3,174,116 of 3,625,400 genotypes hit a cache of 4,096 entries
+# (437,393 distinct, so an unbounded cache would miss only 13,891 fewer; 1,024 entries miss
+# 611,784). Equal genotypes then are one frozen object, which makes parse_vcf 25% faster on
+# that input and its peak memory with no span limit 141 MB instead of 381 MB. The cache is
+# bounded and holds only immutable values, and lru_cache is safe to share between threads.
+_GENOTYPE_CACHE_SIZE = 4096
+
+
+@functools.lru_cache(maxsize=_GENOTYPE_CACHE_SIZE)
 def _parse_genotype(
     gt: str, num_alleles: int, phase_set: str | None, quality: int | None
 ) -> VcfGenotype | MALFORMED_GT | HAPLOID_GT:
     """A GT field as a VcfGenotype; HAPLOID_GT for one allele index, such as `1`; or
     MALFORMED_GT when it cannot be either (§5.4).
 
-    A single `.` says nothing about either haplotype, and is both MISSING.
-
     num_alleles: how many VCF alleles the record has, REF included.
     phase_set, quality: the sample's PS and GQ, kept in the VcfGenotype.
     """
+    parsed_gt = _parse_gt(gt, num_alleles)
+    if parsed_gt is MALFORMED_GT or parsed_gt is HAPLOID_GT:
+        return parsed_gt
+    alleles, phased = parsed_gt
+    return VcfGenotype(alleles=alleles, phased=phased, phase_set=phase_set, quality=quality)
+
+
+type _ParsedGt = tuple[tuple[int | MISSING, ...], bool]
+"""A GT's alleles, and whether it was written with `|`."""
+
+_PARSED_MISSING_GT: _ParsedGt = ((MISSING,) * PLOIDY, False)
+
+
+# GTs repeat, so each pair of GT and number of alleles is parsed once and the genotypes
+# with it share one alleles tuple. Only the genotype cache's misses reach this function,
+# 451,284 of 3,625,400 genotypes on the 5 Mb, 200-sample GATK-like benchmark input, and
+# there this cache still makes parse_vcf 8.9% faster (1.469 s against 1.601 s) and its peak
+# memory with no span limit 132.6 MiB instead of 160.4 MiB. The cache is bounded and holds
+# only immutable values, and lru_cache is safe to share between threads.
+_GT_CACHE_SIZE = 1024
+
+
+@functools.lru_cache(maxsize=_GT_CACHE_SIZE)
+def _parse_gt(gt: str, num_alleles: int) -> _ParsedGt | MALFORMED_GT | HAPLOID_GT:
+    """What a GT field says whatever the sample's PS and GQ: its alleles and whether it is
+    phased, HAPLOID_GT or MALFORMED_GT (§5.4).
+
+    A single `.` says nothing about either haplotype, and is both MISSING.
+    """
     if gt == ".":
-        return VcfGenotype(
-            alleles=(MISSING,) * PLOIDY, phased=False, phase_set=phase_set, quality=quality
-        )
+        return _PARSED_MISSING_GT
     parts = gt.replace("|", "/").split("/")
     if len(parts) == 1 and _is_allele_index(gt, num_alleles):
         return HAPLOID_GT
@@ -335,9 +372,7 @@ def _parse_genotype(
             alleles.append(int(part))
         else:
             return MALFORMED_GT
-    return VcfGenotype(
-        alleles=tuple(alleles), phased="|" in gt, phase_set=phase_set, quality=quality
-    )
+    return tuple(alleles), "|" in gt
 
 
 def _is_allele_index(part: str, num_alleles: int) -> bool:
@@ -513,6 +548,10 @@ def _parse_record(
     return record, num_not_numbers, is_beyond_reach
 
 
+# An index past the end of every sample field, for a key that FORMAT lacks.
+_ABSENT_KEY_INDEX = sys.maxsize
+
+
 def _parse_genotypes(
     fields: list[str], num_alleles: int
 ) -> tuple[tuple[VcfGenotype | MALFORMED_GT | HAPLOID_GT, ...], int]:
@@ -526,25 +565,30 @@ def _parse_genotypes(
     genotypes: list[VcfGenotype | MALFORMED_GT | HAPLOID_GT] = []
     num_not_numbers = 0
     keys = fields[8].split(":")
+    # The keys are found once per record and each sample read by position, rather than
+    # into a dict of its own: parse_vcf is 39% faster on the 5 Mb, 200-sample GATK-like
+    # benchmark input, and 42% on the 64 Mb one. VCF does not allow a key twice; when it
+    # is, the last copy counts, as it did when each sample was read into a dict. Unlike that
+    # dict, a sample that drops the last copy has no value for the key, even when it has one
+    # at an earlier copy; so a GQ that is not a number at that earlier copy is not counted
+    # as taken as absent.
+    key_indices = {key: index for index, key in enumerate(keys)}
+    gt_index = key_indices.get("GT", _ABSENT_KEY_INDEX)
+    gq_index = key_indices.get("GQ", _ABSENT_KEY_INDEX)
+    ps_index = key_indices.get("PS", _ABSENT_KEY_INDEX)
     for sample_field in fields[_NUM_FIXED_COLUMNS:]:
-        # VCF lets trailing sample fields be dropped, so a key may have no value.
-        values = dict(zip(keys, sample_field.split(":"), strict=False))
-        phase_set = values.get("PS")
+        # VCF lets trailing sample fields be dropped, so an index past the last value, or
+        # the index of a key FORMAT lacks, has no value; a GT with none says what `.` says.
+        values = sample_field.split(":")
+        num_values = len(values)
+        gt = values[gt_index] if gt_index < num_values else "."
+        gq = values[gq_index] if gq_index < num_values else None
+        phase_set = values[ps_index] if ps_index < num_values else None
         if phase_set == ".":
             phase_set = None
-        quality = _parse_gq(values.get("GQ"))
-        num_not_numbers += _is_taken_as_absent(values.get("GQ"), quality)
-        if "GT" not in values:
-            genotypes.append(
-                VcfGenotype(
-                    alleles=(MISSING,) * PLOIDY,
-                    phased=False,
-                    phase_set=phase_set,
-                    quality=quality,
-                )
-            )
-            continue
-        genotypes.append(_parse_genotype(values["GT"], num_alleles, phase_set, quality))
+        quality = _parse_gq(gq)
+        num_not_numbers += _is_taken_as_absent(gq, quality)
+        genotypes.append(_parse_genotype(gt, num_alleles, phase_set, quality))
     return tuple(genotypes), num_not_numbers
 
 

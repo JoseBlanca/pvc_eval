@@ -1,0 +1,235 @@
+"""The stratum of a locus: pvc_stratum for --strata pvc, and read_strata and Strata for a
+--strata BED (doc/specs/loci.md "Stratum", doc/spec.md §5.7 and §7.2).
+
+The spec's cases give positions 1-based and inclusive; loci and STR regions are built
+0-based and half-open, and a BED line is 0-based and half-open, so the locus at 100 to 120
+is (99, 120) and an interval at 90 to 101 is the BED line `chr1 89 101`.
+"""
+
+import tracemalloc
+from pathlib import Path
+
+import pytest
+
+from pvc_eval.errors import PvcEvalInputError
+from pvc_eval.locus import Locus
+from pvc_eval.segments import GenomeSegment, RegionType
+from pvc_eval.strata import pvc_stratum, read_strata
+from pvc_eval.vcf import VcfGenotype, VcfRecord
+
+_CONTIGS = ("chr1", "chr2")
+
+# An AT repeat at 11 to 20, the STR segment of §5.7, and the insertion of AT after 10.
+_STR = GenomeSegment("chr1", 10, 20, RegionType.STR, "AT")
+_BUNDLE = GenomeSegment("chr1", 40, 80, RegionType.STR_BUNDLE, None)
+_SATELLITE = GenomeSegment("chr1", 100, 400, RegionType.SATELLITE, None)
+
+
+def make_record(start: int, alleles: tuple[str, ...], span: tuple[int, int]) -> VcfRecord:
+    """A VCF record on chr1 of one heterozygous sample, 0-based and half-open."""
+    genotype = VcfGenotype(alleles=(0, 1), phased=False, phase_set=None, quality=None)
+    return VcfRecord(
+        contig="chr1",
+        start=start,
+        alleles=alleles,
+        qual=None,
+        genotypes=(genotype,),
+        line_number=3,
+        ref_mismatch=False,
+        span=span,
+    )
+
+
+_INSERTION = make_record(9, ("A", "AAT"), (9, 20))
+
+
+def make_locus(start: int, end: int, str_regions: tuple[GenomeSegment, ...]) -> Locus:
+    return Locus("chr1", start, end, (_INSERTION,), (), str_regions)
+
+
+def write_bed(tmp_path: Path, lines: list[str]) -> Path:
+    path = tmp_path / "strata.bed"
+    path.write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    ("locus", "stratum"),
+    [
+        (make_locus(9, 20, (_STR,)), "str"),
+        (make_locus(9, 20, ()), "generic"),
+        (make_locus(9, 400, (_STR, _SATELLITE)), "satellite"),
+        (make_locus(9, 80, (_STR, _BUNDLE)), "str-bundle"),
+        (Locus("chr1", 40, 400, (), (), (_BUNDLE, _SATELLITE)), "satellite"),
+    ],
+    ids=[
+        "insertion-before-str",
+        "no-str-region",
+        "str-chained-to-satellite",
+        "str-chained-to-bundle",
+        "bundle-chained-to-satellite",
+    ],
+)
+def test_pvc_stratum(locus: Locus, stratum: str) -> None:
+    assert pvc_stratum(locus) == stratum
+
+
+@pytest.mark.parametrize(
+    "str_regions",
+    [
+        (GenomeSegment("chr1", 10, 20, None, None),),
+        (GenomeSegment("chr1", 10, 20, None, None), _SATELLITE),
+        (_SATELLITE, GenomeSegment("chr1", 400, 410, None, None)),
+    ],
+    ids=["alone", "before-a-satellite", "after-a-satellite"],
+)
+def test_pvc_stratum_raises_for_an_str_region_with_no_type(
+    str_regions: tuple[GenomeSegment, ...],
+) -> None:
+    locus = make_locus(9, str_regions[-1].end, str_regions)
+    untyped = next(region for region in str_regions if region.region_type is None)
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        pvc_stratum(locus)
+
+    assert str(raised.value) == (
+        f"The STR region chr1:{untyped.start + 1}-{untyped.end}, 1-based and inclusive, which"
+        f" the --str-regions BED gives as `chr1 {untyped.start} {untyped.end}`, has no region"
+        " type, since that line has no fourth column, and --strata pvc needs the type of every STR region. Give"
+        " --str-regions a BED written by `pvc_eval str-regions`, which has the types, or"
+        " leave --str-regions out so that the STR finder runs, and run again."
+    )
+
+
+def test_strata_joins_the_classes_of_the_intervals_the_locus_shares_positions_with(
+    tmp_path: Path,
+) -> None:
+    lines = ["chr1\t89\t101\thomopolymer", "chr1\t114\t500\tsegdup"]
+    strata = read_strata(write_bed(tmp_path, lines), _CONTIGS)
+
+    assert strata.stratum(Locus("chr1", 99, 120, (), (), ())) == "homopolymer,segdup"
+
+
+def test_strata_gives_a_dot_for_a_locus_under_no_interval(tmp_path: Path) -> None:
+    lines = ["chr1\t89\t99\thomopolymer", "chr1\t120\t500\tsegdup", "chr2\t99\t120\tsegdup"]
+    strata = read_strata(write_bed(tmp_path, lines), _CONTIGS)
+
+    assert strata.stratum(Locus("chr1", 99, 120, (), (), ())) == "."
+
+
+def test_strata_sorts_the_classes_and_gives_each_once(tmp_path: Path) -> None:
+    lines = ["chr1\t0\t10\tzeta", "chr1\t20\t30\talpha", "chr1\t40\t50\tzeta"]
+    strata = read_strata(write_bed(tmp_path, lines), _CONTIGS)
+
+    assert strata.stratum(Locus("chr1", 0, 50, (), (), ())) == "alpha,zeta"
+
+
+def test_strata_gives_a_dot_on_a_contig_with_no_bed_line(tmp_path: Path) -> None:
+    strata = read_strata(write_bed(tmp_path, ["chr1\t0\t10\tzeta"]), _CONTIGS)
+
+    assert strata.stratum(Locus("chr2", 0, 50, (), (), ())) == "."
+
+
+def test_strata_from_an_unsorted_bed_with_overlapping_lines(tmp_path: Path) -> None:
+    lines = [
+        "# a comment",
+        "track name=strata",
+        "chr2\t0\t50\tsegdup",
+        "chr1\t300\t400\tsegdup",
+        "chr1\t0\t200\tlowmap",
+        "chr1\t100\t250\tsegdup",
+        "chr1\t150\t160\tlowmap",
+        "chr1\t190\t260\tgc_high\textra",
+    ]
+    strata = read_strata(write_bed(tmp_path, lines), _CONTIGS)
+
+    stratum_by_span = {
+        span: strata.stratum(Locus(contig, *span, (), (), ()))
+        for contig, span in [
+            ("chr1", (0, 100)),
+            ("chr1", (150, 155)),
+            ("chr1", (199, 200)),
+            ("chr1", (200, 201)),
+            ("chr1", (255, 300)),
+            ("chr1", (260, 300)),
+            ("chr1", (250, 350)),
+            ("chr2", (49, 60)),
+        ]
+    }
+    assert stratum_by_span == {
+        (0, 100): "lowmap",
+        (150, 155): "lowmap,segdup",
+        (199, 200): "gc_high,lowmap,segdup",
+        (200, 201): "gc_high,segdup",
+        (255, 300): "gc_high",
+        (260, 300): ".",
+        (250, 350): "gc_high,segdup",
+        (49, 60): "segdup",
+    }
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["chr1\t100\t200", "chr1\t100\t200\t", "chr1\t100\t200\t  "],
+    ids=["no-fourth-column", "empty-fourth-column", "spaces-only"],
+)
+def test_read_strata_refuses_a_line_with_no_class(tmp_path: Path, line: str) -> None:
+    path = write_bed(tmp_path, ["chr1\t0\t10\tsegdup", line])
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        read_strata(path, _CONTIGS)
+
+    assert str(raised.value) == (
+        f"{path}, line 2: has no class: its fourth column, which names the class of its"
+        " interval, is missing or empty. Give each line of the --strata BED its class and"
+        " run again."
+    )
+
+
+def test_read_strata_refuses_a_class_holding_a_comma(tmp_path: Path) -> None:
+    path = write_bed(tmp_path, ["chr1\t0\t10\tsegdup", "chr1\t100\t200\tlow,map"])
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        read_strata(path, _CONTIGS)
+
+    assert str(raised.value) == (
+        f"{path}, line 2: the class 'low,map' holds a comma, which the table puts between"
+        " the classes of a locus. Replace the commas in the fourth column of the --strata"
+        " BED, for instance with `_`, and run again."
+    )
+
+
+def test_strata_removes_the_spaces_at_the_ends_of_a_class(tmp_path: Path) -> None:
+    lines = ["chr1\t0\t10\tsegdup ", "chr1\t20\t30\t segdup"]
+    strata = read_strata(write_bed(tmp_path, lines), _CONTIGS)
+
+    assert strata.stratum(Locus("chr1", 0, 30, (), (), ())) == "segdup"
+
+
+def test_strata_sorts_the_classes_by_code_point(tmp_path: Path) -> None:
+    lines = ["chr1\t0\t10\thomopolymer", "chr1\t20\t30\tSegdup"]
+    strata = read_strata(write_bed(tmp_path, lines), _CONTIGS)
+
+    assert strata.stratum(Locus("chr1", 0, 30, (), (), ())) == "Segdup,homopolymer"
+
+
+def test_strata_holds_less_than_200_bytes_per_line(tmp_path: Path) -> None:
+    # 20,000 lines of four classes, disjoint, as GIAB's strata are within a class. One
+    # frozenset of classes per stretch held about 470 bytes per line on 19 October 2026.
+    classes = ("GCrich", "homopolymer", "lowmappability", "segdup")
+    lines = [
+        f"chr1\t{1_000 * index}\t{1_000 * index + 500}\t{classes[index % 4]}"
+        for index in range(20_000)
+    ]
+    path = write_bed(tmp_path, lines)
+    read_strata(path, _CONTIGS)  # so that what the first call allocates is not counted
+
+    tracemalloc.start()
+    try:
+        strata = read_strata(path, _CONTIGS)
+        retained, _ = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert strata.stratum(Locus("chr1", 1_000, 1_001, (), (), ())) == "homopolymer"
+    assert retained / len(lines) < 200

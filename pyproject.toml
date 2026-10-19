@@ -37,6 +37,7 @@ ignore = ["E501", "TRY003"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/pvc_eval/cli.py" = ["T20"]
+"benchmarks/*.py" = ["T20"]  # a benchmark prints what it measured
 
 [tool.ty.terminal]
 error-on-warning = true

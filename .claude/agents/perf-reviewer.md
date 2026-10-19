@@ -22,7 +22,12 @@ than they return.
 
 First, if you were given a worktree of your own, check out the commit you
 were given, confirm it with `git rev-parse HEAD`, since such a worktree
-starts on `main`, and run `uv sync`.
+starts on `main`, and run `uv sync`. If you were told to read the
+session's worktree instead, never run `git checkout`, `git switch` or
+`git reset` there: on 19 October 2026 a reviewer's checkout left that
+worktree on a detached HEAD, and the commits made after it were left off
+their branch. To look at another commit, use `git show <commit>:<path>`
+or a copy in your scratchpad.
 
 Then read, in `.claude/skills/performance/`: `SKILL.md`, the principles and
 the table under "Deciding"; `finding_format.md`; `checklists/<your
