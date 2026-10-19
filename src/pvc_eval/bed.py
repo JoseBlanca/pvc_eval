@@ -5,15 +5,22 @@ Positions are 0-based and half-open, as a BED gives them.
 Public: BedLine, one interval of a BED; parse_bed, which yields them.
 """
 
+import gzip
+import zlib
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 
 from pvc_eval.errors import PvcEvalInputError
 
 # The first word of the header lines of a BED that is not a comment; the STR finder's spec
 # has read_str_regions skip the same lines.
 _HEADER_WORDS = ("track", "browser")
+
+# The first two bytes of a gzip file, and so of a bgzipped one; decided by the owner on
+# 19 October 2026, a BED is read as parse_vcf reads a VCF, since GIAB's BEDs come gzipped.
+_GZIP_MAGIC = b"\x1f\x8b"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -32,24 +39,30 @@ class BedLine:
 
 
 def parse_bed(path: Path, contigs: Sequence[str]) -> Iterator[BedLine]:
-    """The intervals of a BED, in the order of its lines, from its first three columns and
-    its fourth. Blank lines, lines that start with `#`, and lines whose first word is
-    `track` or `browser` are skipped.
+    """The intervals of a BED, plain, gzipped or bgzipped, in the order of its lines, from
+    its first three columns and its fourth. Blank lines, lines that start with `#`, and
+    lines whose first word is `track` or `browser` are skipped.
 
     contigs: the reference's contig names.
 
     Raises PvcEvalInputError, naming the file and the line and how to put it right, for a
-    file that does not exist, is a directory, cannot be read or is not UTF-8 text; a line
-    with fewer than three columns separated by tabs; a start or end that is not a whole
-    number, an end not after its start; and a contig the reference lacks.
+    file that does not exist, is a directory, cannot be read, is not UTF-8 text once
+    decompressed, or is a gzip file cut short or damaged; a BED with no line once the
+    skipped ones are left out; a line with fewer than three columns separated by tabs; a
+    start or end that is not a whole number, an end not after its start; and a contig the
+    reference lacks.
     """
     reference_contigs = frozenset(contigs)
+    # Text is decoded and decompressed in blocks, so a fault is found somewhere after the
+    # last line read, and only that is known.
     line_number = 0
+    has_bed_line = False
     try:
-        with path.open(encoding="utf-8") as bed:
+        with _open_text(path) as bed:
             for line_number, line in enumerate(bed, start=1):
                 if _is_skipped(line):
                     continue
+                has_bed_line = True
                 yield _parse_bed_line(line, path, line_number, reference_contigs)
     except FileNotFoundError:
         raise PvcEvalInputError(f"{path} does not exist. Check its path and run again.") from None
@@ -64,10 +77,31 @@ def parse_bed(path: Path, contigs: Sequence[str]) -> Iterator[BedLine]:
     except UnicodeDecodeError as err:
         raise PvcEvalInputError(
             f"{path} is not UTF-8 text: a byte at or after line {line_number + 1} cannot be read"
-            f" as UTF-8. If it is compressed, decompress it with `gunzip -c {path} > file.bed`"
-            " and give file.bed instead; if it is text in another encoding, convert it to"
-            " UTF-8; and run again."
+            " as UTF-8. If it is compressed by a program other than gzip or bgzip, decompress"
+            " it; if it is text in another encoding, convert it to UTF-8; and run again."
         ) from err
+    except (EOFError, gzip.BadGzipFile, zlib.error) as err:
+        raise PvcEvalInputError(
+            f"{path} is a gzip file cut short or damaged at or after line {line_number + 1}."
+            " Compress or copy it again, and run again."
+        ) from err
+    # Decided by the owner on 19 October 2026: an empty --regions BED would skip every
+    # locus without a word.
+    if not has_bed_line:
+        raise PvcEvalInputError(
+            f"{path} holds no BED line: it is empty, or holds only blank lines, comments, and"
+            " track and browser lines. Give a BED with at least one line of contig, start and"
+            " end, separated by tabs, and run again."
+        )
+
+
+def _open_text(path: Path) -> TextIO:
+    """Open a BED, plain or gzipped, known by its first two bytes, as UTF-8 text."""
+    with path.open("rb") as raw:
+        is_gzipped = raw.read(len(_GZIP_MAGIC)) == _GZIP_MAGIC
+    if is_gzipped:
+        return gzip.open(path, "rt", encoding="utf-8")
+    return path.open(encoding="utf-8")
 
 
 def _is_skipped(line: str) -> bool:
