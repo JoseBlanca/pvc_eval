@@ -147,3 +147,31 @@ def test_symbolic_alleles_are_skipped_and_counted(
 
     assert [(record.start, record.alleles) for record in records] == [(6, ("A", "T"))]
     assert "1 VCF records with symbolic alleles" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("line", "message"),
+    [
+        ("chr1\t5\t.\tA\tT\t.\t.\n", r"a.vcf, line 3: .*7 tab-separated columns"),
+        ("chr1\tfive\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n", r"a.vcf, line 3: POS is 'five'"),
+        ("chr1\t0\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n", r"a.vcf, line 3: POS is '0'"),
+        ("chr1\t5\t.\t\tT\t.\t.\t.\tGT\t0/1\t0/1\n", r"a.vcf, line 3: REF is empty"),
+        ("chr1\t5\t.\tA\tT,\t.\t.\t.\tGT\t0/1\t0/1\n", r"a.vcf, line 3: ALT 'T,' has an empty"),
+        ("chr1\t5\t.\tA\t\t.\t.\t.\tGT\t0/1\t0/1\n", r"a.vcf, line 3: ALT '' has an empty"),
+    ],
+    ids=[
+        "seven_columns",
+        "pos_not_a_number",
+        "pos_0",
+        "ref_empty",
+        "alt_empty",
+        "alt_column_empty",
+    ],
+)
+def test_line_that_is_not_a_vcf_record_stops_the_run(
+    tmp_path: Path, line: str, message: str
+) -> None:
+    path = write_vcf(tmp_path, line)
+
+    with pytest.raises(PvcEvalInputError, match=message):
+        list(read_vcf_records(path, CONTIGS))

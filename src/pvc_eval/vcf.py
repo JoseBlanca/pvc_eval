@@ -125,7 +125,7 @@ def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
                     " and run again."
                 )
             previous_order, previous_where = order, where
-            alts = _read_alts(fields[4])
+            alts = _read_alts(fields, path, line_number)
             if any(_is_symbolic(alt) for alt in alts):
                 num_symbolic += 1
                 continue
@@ -171,19 +171,42 @@ def _open_text(path: Path) -> TextIO:
     return path.open(encoding="utf-8")
 
 
+# A line that is not a VCF record stops the run (a provisional choice: doc/spec.md §3 does
+# not list it), with the column at fault.
 def _read_position(fields: list[str], path: Path, line_number: int) -> tuple[str, int]:
-    if len(fields) < NUM_FIXED_COLUMNS - 1 or not fields[1].isdecimal():
+    if len(fields) < NUM_FIXED_COLUMNS - 1:
         raise PvcEvalInputError(
-            f"{path}, line {line_number}: not a VCF record; it needs at least eight"
-            " tab-separated columns and a whole number in POS."
+            f"{path}, line {line_number}: the line has {len(fields)} tab-separated columns,"
+            " and a VCF record has at least 8, CHROM to INFO. Check that its columns are"
+            " separated by tabs, correct the line or remove it, and run again."
         )
-    return fields[0], int(fields[1])
+    pos = fields[1]
+    if not (pos.isascii() and pos.isdecimal() and int(pos) >= 1):
+        raise PvcEvalInputError(
+            f"{path}, line {line_number}: POS is '{pos}', and it must be a whole number"
+            " of 1 or more. Correct the line or remove it, and run again."
+        )
+    return fields[0], int(pos)
 
 
-def _read_alts(alt_field: str) -> tuple[str, ...]:
-    if alt_field == ".":
+def _read_alts(fields: list[str], path: Path, line_number: int) -> tuple[str, ...]:
+    """The ALTs of a line, () for `.`, after checking that REF and every ALT hold
+    something."""
+    if not fields[3]:
+        raise PvcEvalInputError(
+            f"{path}, line {line_number}: REF is empty, and it must hold at least one base."
+            " Correct the line or remove it, and run again."
+        )
+    if fields[4] == ".":
         return ()
-    return tuple(alt_field.split(","))
+    alts = tuple(fields[4].split(","))
+    if not all(alts):
+        raise PvcEvalInputError(
+            f"{path}, line {line_number}: ALT '{fields[4]}' has an empty allele; each ALT"
+            " must hold at least one base, and a record with no ALT has `.`. Correct the"
+            " line or remove it, and run again."
+        )
+    return alts
 
 
 def _is_symbolic(alt: str) -> bool:
