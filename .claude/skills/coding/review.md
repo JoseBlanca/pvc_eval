@@ -121,9 +121,10 @@ The section "Errors" of `python.md` and `doc/spec.md` §3.
   reference, no sample pairs. Paste the message, and check that it names
   the file and the place and says how to put it right, as the `writing`
   skill asks.
-- For each content fault that §5.4 makes invalid, a REF mismatch, a
-  malformed GT, contradicting records: does the run go on, and does the
-  row say invalid with the right reason?
+- For each content fault that §5.4 makes invalid, a malformed GT, a GT of
+  another ploidy, contradicting records: does the run go on, and does the
+  row say invalid with the right reason? A REF that disagrees with the
+  reference is not one of them: it stops the run (§5.2).
 - An `except` that is broader than what it handles, one that returns a
   default, a record skipped without a count, a defect turned into an input
   error, or an input error that shows a traceback.
