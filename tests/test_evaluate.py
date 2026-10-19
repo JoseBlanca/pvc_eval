@@ -92,6 +92,11 @@ EVALUATION_CASES: dict[str, tuple[SampleResult, SampleResult, PairEvaluation]] =
     ),
     "E12": (((0, 1),), ((2, 3),), PairEvaluation(Outcome.DIFFERENT, (0, 1), (2, 3))),
     "E13": (((0, 1),), ((1, 2),), PairEvaluation(Outcome.DIFFERENT, (0, 1), (1, 2))),
+    "E14": (
+        ((0, 1), (0, 2)),
+        ((2, 2), (1, 1)),
+        PairEvaluation(Outcome.SAME_ALLELES, (0, 1), (1, 1)),
+    ),
 }
 
 
@@ -141,6 +146,34 @@ OTHER_SIDE_CASES: dict[str, tuple[SampleResult, SampleResult, PairEvaluation]] =
     ids=OTHER_SIDE_CASES.keys(),
 )
 def test_evaluate_pair_gives_outcome_of_other_side(
+    result_a: SampleResult, result_b: SampleResult, expected: PairEvaluation
+) -> None:
+    assert evaluate_pair(result_a, result_b) == expected
+
+
+# The order of §5's "first such pair": A's genotypes in order and, for each, B's in order.
+REPORTED_PAIR_CASES: dict[str, tuple[SampleResult, SampleResult, PairEvaluation]] = {
+    # Only A's second genotype has B's ALT set.
+    "same-alleles-second-of-a": (
+        ((0, 1), (0, 2)),
+        ((2, 2),),
+        PairEvaluation(Outcome.SAME_ALLELES, (0, 2), (2, 2)),
+    ),
+    # Two pairs match: A's order picks (0, 1), B's order would pick (1, 2).
+    "same-genotype-in-order-of-a": (
+        ((0, 1), (1, 2)),
+        ((1, 2), (0, 1)),
+        PairEvaluation(Outcome.SAME_GENOTYPE, (0, 1), (0, 1)),
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("result_a", "result_b", "expected"),
+    REPORTED_PAIR_CASES.values(),
+    ids=REPORTED_PAIR_CASES.keys(),
+)
+def test_evaluate_pair_reports_first_pair_in_order_of_a_then_b(
     result_a: SampleResult, result_b: SampleResult, expected: PairEvaluation
 ) -> None:
     assert evaluate_pair(result_a, result_b) == expected
