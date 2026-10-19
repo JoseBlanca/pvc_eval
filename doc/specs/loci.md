@@ -336,7 +336,7 @@ not wait for the STR finder. Each case's loci are compared with a literal list o
 
 **At `build_loci`, the cases of this spec:** the chain distance at a gap of 10 and of 11, and at 0
 with adjacent SNPs and with a gap of 1; the four rows of the STR table; the STR region in a gap; the
-four rows of the table of a locus that reaches back; the four rows of the table of records with no
+six rows of the table of a locus that reaches back; the four rows of the table of records with no
 ALT; a record with no ALT in the gap between two chained SNPs (SNP at 10, `12 A .`, SNP at 15: one
 locus 10–15 holding it); a `*`-only record starting a locus; two cases across contigs, 0-based with
 a chain distance of 10: a SNP at (29, 30) on chr1, then on chr2 an STR region at (0, 20) and a SNP at (4, 5), which give a chr2 locus (0, 20) holding the
@@ -365,10 +365,10 @@ it. With no records it is never read.
 
 **A property, at `build_loci`, with hypothesis.** A slow version of `doc/spec.md` §5.3, written in
 the test from the rules alone, holds every record and STR region in lists and applies the rules
-until nothing changes. On generated records with an ALT and without, of both files, on two contigs, with STR regions
-and records generated near the end of the first contig and the start of the second, and STR
-regions next to each other within the chain distance,
-with STR regions and chain distances from 0 to 20, its loci equal `build_loci`'s. The same cases
+until nothing changes. On generated records with an ALT and without, of both files, on two contigs,
+with STR regions, chain distances from 0 to 20, records and STR regions near the end of the first
+contig and the start of the second, and STR regions within the chain distance of each other, its
+loci equal `build_loci`'s. The same cases
 also check that every record with an ALT is in exactly one locus, inside it; that no two loci of a
 contig lie within the chain distance of each other; that each record with
 no ALT is in exactly the loci its REF overlaps; and that the loci of a contig come by start and do
