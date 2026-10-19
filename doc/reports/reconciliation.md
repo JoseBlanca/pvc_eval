@@ -145,3 +145,19 @@ format as their words, so the table writer must use `.value` or the loci spec ch
 For the owner: across ploidies, only genotypes all REF count as equal, as you decided. So a
 haploid `1` against a diploid `0/1`, like a haploid `1` against `1/1`, is *same alleles, other
 genotype*, by the ALT sets alone.
+
+## Milestone 5: stopped for the owner
+
+The decomposition the property needs is built and checked on four hand-worked cases (7ca0a93).
+The property itself, over 300 generated cases, found that the collision rules of the spec's §4.2
+give a file and its decomposition different outcomes when two records of one haplotype touch:
+
+- reference `TAAC`, `3 AC G,AA 0/1` and `3 A G,AA 1/2`: the insertion of an A after 3 falls
+  between the two positions `AC → G` replaces, so A's sample is invalid; decomposed, `AC → G`
+  becomes a SNP at 3 and a deletion of 4, the insertion lies between them, and B's is valid;
+- reference `GTTT`, `2 TT GCTA 1/1` and `3 T G,TC 2/2`: the bases `TT → GCTA` adds become, decomposed,
+  an insertion at the end of the stretch, at the same point as the other record's insertion, so
+  B's sample is invalid and A's valid.
+
+Where the records of A do not touch, no row failed in 6,290 generated cases. The property is not
+committed; it waits on the owner's answer.
