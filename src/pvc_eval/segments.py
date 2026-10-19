@@ -897,7 +897,7 @@ _STR_REGION_TYPES = {
     if region_type is not RegionType.GENERIC
 }
 _MOTIF_BASES = frozenset("ACGT")
-_BED_HEADER_STARTS = ("#", "track", "browser")  # lines a BED reader skips
+_BYTE_ORDER_MARK = "\ufeff".encode()
 _CORRECT_LINE = " Correct the line or remove it, and run again."
 
 
@@ -908,8 +908,10 @@ def read_str_regions(path: Path, reference: IndexedFasta) -> Iterator[GenomeSegm
 
     A line of three columns gives region_type None and motif None. A fourth column is the
     region type, str, str-bundle or satellite, and a fifth the motif, upper-case A, C, G
-    and T for str and `.` for the others; later columns are ignored. Blank lines and lines
-    that start with #, track or browser are skipped.
+    and T for str and `.` for the others; later columns are ignored. It reads UTF-8 and
+    drops a byte-order mark; lines of only spaces and tabs, lines that start with #, and lines
+    whose first field is track or browser are skipped; empty columns at the end of a line
+    are no columns.
 
     Raises PvcEvalInputError, naming the file and the line, when the BED cannot be read, a
     line has fewer than three columns, a start or end is not a whole number, an end is not
@@ -933,19 +935,14 @@ def read_str_regions(path: Path, reference: IndexedFasta) -> Iterator[GenomeSegm
 
 
 def _read_bed_lines(path: Path) -> Iterator[tuple[int, list[str]]]:
-    """The tab-separated columns of each line of a BED that holds a region, with its line
-    number, from 1. Blank lines and lines that start with #, track or browser are skipped.
+    """The columns of each line of a BED that holds a region, with its line number, from 1,
+    as _split_bed_line gives them; the lines it gives no columns are skipped.
 
     Raises PvcEvalInputError when the file is missing, a directory, not readable or not
     UTF-8.
     """
-    line_number = 0
     try:
-        with path.open(encoding="utf-8") as bed:
-            for line_number, line in enumerate(bed, start=1):
-                text = line.rstrip("\r\n")
-                if text and not text.startswith(_BED_HEADER_STARTS):
-                    yield line_number, text.split("\t")
+        bed = path.open("rb")
     except FileNotFoundError:
         raise PvcEvalInputError(f"{path} does not exist. Check its path and run again.") from None
     except IsADirectoryError:
@@ -956,12 +953,39 @@ def _read_bed_lines(path: Path) -> Iterator[tuple[int, list[str]]]:
         raise PvcEvalInputError(
             f"{path} cannot be read: permission denied. Allow reading it and run again."
         ) from None
+    with bed:
+        for line_number, line_bytes in enumerate(bed, start=1):
+            columns = _split_bed_line(line_bytes, line_number, path)
+            if columns:
+                yield line_number, columns
+
+
+def _split_bed_line(line_bytes: bytes, line_number: int, path: Path) -> list[str]:
+    """The tab-separated columns of a line of a BED, read as UTF-8, with a byte-order mark
+    on the first line dropped and the empty columns at the end of the line taken away; none
+    for a line of only spaces and tabs, a line that starts with #, and a line whose first
+    field is track or browser (doc/specs/str_finder.md, read_str_regions).
+
+    Raises PvcEvalInputError when the line is not UTF-8.
+    """
+    if line_number == 1:
+        line_bytes = line_bytes.removeprefix(_BYTE_ORDER_MARK)
+    try:
+        text = line_bytes.decode("utf-8").rstrip("\r\n")
     except UnicodeDecodeError as err:
         raise PvcEvalInputError(
-            f"{path} is not UTF-8 text: a byte at or after line {line_number + 1} cannot be"
-            f" read as UTF-8. If it is compressed, decompress it with `gunzip -c {path} >"
-            " file.bed`, give file.bed instead, and run again."
+            f"{path} is not UTF-8 text: a byte at or after line {line_number} cannot be read as"
+            f" UTF-8. If it is compressed, decompress it with `gunzip -c {path} > file.bed`,"
+            " give file.bed instead, and run again."
         ) from err
+    if not text.strip(" \t") or text.startswith("#"):
+        return []
+    if text.split(maxsplit=1)[:1] in (["track"], ["browser"]):
+        return []
+    columns = text.split("\t")
+    while not columns[-1]:
+        columns.pop()
+    return columns
 
 
 def _parse_bed_region(

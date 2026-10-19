@@ -558,6 +558,57 @@ def test_the_bed_str_regions_writes_reads_back_to_the_same_str_regions(
         assert list(read_str_regions(tmp_path / "str.bed", reference)) == _WORKED_SEGMENTS
 
 
+def test_a_contig_named_like_a_header_word_is_read_and_written(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A line is a header only when its first field is track or browser, not trackA.
+    fasta = _write_fasta(tmp_path, {"trackA": _FOUR_A, "browserB": _FOUR_A})
+    regions = _write_lines(tmp_path / "regions.bed", ["trackA\t70\t75", "browserB\t0\t151"])
+    output = tmp_path / "str.bed"
+    status, stderr = _run(
+        [
+            *("str-regions", "--reference", str(fasta)),
+            *("--output", str(output), "--regions", str(regions)),
+        ],
+        capsys,
+    )
+    assert (status, stderr) == (0, "")
+    assert output.read_text(encoding="utf-8").splitlines()[-2:] == [
+        "trackA\t58\t80\tstr\tCA",
+        "browserB\t58\t80\tstr\tCA",
+    ]
+    with IndexedFasta(fasta) as reference:
+        assert list(read_str_regions(output, reference)) == [
+            GenomeSegment("trackA", 58, 80, RegionType.STR, "CA"),
+            GenomeSegment("browserB", 58, 80, RegionType.STR, "CA"),
+        ]
+
+
+def test_blank_lines_trailing_tabs_crlf_and_a_byte_order_mark_are_read(tmp_path: Path) -> None:
+    fasta = _write_fasta(tmp_path, {"chr1": "ACGT" * 50})
+    bed = tmp_path / "str.bed"
+    bed.write_bytes(
+        "\ufeffchr1\t0\t10\r\n"
+        " \n"
+        "\t\n"
+        " \t \r\n"
+        "track\tname=x\n"
+        "browser position chr1:1-100\n"
+        "chr1\t10\t20\t\n"
+        "chr1\t20\t30\tstr-bundle\t\n"
+        "chr1\t30\t40\tstr\tCA\t\t\r\n"
+        "chr1\t40\t50\tstr\tCA\r\n".encode()
+    )
+    with IndexedFasta(fasta) as reference:
+        assert list(read_str_regions(bed, reference)) == [
+            GenomeSegment("chr1", 0, 10, None, None),
+            GenomeSegment("chr1", 10, 20, None, None),
+            GenomeSegment("chr1", 20, 30, RegionType.STR_BUNDLE, None),
+            GenomeSegment("chr1", 30, 40, RegionType.STR, "CA"),
+            GenomeSegment("chr1", 40, 50, RegionType.STR, "CA"),
+        ]
+
+
 def test_a_bed_of_three_four_and_more_columns_is_read(tmp_path: Path) -> None:
     fasta = _write_fasta(tmp_path, {"chr1": "ACGT" * 50, "chr2": "ACGT" * 50})
     bed = _write_lines(
@@ -606,8 +657,8 @@ def _make_str_regions_errors(bed: Path) -> list[tuple[str, list[str], str]]:
         ),
         (
             "end_not_a_number",
-            ["chr1\t10\t"],
-            f"{bed}, line 1: the end is '', and it must be a whole number of 0 or more.{remedy}",
+            ["chr1\t10\tx"],
+            f"{bed}, line 1: the end is 'x', and it must be a whole number of 0 or more.{remedy}",
         ),
         (
             "end_before_start",
@@ -649,6 +700,18 @@ def _make_str_regions_errors(bed: Path) -> list[tuple[str, list[str], str]]:
             " 1 to 6 bases of A, C, G and T, in upper case. Add it, and run again.",
         ),
         (
+            "str_with_an_empty_fifth_column_at_the_end",
+            ["chr1\t10\t20\tstr\t"],
+            f"{bed}, line 1: an STR segment, of type str, needs its motif in the fifth column:"
+            " 1 to 6 bases of A, C, G and T, in upper case. Add it, and run again.",
+        ),
+        (
+            "str_motif_empty",
+            ["chr1\t10\t20\tstr\t\t0.9"],
+            f"{bed}, line 1: the motif of an STR segment is '', and it must be 1 to 6 bases of"
+            " A, C, G and T, in upper case. Correct it, and run again.",
+        ),
+        (
             "str_motif_dot",
             ["chr1\t10\t20\tstr\t."],
             f"{bed}, line 1: the motif of an STR segment is '.', and it must be 1 to 6 bases of"
@@ -680,9 +743,9 @@ def _make_str_regions_errors(bed: Path) -> list[tuple[str, list[str], str]]:
         ),
         (
             "bundle_with_motif",
-            ["chr1\t10\t20\tstr-bundle\t"],
+            ["chr1\t10\t20\tstr-bundle\tN"],
             f"{bed}, line 1: a region of type str-bundle has no motif, and its fifth column is"
-            " ''. Put '.' there, and run again.",
+            " 'N'. Put '.' there, and run again.",
         ),
         (
             "contig_lines_apart",
