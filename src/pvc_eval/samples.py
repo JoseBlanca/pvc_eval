@@ -6,7 +6,7 @@ Public: SamplePair and make_sample_pairs.
 """
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Sequence, Set
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,9 +45,9 @@ def make_sample_pairs(
     The samples of each file that are in no pair are logged in one warning per file.
 
     Raises PvcEvalInputError for a map that cannot be read or is not UTF-8, a line of the
-    map that is not two non-empty fields, a
-    sample of the map absent from its file, the same pair on two lines of the map, a name
-    in two columns of a header when a pair needs it, and no pair at all.
+    map that is not two non-empty fields, a sample of the map absent from its file, the
+    same pair on two lines of the map, a name in two columns of a header when a pair needs
+    it, and no pair at all.
     """
     samples_a = parse_vcf_samples(path_a)
     samples_b = parse_vcf_samples(path_b)
@@ -57,13 +57,14 @@ def make_sample_pairs(
         sample_pairs = _make_pairs_by_name(path_a, columns_a, path_b, columns_b)
     else:
         sample_pairs = _make_pairs_from_map(sample_map, path_a, columns_a, path_b, columns_b)
-    for path, sample_names, paired_indexes in (
-        (path_a, samples_a, {pair.index_a for pair in sample_pairs}),
-        (path_b, samples_b, {pair.index_b for pair in sample_pairs}),
-    ):
-        warning = _make_unpaired_warning(path, sample_names, paired_indexes, sample_map)
-        if warning is not None:
-            _logger.warning("%s", warning)
+    paired_indexes_a = {pair.index_a for pair in sample_pairs}
+    paired_indexes_b = {pair.index_b for pair in sample_pairs}
+    warning_a = _make_unpaired_warning(path_a, samples_a, paired_indexes_a, sample_map)
+    if warning_a is not None:
+        _logger.warning("%s", warning_a)
+    warning_b = _make_unpaired_warning(path_b, samples_b, paired_indexes_b, sample_map)
+    if warning_b is not None:
+        _logger.warning("%s", warning_b)
     return sample_pairs
 
 
@@ -214,16 +215,16 @@ def _make_fields_error(
     sample_map: Path, line_number: int, fields: Sequence[str], path_a: Path, path_b: Path
 ) -> PvcEvalInputError:
     # Two fields are refused only when one is empty.
-    how_many = "an empty field" if len(fields) == 2 else format_count(len(fields), "field")
+    what_it_has = "an empty field" if len(fields) == 2 else format_count(len(fields), "field")
     return PvcEvalInputError(
         f"{sample_map}, line {line_number}: a line holds a sample of {path_a} and a sample"
-        f" of {path_b}, separated by a tab, and this one has {how_many}. Correct the line and"
+        f" of {path_b}, separated by a tab, and this one has {what_it_has}. Correct the line and"
         " run again."
     )
 
 
 def _make_unpaired_warning(
-    path: Path, sample_names: Sequence[str], paired_indexes: set[int], sample_map: Path | None
+    path: Path, sample_names: Sequence[str], paired_indexes: Set[int], sample_map: Path | None
 ) -> str | None:
     """The warning that names the samples of a file in no pair, each name once, or None
     when every sample is in one."""
