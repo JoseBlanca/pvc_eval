@@ -81,13 +81,14 @@ def build_loci(
     with no ALT whose REF overlaps it, and the STR regions that lie in it.
 
     Raises ValueError, when the stream starts, for a chain_distance that is not a whole
-    number of 0 or more; and when the stream reaches it, for a record or a segment on a
+    number of 0 or more and for a contig named twice in contigs; and when the stream reaches it, for a record or a segment on a
     contig that contigs lacks, a record that comes before the one read before it in its
     file, a segment that comes before the one read before it, and an STR region that
     overlaps the STR region read before it.
     """
     _check_chain_distance(chain_distance)
     ranks = {contig: rank for rank, contig in enumerate(contigs)}
+    _check_contigs(contigs, ranks)
     ranked_records = heapq.merge(
         _rank_records(records_a, 0, ranks),
         _rank_records(records_b, 1, ranks),
@@ -138,6 +139,12 @@ def _check_chain_distance(chain_distance: int) -> None:
         raise ValueError(
             f"chain_distance must be a whole number of 0 or more, not {chain_distance!r}"
         )
+
+
+def _check_contigs(contigs: Sequence[str], ranks: Mapping[str, int]) -> None:
+    if len(ranks) < len(contigs):
+        repeated = next(contig for rank, contig in enumerate(contigs) if ranks[contig] != rank)
+        raise ValueError(f"contigs names {repeated} twice; each contig must be named once")
 
 
 def _has_alt(vcf_record: VcfRecord) -> bool:

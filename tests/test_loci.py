@@ -485,6 +485,13 @@ def test_a_chain_distance_that_is_not_a_whole_number_raises_at_the_first_next(
         next(loci)
 
 
+def test_a_contig_named_twice_in_contigs_raises_at_the_first_next() -> None:
+    loci = build_loci(iter(()), iter(()), iter(()), ("chr1", "chr2", "chr1"))
+
+    with pytest.raises(ValueError, match=r"chr1.*twice"):
+        next(loci)
+
+
 # The cases doc/spec.md §7.2 lists for loci.
 def test_chaining_runs_across_both_files() -> None:
     first_a = make_snp(9, line_number=1)
