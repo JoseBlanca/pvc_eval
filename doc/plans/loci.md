@@ -1,6 +1,6 @@
 # Plan: the loci
 
-*Status: approved by the owner on 19 October 2026; done on 19 October 2026. It builds `doc/specs/loci.md`,
+*Status: approved by the owner on 19 October 2026; milestones 1 to 3 done, milestone 4 under way. It builds `doc/specs/loci.md`,
 approved by the owner on 19 October 2026, on the branch `loci` in `.claude/worktrees/loci`; the
 owner's handoff named the branch `loci`, so it is not `plan/loci`. The work report will be
 `doc/reports/loci.md`.*
@@ -157,6 +157,28 @@ milestone 2, in different files.
 **What could go wrong.** Messages a user reads: the two refusals the owner decided on 19 October
 2026 (a BED contig the reference lacks, an untyped STR region under `--strata pvc`) say what to do,
 as the writing skill's section on errors asks. The `errors` reviewer gets them.
+
+- [ ] 4. Gzipped and empty BEDs
+
+Added on 19 October 2026, after the plan was done, by the owner's answers to two points the work
+raised.
+
+**What it gives.** `--regions` and `--strata` read GIAB's gzipped BEDs, and refuse a BED with no
+line instead of skipping every locus without a word.
+
+**The spec it builds.** `doc/specs/loci.md`, Regions (the paragraph on what `read_regions` reads
+and refuses), which `read_strata` shares.
+
+**Deliverables.**
+
+- A gzipped and a bgzipped BED, known by their first two bytes, read like the same BED
+  uncompressed, by `read_regions` and by `read_strata`; a gzipped file that is not UTF-8 once
+  decompressed still refused. Check: their tests in `tests/test_bed.py`, which fail on `300e085`.
+- A BED with no line, and one with only blank, comment and header lines, refused with
+  `PvcEvalInputError` naming the file. Check: their tests in `tests/test_bed.py`.
+- The four checks of `python.md` pass.
+
+**What it stands on.** Milestone 3.
 
 ## The check of the whole plan
 
