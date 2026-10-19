@@ -161,7 +161,7 @@ def test_a_parameter_past_its_limit_raises_naming_the_field(
 
 def test_min_purity_must_be_a_float_or_an_int() -> None:
     with pytest.raises(
-        ValueError, match=r"^min_purity is Fraction\(4, 5\); it must be a float or int from 0 to 1$"
+        ValueError, match=r"^min_purity is Fraction\(4, 5\); it must be a float or an int$"
     ):
         StrFinderParameters(min_purity=Fraction(4, 5))  # ty: ignore[invalid-argument-type]  # a Fraction, on purpose
 

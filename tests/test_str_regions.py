@@ -461,11 +461,19 @@ def test_an_empty_output_path_stops_the_run(
     [
         (
             ["--min-purity", "2"],
-            "--min-purity is 2.0; it must be a float or int from 0 to 1",
+            "--min-purity is 2.0; it must be a number from 0 to 1",
         ),
         (
             ["--min-period", "4", "--max-period", "3"],
             "--min-period (4) must not exceed --max-period (3)",
+        ),
+        (
+            ["--scan-min-period", "7"],
+            "--scan-min-period is 7; it must be 6 or less",
+        ),
+        (
+            ["--min-period", "7"],
+            "--min-period is 7; it must be 6 or less",
         ),
         (
             ["--scan-min-period", "0"],
@@ -495,6 +503,8 @@ def test_an_empty_output_path_stops_the_run(
     ids=[
         "min_purity",
         "min_period_above_max",
+        "scan_min_period_seven",
+        "min_period_seven",
         "scan_min_period",
         "min_copies_three",
         "min_copies_negative",

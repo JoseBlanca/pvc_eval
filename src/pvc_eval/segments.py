@@ -111,10 +111,11 @@ class StrFinderParameters:
         _check_at_least("max_str_len", self.max_str_len, self.bundle_distance, "bundle_distance")
         _check_copy_floors(self.copy_floors)
         purity = self.min_purity
-        is_number = isinstance(purity, int | float) and not isinstance(purity, bool)
+        if isinstance(purity, bool) or not isinstance(purity, int | float):
+            raise ValueError(f"min_purity is {purity!r}; it must be a float or an int")  # noqa: TRY004 -- the spec gives ValueError for every value outside its table
         # The range alone refuses nan and the infinities, and compares any int exactly.
-        if not (is_number and 0 <= purity <= 1):
-            raise ValueError(f"min_purity is {purity!r}; it must be a float or int from 0 to 1")
+        if not 0 <= purity <= 1:
+            raise ValueError(f"min_purity is {purity!r}; it must be a number from 0 to 1")
 
 
 def _check_whole_number(name: str, value: object) -> None:
@@ -136,8 +137,9 @@ def _check_period_range(min_name: str, max_name: str, parameters: StrFinderParam
     min_period = getattr(parameters, min_name)
     max_period = getattr(parameters, max_name)
     _check_at_least(min_name, min_period, 1)
-    if max_period > _MAX_PERIOD:
-        raise ValueError(f"{max_name} is {max_period!r}; it must be {_MAX_PERIOD} or less")
+    for name, period in ((min_name, min_period), (max_name, max_period)):
+        if period > _MAX_PERIOD:
+            raise ValueError(f"{name} is {period!r}; it must be {_MAX_PERIOD} or less")
     if min_period > max_period:
         raise ValueError(f"{min_name} ({min_period!r}) must not exceed {max_name} ({max_period!r})")
 
@@ -1149,7 +1151,8 @@ def write_str_regions(
     Every contig of the `.fai` is segmented whole, or with a --regions BED only the contigs
     it names, and then only the STR regions that overlap one of its regions by at least
     one base are written, each whole. The BED is written to `<output>.tmp` and renamed to
-    output when complete; a run that stops removes the `.tmp` and leaves output as it was.
+    output when complete. A run stopped by an error or by Ctrl-C removes the `.tmp` and leaves
+    output as it was; one killed by a signal leaves the `.tmp` behind.
 
     Raises PvcEvalInputError, naming the file and the line, for a --regions BED that cannot
     be read, a line of it with fewer than three columns, a start or end that is not a whole
