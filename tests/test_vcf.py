@@ -168,6 +168,77 @@ def test_gt_gives_its_alleles_or_its_case(
     assert _parse_genotype(gt, num_alleles=3, phase_set=None, quality=None) == expected
 
 
+@pytest.fixture(autouse=True)
+def clear_genotype_caches() -> None:
+    """Empties the module's caches of parsed GTs and genotypes before each test, so that no
+    test passes or fails on what an earlier one left in them."""
+    vcf._parse_gt.cache_clear()
+    vcf._parse_genotype.cache_clear()
+
+
+def test_same_gt_with_other_number_of_alleles_is_parsed_again(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    # 0/2 is a genotype where the record has two ALTs and malformed where it has one, so a
+    # cache that left the number of alleles out of its key would give both the first.
+    path = write_vcf(
+        tmp_path,
+        "chr1\t4\t.\tA\tG,T\t.\t.\t.\tGT\t0/2\t0/2\nchr1\t6\t.\tG\tA\t.\t.\t.\tGT\t0/2\t0/2\n",
+    )
+
+    first, second = parse_vcf(path, reference)
+
+    assert (
+        first.genotypes
+        == (VcfGenotype(alleles=(0, 2), phased=False, phase_set=None, quality=None),) * 2
+    )
+    assert second.genotypes == (MALFORMED_GT, MALFORMED_GT)
+
+
+def test_samples_with_the_same_gt_share_one_alleles_tuple(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    # The same GT and GQ and another PS, so a genotype cache that left PS out of its key
+    # would give the second sample the first one's phase set.
+    path = write_vcf(tmp_path, "chr1\t4\t.\tA\tG\t.\tPASS\t.\tGT:GQ:PS\t0|1:30:4\t0|1:30:9\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    first, second = record.genotypes
+    assert first == VcfGenotype(alleles=(0, 1), phased=True, phase_set="4", quality=30)
+    assert second == VcfGenotype(alleles=(0, 1), phased=True, phase_set="9", quality=30)
+    assert isinstance(first, VcfGenotype)
+    assert isinstance(second, VcfGenotype)
+    assert first.alleles is second.alleles
+
+
+def test_samples_with_the_same_gt_and_ps_keep_their_own_gq(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    # A genotype cache that left GQ out of its key would give the second sample the first
+    # one's quality.
+    path = write_vcf(tmp_path, "chr1\t4\t.\tA\tG\t.\tPASS\t.\tGT:GQ:PS\t0|1:30:4\t0|1:20:4\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(0, 1), phased=True, phase_set="4", quality=30),
+        VcfGenotype(alleles=(0, 1), phased=True, phase_set="4", quality=20),
+    )
+
+
+def test_samples_with_the_same_genotype_share_one_genotype(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(tmp_path, "chr1\t4\t.\tA\tG\t.\tPASS\t.\tGT:GQ:PS\t0|1:30:4\t0|1:30:4\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    first, second = record.genotypes
+    assert first == VcfGenotype(alleles=(0, 1), phased=True, phase_set="4", quality=30)
+    assert first is second
+
+
 @pytest.mark.parametrize("gzipped", [False, True], ids=["plain", "bgzipped"])
 def test_records_are_read_with_0_based_starts(
     tmp_path: Path, reference: IndexedFasta, gzipped: bool
@@ -456,6 +527,56 @@ def test_phase_set_dot_is_none(tmp_path: Path, reference: IndexedFasta) -> None:
     assert record.genotypes == (
         VcfGenotype(alleles=(0, 1), phased=True, phase_set=None, quality=None),
         VcfGenotype(alleles=(1, 0), phased=True, phase_set="12", quality=None),
+    )
+
+
+def test_dropped_trailing_sample_fields_are_absent(tmp_path: Path, reference: IndexedFasta) -> None:
+    # VCF lets a sample drop trailing fields: HG002 drops PS, HG003 drops GQ and PS too.
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGT:GQ:PS\t1|0:20\t0|1\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(1, 0), phased=True, phase_set=None, quality=20),
+        VcfGenotype(alleles=(0, 1), phased=True, phase_set=None, quality=None),
+    )
+
+
+def test_dropped_gt_after_another_key_is_missing(tmp_path: Path, reference: IndexedFasta) -> None:
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGQ:GT\t30\t30:0/1\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(MISSING, MISSING), phased=False, phase_set=None, quality=30),
+        VcfGenotype(alleles=(0, 1), phased=False, phase_set=None, quality=30),
+    )
+
+
+def test_sample_values_beyond_the_format_keys_are_ignored(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0|1:30:4\t0|1\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    assert (
+        record.genotypes
+        == (VcfGenotype(alleles=(0, 1), phased=True, phase_set=None, quality=None),) * 2
+    )
+
+
+def test_key_named_twice_in_format_takes_its_last_copy(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    # HG003 drops the last copy of GQ, so it has no GQ, although it has a value at the first.
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGQ:GT:GQ\t10:0/1:20\t10:1/1\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(0, 1), phased=False, phase_set=None, quality=20),
+        VcfGenotype(alleles=(1, 1), phased=False, phase_set=None, quality=None),
     )
 
 
