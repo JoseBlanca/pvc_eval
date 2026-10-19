@@ -411,7 +411,7 @@ def _get_copy_floor(parameters: StrFinderParameters, period: int) -> int:
     return parameters.copy_floors[period - 1]
 
 
-def _get_tract(candidate: _Candidate, bases: str) -> str:
+def _get_span_bases(candidate: _Candidate, bases: str) -> str:
     """The bases of a candidate's detected span, in upper case, as pvc's upper gives them."""
     return bases[candidate.start : candidate.end].upper()
 
@@ -428,8 +428,8 @@ def _drop_near_contig_ends(
     """
     flank = parameters.contig_end_flank
     for candidate in candidates:
-        tract = _get_tract(candidate, bases)
-        cut = _find_cut(tract, tract[: candidate.period])
+        span_bases = _get_span_bases(candidate, bases)
+        cut = _find_cut(span_bases, span_bases[: candidate.period])
         start, end = (candidate.start, candidate.end)
         if cut is not None:
             start, end = (candidate.start + cut[0], candidate.start + cut[1])
@@ -505,35 +505,36 @@ def _is_compound(motif: str) -> bool:
     )
 
 
-def _find_cut(tract: str, motif: str) -> tuple[int, int] | None:
-    """The cut of a tract, as offsets into it, `[start, end)`, or None when it has none
-    (doc/specs/str_finder.md step 6; pvc segment_criteria.rs, minimal_trim)."""
+def _find_cut(span_bases: str, motif: str) -> tuple[int, int] | None:
+    """The cut of a detected span, given as its bases, as offsets into them, `[start,
+    end)`, or None when it has none (doc/specs/str_finder.md step 6; pvc
+    segment_criteria.rs, minimal_trim)."""
     two_copies = motif * 2
-    reach = min(3 * len(motif), len(tract) // 2)
+    reach = min(3 * len(motif), len(span_bases) // 2)
     start = None
     for offset in range(reach + 1):
-        # pvc gives up before it compares, so a tract of exactly two copies has no cut.
-        if offset + len(two_copies) >= len(tract):
+        # pvc gives up before it compares, so a span of exactly two copies has no cut.
+        if offset + len(two_copies) >= len(span_bases):
             return None
-        if tract[offset : offset + len(two_copies)] == two_copies:
+        if span_bases[offset : offset + len(two_copies)] == two_copies:
             start = offset
             break
     if start is None:
         return None
-    for offset in range(len(tract), len(tract) - reach - 1, -1):
+    for offset in range(len(span_bases), len(span_bases) - reach - 1, -1):
         if offset < len(two_copies):
             return None
-        if tract[offset - len(two_copies) : offset] == two_copies:
+        if span_bases[offset - len(two_copies) : offset] == two_copies:
             return (start, offset) if start < offset else None
     return None
 
 
-def _get_purity(tract: str, motif: str) -> float:
+def _get_purity(cut_bases: str, motif: str) -> float:
     """The fraction of the bases of a cut that equal the motif repeated from its first
     base (pvc segment_criteria.rs, recompute_purity). The cut is never empty."""
-    tiling = (motif * (len(tract) // len(motif) + 1))[: len(tract)]
-    matches = sum(base == expected for base, expected in zip(tract, tiling, strict=True))
-    return matches / len(tract)
+    tiling = (motif * (len(cut_bases) // len(motif) + 1))[: len(cut_bases)]
+    matches = sum(base == expected for base, expected in zip(cut_bases, tiling, strict=True))
+    return matches / len(cut_bases)
 
 
 def _is_in_cluster(reach: int, candidate: _Candidate, bundle_distance: int) -> bool:
@@ -582,10 +583,10 @@ def _make_bundle_member(candidate: _Candidate, bases: str) -> _BundleMember:
     """A bundle member with its cut, or its detected span when it has no cut, and its
     motif (pvc segment_criteria.rs, bundle_member_from_bases). bases are the whole contig,
     and positions 0-based and half-open."""
-    tract = _get_tract(candidate, bases)
-    motif = tract[: candidate.period]
-    cut = _find_cut(tract, motif)
-    start, end = (0, len(tract)) if cut is None else cut
+    span_bases = _get_span_bases(candidate, bases)
+    motif = span_bases[: candidate.period]
+    cut = _find_cut(span_bases, motif)
+    start, end = (0, len(span_bases)) if cut is None else cut
     return _BundleMember(start=candidate.start + start, end=candidate.start + end, motif=motif)
 
 
@@ -604,7 +605,7 @@ def _find_str_segments(
             continue
         if candidate.end - candidate.start < candidate.period:
             rejected.append((candidate, _Rejection.COPY_FLOOR))
-        elif _is_compound(_get_tract(candidate, bases)[: candidate.period]):
+        elif _is_compound(_get_span_bases(candidate, bases)[: candidate.period]):
             rejected.append((candidate, _Rejection.COMPOUND))
         else:
             in_scope.append(candidate)
@@ -630,15 +631,15 @@ def _make_str_segment(
     """Step 6 of doc/specs/str_finder.md: the STR segment of a candidate alone in its
     cluster, or why there is none (pvc segment_criteria.rs, finish_locus). bases are the
     whole contig, and positions 0-based and half-open."""
-    tract = _get_tract(candidate, bases)
-    motif = tract[: candidate.period]
-    cut = _find_cut(tract, motif)
+    span_bases = _get_span_bases(candidate, bases)
+    motif = span_bases[: candidate.period]
+    cut = _find_cut(span_bases, motif)
     if cut is None:
         return _Rejection.NO_CUT
     start, end = candidate.start + cut[0], candidate.start + cut[1]
     if (end - start) // candidate.period < _get_copy_floor(parameters, candidate.period):
         return _Rejection.COPY_FLOOR
-    purity = _get_purity(tract[cut[0] : cut[1]], motif)
+    purity = _get_purity(span_bases[cut[0] : cut[1]], motif)
     if purity < parameters.min_purity:
         return _Rejection.PURITY
     if start == 0 or end == len(bases):

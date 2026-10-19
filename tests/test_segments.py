@@ -657,7 +657,7 @@ _PVC_DEFAULT = StrFinderParameters(
 _CLEAN_AT = "CGCGC" + "ATATATATATATATAT" + "GCGCG"
 
 
-def _iv(start: int, end: int, period: int, score: int) -> _Candidate:
+def _make_candidate(start: int, end: int, period: int, score: int) -> _Candidate:
     """pvc's iv(): a candidate, 0-based and half-open."""
     return _Candidate(start=start, end=end, period=period, score=score)
 
@@ -678,11 +678,11 @@ def _find_rejections(
 def test_a_bundle_member_is_trimmed_to_whole_copies_and_carries_its_motif() -> None:
     # pvc reads these bases from contig base 101 and expects the 1-based [103, 126]; from
     # base 0, as the port always reads, that is [2, 26). The trailing CA is cut.
-    member = _make_bundle_member(_iv(2, 28, 3, 50), "TTcagcagcagcagcagcagcagcagCATT")
+    member = _make_bundle_member(_make_candidate(2, 28, 3, 50), "TTcagcagcagcagcagcagcagcagCATT")
     assert member == _BundleMember(start=2, end=26, motif="CAG")
 
     # No two clean copies anywhere, so no cut: the detected span stands.
-    member = _make_bundle_member(_iv(0, 12, 3, 5), "CAGTTTCAGAAA")
+    member = _make_bundle_member(_make_candidate(0, 12, 3, 5), "CAGTTTCAGAAA")
     assert member == _BundleMember(start=0, end=12, motif="CAG")
 
 
@@ -736,15 +736,24 @@ def test_minimal_trim_returns_none_without_two_clean_copies() -> None:
 
 
 def test_split_bundles_sets_aside_whole_clusters_and_keeps_isolated() -> None:
-    lone = _iv(5000, 5030, 2, 100)
-    candidates = [_iv(100, 130, 2, 100), _iv(150, 180, 3, 100), _iv(200, 230, 2, 100), lone]
+    lone = _make_candidate(5000, 5030, 2, 100)
+    candidates = [
+        _make_candidate(100, 130, 2, 100),
+        _make_candidate(150, 180, 3, 100),
+        _make_candidate(200, 230, 2, 100),
+        lone,
+    ]
     isolated, bundled = _split_bundles(candidates, 50)
     assert isolated == [lone]
     assert [candidate.start for candidate in bundled] == [100, 150, 200]
 
 
 def test_split_bundles_keeps_all_when_none_close() -> None:
-    candidates = [_iv(100, 130, 2, 100), _iv(1000, 1030, 2, 100), _iv(2000, 2030, 2, 100)]
+    candidates = [
+        _make_candidate(100, 130, 2, 100),
+        _make_candidate(1000, 1030, 2, 100),
+        _make_candidate(2000, 2030, 2, 100),
+    ]
     isolated, bundled = _split_bundles(candidates, 50)
     assert isolated == candidates
     assert bundled == []
@@ -752,26 +761,26 @@ def test_split_bundles_keeps_all_when_none_close() -> None:
 
 def test_classify_emits_a_clean_locus_one_based() -> None:
     # pvc's 1-based [6, 21] is [5, 21) here; without the contig name.
-    segments = _find_whole_contig([_iv(5, 21, 2, 100)], _CLEAN_AT, _PARAMS)
+    segments = _find_whole_contig([_make_candidate(5, 21, 2, 100)], _CLEAN_AT, _PARAMS)
     assert segments == (_StrSegment(start=5, end=21, motif="AT", purity=1.0),)
 
 
 def test_classify_drops_period_over_six_and_compound() -> None:
     contig = "AAAACGATATATATATATATCCCC"
-    too_long = _iv(0, 14, 7, 100)
-    compound = _iv(6, 20, 4, 100)  # ATAT is (AT)x2
+    too_long = _make_candidate(0, 14, 7, 100)
+    compound = _make_candidate(6, 20, 4, 100)  # ATAT is (AT)x2
     assert _find_whole_contig([too_long, compound], contig, _PARAMS) == ()
 
 
 def test_classify_drops_below_copy_number_floor() -> None:
     # (AT)x3 is under the period-2 floor of 5.
-    assert _find_whole_contig([_iv(5, 11, 2, 100)], "CCCCCATATATCCCCC", _PARAMS) == ()
+    assert _find_whole_contig([_make_candidate(5, 11, 2, 100)], "CCCCCATATATCCCCC", _PARAMS) == ()
 
 
 def test_classify_keeps_a_locus_whose_flank_clamps_to_one_base() -> None:
-    # Step 6's own test of the contig ends: one base before the tract is enough.
+    # Step 6's own test of the contig ends: one base before the repeat is enough.
     contig = "GATATATATATATATATCGCGCGCGCG"
-    segments = _find_whole_contig([_iv(1, 17, 2, 100)], contig, _PARAMS)
+    segments = _find_whole_contig([_make_candidate(1, 17, 2, 100)], contig, _PARAMS)
     assert len(segments) == 1
     assert segments[0].start == 1  # pvc's 1-based 2
 
@@ -779,61 +788,75 @@ def test_classify_keeps_a_locus_whose_flank_clamps_to_one_base() -> None:
 def test_each_rejection_reason_names_the_gate_that_fired() -> None:
     # (AT)x3, under the period-2 floor of 5.
     contig = "CGCGCGCGCGCGCGCGCGCGATATATCGCGCGCGCGCGCGCGCGCG"
-    assert _find_rejections([_iv(20, 26, 2, 100)], contig, _PARAMS) == [_Rejection.COPY_FLOOR]
+    assert _find_rejections([_make_candidate(20, 26, 2, 100)], contig, _PARAMS) == [
+        _Rejection.COPY_FLOOR
+    ]
 
     # ATAT is AT twice.
     contig = "CGCGCGCGCGCGCGCGCGCGATATATATATATATATATATCGCGCGCGCGCGCGCGCGCG"
-    assert _find_rejections([_iv(20, 40, 4, 100)], contig, _PARAMS) == [_Rejection.COMPOUND]
+    assert _find_rejections([_make_candidate(20, 40, 4, 100)], contig, _PARAMS) == [
+        _Rejection.COMPOUND
+    ]
 
     # No ATAT within the reach of the cut: this runs before the copy floor.
     contig = "CGCGCGCGCGCGCGCGCGCGATGGGGGGGGGATATATATCGCGCGCGCGCGCGCGCGCG"
-    assert _find_rejections([_iv(20, 39, 2, 100)], contig, _PARAMS) == [_Rejection.NO_CUT]
+    assert _find_rejections([_make_candidate(20, 39, 2, 100)], contig, _PARAMS) == [
+        _Rejection.NO_CUT
+    ]
 
     # Clean ends and enough copies, but under a purity of 0.8.
     contig = "CGCGCGCGCGCGCGCGCGCGATATATATGGGGGGGGGGATATATATCGCGCGCGCGCGCGCGCGCG"
-    assert _find_rejections([_iv(20, 46, 2, 100)], contig, _PARAMS) == [_Rejection.PURITY]
+    assert _find_rejections([_make_candidate(20, 46, 2, 100)], contig, _PARAMS) == [
+        _Rejection.PURITY
+    ]
 
-    # The tract starts on the contig's first base.
+    # The repeat starts on the contig's first base.
     contig = "ATATATATATATATATCGCGC"
-    assert _find_rejections([_iv(0, 16, 2, 100)], contig, _PARAMS) == [_Rejection.CONTIG_END]
+    assert _find_rejections([_make_candidate(0, 16, 2, 100)], contig, _PARAMS) == [
+        _Rejection.CONTIG_END
+    ]
 
 
 def test_the_walk_reaches_only_one_of_classifications_five_gates() -> None:
     # Step 3 applies the copy floor before step 6 can.
-    assert list(_drop_under_copy_floor([_iv(20, 26, 2, 100)], _PARAMS)) == []
+    assert list(_drop_under_copy_floor([_make_candidate(20, 26, 2, 100)], _PARAMS)) == []
 
     # A compound motif still fires the gate when it is given directly; step 1 never gives one.
     contig = "CGCGCGCGCGCGCGCGCGCGAAAAAAAAAAAAAAAAAAAACGCGCGCGCGCGCGCGCGCG"
-    assert _find_rejections([_iv(20, 40, 2, 100)], contig, _PARAMS) == [_Rejection.COMPOUND]
+    assert _find_rejections([_make_candidate(20, 40, 2, 100)], contig, _PARAMS) == [
+        _Rejection.COMPOUND
+    ]
 
 
 def test_classify_drops_locus_with_empty_left_flank() -> None:
     contig = "ATATATATATATATATCGCGC"
-    assert _find_whole_contig([_iv(0, 16, 2, 100)], contig, _PARAMS) == ()
+    assert _find_whole_contig([_make_candidate(0, 16, 2, 100)], contig, _PARAMS) == ()
 
 
 def test_classify_drops_locus_with_empty_right_flank() -> None:
     contig = "CGCGCATATATATATATATAT"
-    assert _find_whole_contig([_iv(5, 21, 2, 100)], contig, _PARAMS) == ()
+    assert _find_whole_contig([_make_candidate(5, 21, 2, 100)], contig, _PARAMS) == ()
 
 
 def test_classify_drops_period_one_homopolymer_and_spares_the_neighbour_ssr() -> None:
     contig = "A" * 20 + "CAG" * 10 + "TTTTT"
-    segments = _find_whole_contig([_iv(0, 20, 1, 100), _iv(20, 50, 3, 100)], contig, _PARAMS)
+    segments = _find_whole_contig(
+        [_make_candidate(0, 20, 1, 100), _make_candidate(20, 50, 3, 100)], contig, _PARAMS
+    )
     assert len(segments) == 1
     assert segments[0].motif == "CAG"
     assert len(segments[0].motif) == 3  # pvc's period()
 
 
 def test_prefilter_drops_low_copy_noise() -> None:
-    real = _iv(100, 120, 2, 100)
-    noise = _iv(500, 504, 2, 10)
+    real = _make_candidate(100, 120, 2, 100)
+    noise = _make_candidate(500, 504, 2, 10)
     assert list(_drop_under_copy_floor([real, noise], _PARAMS)) == [real]
 
 
 def test_prefilter_keeps_a_higher_period_tract_that_is_not_a_multiple() -> None:
-    two = _iv(100, 120, 2, 100)
-    three = _iv(100, 121, 3, 100)
+    two = _make_candidate(100, 120, 2, 100)
+    three = _make_candidate(100, 121, 3, 100)
     assert list(_drop_under_copy_floor([two, three], _PARAMS)) == [two, three]
 
 
@@ -841,19 +864,19 @@ def test_classify_upper_cases_a_soft_masked_tracts_motif() -> None:
     # pvc also compares each result with its former production code (assert_agrees); that
     # code is not ported, so those assertions are dropped.
     contig = "cgcgc" + "atatatatatatatat" + "gcgcg"
-    segments = _find_whole_contig([_iv(5, 21, 2, 100)], contig, _PARAMS)
+    segments = _find_whole_contig([_make_candidate(5, 21, 2, 100)], contig, _PARAMS)
     assert len(segments) == 1
     assert segments[0].motif == "AT"
     assert segments[0].purity == 1.0
 
     mixed = "CGCGC" + "atatatatatatatat" + "GCGCG"
-    assert _find_whole_contig([_iv(5, 21, 2, 100)], mixed, _PARAMS) == segments
+    assert _find_whole_contig([_make_candidate(5, 21, 2, 100)], mixed, _PARAMS) == segments
 
 
 def test_classify_reports_the_trimmed_start_not_the_detected_one() -> None:
     # pvc's assert_agrees, against its former production code, is dropped.
     contig = "CGCGC" + "ATC" + "ATATATATATAT" + "GCGCG"
-    segments = _find_whole_contig([_iv(5, 20, 2, 100)], contig, _PARAMS)
+    segments = _find_whole_contig([_make_candidate(5, 20, 2, 100)], contig, _PARAMS)
     assert len(segments) == 1
     assert segments[0].start == 8  # pvc's 1-based 9: the detected 5, plus 3 cut off
     assert segments[0].end == 20
@@ -864,7 +887,7 @@ def test_classify_reports_the_trimmed_start_not_the_detected_one() -> None:
 def test_classify_keeps_an_imperfect_tract_above_the_floor_and_drops_one_below() -> None:
     # pvc's assert_agrees_at, against its former production code, is dropped.
     contig = "CGCGC" + "ATATATATATCTATAT" + "GCGCG"  # one C where an A belongs
-    detected = _iv(5, 21, 2, 100)
+    detected = _make_candidate(5, 21, 2, 100)
     segments = _find_whole_contig([detected], contig, _PARAMS)
     assert len(segments) == 1
     assert segments[0].purity == 15 / 16  # pvc's comment: 15/16 = 0.9375
@@ -875,7 +898,7 @@ def test_classify_keeps_an_imperfect_tract_above_the_floor_and_drops_one_below()
 def test_the_copy_floor_counts_the_trimmed_tract_not_the_detected_one() -> None:
     # Two clean CAGGA copies, then five bases that are not one: 3 copies detected, 2 cut.
     contig = "GCTAG" + "CAGGACAGGATTTTT" + "TCGAT"
-    detected = _iv(5, 20, 5, 100)
+    detected = _make_candidate(5, 20, 5, 100)
     assert (detected.end - detected.start) // 5 == 3
     assert _find_whole_contig([detected], contig, _PARAMS) == ()
 
@@ -888,16 +911,16 @@ def test_the_copy_floor_counts_the_trimmed_tract_not_the_detected_one() -> None:
 def test_classify_applies_the_score_gate_when_the_floor_actually_bites() -> None:
     # pvc's assert_agrees_at, against its former production code, is dropped.
     parameters = replace(_PARAMS, min_score=50)
-    assert len(_find_whole_contig([_iv(5, 21, 2, 100)], _CLEAN_AT, parameters)) == 1
-    assert _find_whole_contig([_iv(5, 21, 2, 49)], _CLEAN_AT, parameters) == ()
-    assert len(_find_whole_contig([_iv(5, 21, 2, 50)], _CLEAN_AT, parameters)) == 1
+    assert len(_find_whole_contig([_make_candidate(5, 21, 2, 100)], _CLEAN_AT, parameters)) == 1
+    assert _find_whole_contig([_make_candidate(5, 21, 2, 49)], _CLEAN_AT, parameters) == ()
+    assert len(_find_whole_contig([_make_candidate(5, 21, 2, 50)], _CLEAN_AT, parameters)) == 1
 
 
 def test_classify_at_default_never_rejects_a_score_the_scanner_can_emit() -> None:
     contig = "CGCGC" + "C" * 55 + "ATATATATATATATAT" + "G" * 64
 
     def count_at_default(score: int) -> int:
-        return len(_find_whole_contig([_iv(60, 76, 2, score)], contig, _PVC_DEFAULT))
+        return len(_find_whole_contig([_make_candidate(60, 76, 2, score)], contig, _PVC_DEFAULT))
 
     assert count_at_default(1) == 1
     assert count_at_default(100) == 1
@@ -914,9 +937,9 @@ def test_classify_rejects_a_zero_flank() -> None:
 def test_classify_hands_back_the_bundle_members_it_sets_aside() -> None:
     # pvc's assert_agrees_at, against its former production code, is dropped.
     contig = "C" * 100 + "AT" * 10 + "C" * 30 + "AT" * 10 + "C" * 4830 + "AT" * 10 + "C" * 80
-    first = _iv(100, 120, 2, 100)
-    second = _iv(150, 170, 2, 100)
-    lone = _iv(5000, 5020, 2, 100)
+    first = _make_candidate(100, 120, 2, 100)
+    second = _make_candidate(150, 170, 2, 100)
+    lone = _make_candidate(5000, 5020, 2, 100)
     classification = _find_str_segments([first, second, lone], contig, _CATALOG_CRITERIA)
     assert len(classification.str_segments) == 1
     assert classification.str_segments[0].start == 5000  # pvc's 1-based 5001
@@ -924,24 +947,26 @@ def test_classify_hands_back_the_bundle_members_it_sets_aside() -> None:
 
 
 def test_classify_bundles_only_what_the_flank_test_rejects() -> None:
-    classification = _find_str_segments([_iv(5, 21, 2, 100)], _CLEAN_AT, _PARAMS)
+    classification = _find_str_segments([_make_candidate(5, 21, 2, 100)], _CLEAN_AT, _PARAMS)
     assert len(classification.str_segments) == 1
     assert classification.bundle_members == ()
 
-    classification = _find_str_segments([_iv(5, 11, 2, 100)], "CCCCCATATATCCCCC", _PARAMS)
+    classification = _find_str_segments(
+        [_make_candidate(5, 11, 2, 100)], "CCCCCATATATCCCCC", _PARAMS
+    )
     assert classification.str_segments == ()
     assert classification.bundle_members == ()
 
 
 def test_narrowing_the_period_scope_changes_what_is_admitted() -> None:
     contig = "TTTTT" + "CAG" * 10 + "TTTTT"
-    cag = _iv(5, 35, 3, 100)
+    cag = _make_candidate(5, 35, 3, 100)
     assert len(_find_whole_contig([cag], contig, _PARAMS)) == 1
     dinucleotides_only = replace(_PARAMS, min_period=2, max_period=2)
     assert _find_whole_contig([cag], contig, dinucleotides_only) == ()
 
     poly_a = "T" * 5 + "A" * 30 + "TTTTT"
-    homopolymer = _iv(5, 35, 1, 100)
+    homopolymer = _make_candidate(5, 35, 1, 100)
     assert _find_whole_contig([homopolymer], poly_a, _PARAMS) == ()
     with_homopolymers = replace(_PARAMS, min_period=1, max_period=6)
     assert len(_find_whole_contig([homopolymer], poly_a, with_homopolymers)) == 1
@@ -950,15 +975,15 @@ def test_narrowing_the_period_scope_changes_what_is_admitted() -> None:
 def test_classify_bundles_at_the_flank_radius() -> None:
     # pvc's two assert_agrees_at, against its former production code, are dropped.
     contig = "C" * 100 + "AT" * 10 + "C" * 30 + "AT" * 10 + "C" * 130
-    pair = [_iv(100, 120, 2, 100), _iv(150, 170, 2, 100)]
+    pair = [_make_candidate(100, 120, 2, 100), _make_candidate(150, 170, 2, 100)]
     assert _find_whole_contig(pair, contig, replace(_PARAMS, bundle_distance=50)) == ()
     assert len(_find_whole_contig(pair, contig, replace(_PARAMS, bundle_distance=5))) == 2
 
 
 def test_the_minimum_is_looked_up_by_the_tracts_own_period() -> None:
     contig = "C" * 20 + "AT" * 8 + "C" * 164 + "CAG" * 10 + "C" * 170
-    dinucleotide = _iv(20, 36, 2, 100)
-    trinucleotide = _iv(200, 230, 3, 100)
+    dinucleotide = _make_candidate(20, 36, 2, 100)
+    trinucleotide = _make_candidate(200, 230, 3, 100)
     picky = replace(_PARAMS, copy_floors=(10, 9, 4, 3, 3, 3))
     segments = _find_whole_contig([dinucleotide, trinucleotide], contig, picky)
     assert len(segments) == 1
@@ -998,31 +1023,31 @@ def test_classify_rejects_a_nan_purity_floor() -> None:
 
 
 def test_raising_the_copy_floor_changes_what_is_admitted() -> None:
-    tract = _iv(5, 21, 2, 100)
-    assert len(_find_whole_contig([tract], _CLEAN_AT, _PARAMS)) == 1
+    candidate = _make_candidate(5, 21, 2, 100)
+    assert len(_find_whole_contig([candidate], _CLEAN_AT, _PARAMS)) == 1
     strict = replace(_PARAMS, copy_floors=(9, 9, 9, 9, 9, 9))
-    assert _find_whole_contig([tract], _CLEAN_AT, strict) == ()
+    assert _find_whole_contig([candidate], _CLEAN_AT, strict) == ()
 
-    assert list(_drop_under_copy_floor([tract], _PARAMS)) == [tract]
-    assert list(_drop_under_copy_floor([tract], strict)) == []
+    assert list(_drop_under_copy_floor([candidate], _PARAMS)) == [candidate]
+    assert list(_drop_under_copy_floor([candidate], strict)) == []
 
 
 def test_joins_cluster_is_strict_at_the_threshold() -> None:
-    assert not _is_in_cluster(130, _iv(180, 210, 2, 100), 50)
-    assert _is_in_cluster(130, _iv(179, 209, 2, 100), 50)
+    assert not _is_in_cluster(130, _make_candidate(180, 210, 2, 100), 50)
+    assert _is_in_cluster(130, _make_candidate(179, 209, 2, 100), 50)
 
 
 def test_a_tract_inside_the_cluster_always_joins_it() -> None:
-    assert _is_in_cluster(1000, _iv(500, 520, 2, 2000), 30)
-    assert _is_in_cluster(1000, _iv(1000, 1020, 2, 2000), 30)
+    assert _is_in_cluster(1000, _make_candidate(500, 520, 2, 2000), 30)
+    assert _is_in_cluster(1000, _make_candidate(1000, 1020, 2, 2000), 30)
 
 
 def test_a_member_spanning_past_its_neighbour_keeps_the_cluster_open() -> None:
     candidates = [
-        _iv(0, 43, 2, 100),
-        _iv(56, 154, 4, 100),  # the long one
-        _iv(62, 105, 2, 100),
-        _iv(142, 154, 2, 100),  # 37 bases past the one before, inside the long one
+        _make_candidate(0, 43, 2, 100),
+        _make_candidate(56, 154, 4, 100),  # the long one
+        _make_candidate(62, 105, 2, 100),
+        _make_candidate(142, 154, 2, 100),  # 37 bases past the one before, inside the long one
     ]
     isolated, bundled = _split_bundles(candidates, 30)
     assert isolated == []
@@ -1031,10 +1056,10 @@ def test_a_member_spanning_past_its_neighbour_keeps_the_cluster_open() -> None:
 
 
 def test_prefilter_drops_an_inverted_interval_instead_of_underflowing() -> None:
-    inverted = _iv(120, 100, 2, 100)
-    good = _iv(100, 120, 2, 100)
+    inverted = _make_candidate(120, 100, 2, 100)
+    good = _make_candidate(100, 120, 2, 100)
     assert list(_drop_under_copy_floor([inverted, good], _PARAMS)) == [good]
-    assert list(_drop_under_copy_floor([_iv(100, 100, 2, 100)], _PARAMS)) == []
+    assert list(_drop_under_copy_floor([_make_candidate(100, 100, 2, 100)], _PARAMS)) == []
 
 
 _SYNTHETIC_REF = Path(__file__).parent / "data" / "tandem_repeat" / "synthetic_ref.fa"
@@ -1066,23 +1091,23 @@ def test_differential_vs_production_build_loci_on_scanner_output() -> None:
 # ---- Step 2, ported from pvc's repeat_catalog/row.rs at bbcc9f4 -----------------------------
 
 
-def _make_contig_with_tract(left: int, motif: str, copies: int, right: int) -> str:
+def _make_contig_with_repeat(left: int, motif: str, copies: int, right: int) -> str:
     """pvc's contig_with_tract (row.rs 296): G's, the copies of the motif, G's."""
     return "G" * left + motif * copies + "G" * right
 
 
 @pytest.mark.parametrize(("left", "is_kept"), [(15, True), (14, False)], ids=["15", "14"])
 def test_fifteen_bases_of_flank_is_kept_and_fourteen_is_not(left: int, is_kept: bool) -> None:
-    bases = _make_contig_with_tract(left, "CAG", 6, 40)
-    candidate = _iv(left, left + 18, 3, 42)
+    bases = _make_contig_with_repeat(left, "CAG", 6, 40)
+    candidate = _make_candidate(left, left + 18, 3, 42)
     kept = list(_drop_near_contig_ends([candidate], bases, StrFinderParameters()))
     assert kept == ([candidate] if is_kept else [])
 
 
 @pytest.mark.parametrize(("right", "is_kept"), [(15, True), (14, False)], ids=["15", "14"])
 def test_the_right_flank_is_measured_against_the_contigs_own_end(right: int, is_kept: bool) -> None:
-    bases = _make_contig_with_tract(40, "CAG", 6, right)
-    candidate = _iv(40, 58, 3, 42)
+    bases = _make_contig_with_repeat(40, "CAG", 6, right)
+    candidate = _make_candidate(40, 58, 3, 42)
     kept = list(_drop_near_contig_ends([candidate], bases, StrFinderParameters()))
     assert kept == ([candidate] if is_kept else [])
 
@@ -1093,9 +1118,24 @@ def test_the_right_flank_is_measured_against_the_contigs_own_end(right: int, is_
 # detected span starts at 13; CAGTTTCAGAAA has no two clean copies, so its detected span is
 # measured.
 _STEP_TWO_CASES = [
-    ("cut_clear_of_the_end", "G" * 13 + "ATC" + "AT" * 8 + "G" * 40, _iv(13, 32, 2, 42), True),
-    ("no_cut_14_from_the_end", "G" * 14 + "CAGTTTCAGAAA" + "G" * 40, _iv(14, 26, 3, 5), False),
-    ("no_cut_15_from_the_end", "G" * 15 + "CAGTTTCAGAAA" + "G" * 40, _iv(15, 27, 3, 5), True),
+    (
+        "cut_clear_of_the_end",
+        "G" * 13 + "ATC" + "AT" * 8 + "G" * 40,
+        _make_candidate(13, 32, 2, 42),
+        True,
+    ),
+    (
+        "no_cut_14_from_the_end",
+        "G" * 14 + "CAGTTTCAGAAA" + "G" * 40,
+        _make_candidate(14, 26, 3, 5),
+        False,
+    ),
+    (
+        "no_cut_15_from_the_end",
+        "G" * 15 + "CAGTTTCAGAAA" + "G" * 40,
+        _make_candidate(15, 27, 3, 5),
+        True,
+    ),
 ]
 
 
@@ -1118,7 +1158,7 @@ def test_the_contig_end_flank_is_measured_on_the_cut_or_else_the_detected_span(
 
 def test_a_tract_exactly_two_copies_long_has_no_cut() -> None:
     # Step 6: the search for the start fails before it compares as soon as s + 2m >= L,
-    # which at s = 0 already holds for a tract of two copies.
+    # which at s = 0 already holds for a span of two copies.
     assert _find_cut("ATAT", "AT") is None
 
 
@@ -1132,27 +1172,27 @@ _CUT_REACH_CASES = [
 
 
 @pytest.mark.parametrize(
-    ("tract", "cut"),
+    ("span_bases", "cut"),
     [case[1:] for case in _CUT_REACH_CASES],
     ids=[case[0] for case in _CUT_REACH_CASES],
 )
 def test_the_cut_reaches_three_motifs_into_the_tract(
-    tract: str, cut: tuple[int, int] | None
+    span_bases: str, cut: tuple[int, int] | None
 ) -> None:
-    assert _find_cut(tract, "AT") == cut
+    assert _find_cut(span_bases, "AT") == cut
 
 
 def test_a_cut_at_exactly_the_minimum_purity_is_kept() -> None:
     # The cut ATATGGATAT matches AT at 8 of its 10 bases: 0.8, not under 0.8.
     contig = "CGCGC" + "ATATGGATAT" + "GCGCG"
-    segments = _find_whole_contig([_iv(5, 15, 2, 100)], contig, _PARAMS)
+    segments = _find_whole_contig([_make_candidate(5, 15, 2, 100)], contig, _PARAMS)
     assert segments == (_StrSegment(start=5, end=15, motif="AT", purity=0.8),)
 
 
 def test_a_candidate_shorter_than_its_period_is_dropped_before_bundling() -> None:
     # Step 4 drops the one-base candidate at 22, so it does not bundle the (AT)x8 at 5.
-    short = _iv(22, 23, 2, 1)
-    classification = _find_str_segments([_iv(5, 21, 2, 100), short], _CLEAN_AT, _PARAMS)
+    short = _make_candidate(22, 23, 2, 1)
+    classification = _find_str_segments([_make_candidate(5, 21, 2, 100), short], _CLEAN_AT, _PARAMS)
     assert classification.str_segments == (_StrSegment(start=5, end=21, motif="AT", purity=1.0),)
     assert classification.rejected == ((short, _Rejection.COPY_FLOOR),)
 
@@ -1162,9 +1202,9 @@ def test_the_candidates_are_bundled_in_order_of_start() -> None:
     # 100 and at 200. Sorted by start, it bundles with the one at 100, 10 bases on; the one
     # at 200 stands alone.
     contig = "C" * 60 + "CAG" * 10 + "C" * 10 + "AT" * 10 + "C" * 80 + "AT" * 10 + "C" * 80
-    at_100 = _iv(100, 120, 2, 100)
-    at_200 = _iv(200, 220, 2, 100)
-    cag_60 = _iv(60, 90, 3, 100)
+    at_100 = _make_candidate(100, 120, 2, 100)
+    at_200 = _make_candidate(200, 220, 2, 100)
+    cag_60 = _make_candidate(60, 90, 3, 100)
     classification = _find_str_segments([at_100, at_200, cag_60], contig, _PVC_DEFAULT)
     assert classification.str_segments == (_StrSegment(start=200, end=220, motif="AT", purity=1.0),)
     assert classification.bundle_members == (cag_60, at_100)
@@ -1180,7 +1220,7 @@ def test_the_candidates_are_bundled_in_order_of_start() -> None:
 def test_a_candidate_under_min_score_bundles_nothing() -> None:
     # The (CAG)x5 at 22 is 1 base from the (AT)x8 at 5, but under min_score 50.
     contig = "CGCGC" + "AT" * 8 + "G" + "CAG" * 5 + "CGCGC"
-    candidates = [_iv(5, 21, 2, 100), _iv(22, 37, 3, 10)]
+    candidates = [_make_candidate(5, 21, 2, 100), _make_candidate(22, 37, 3, 10)]
     classification = _find_str_segments(candidates, contig, replace(_PARAMS, min_score=50))
     assert classification.str_segments == (_StrSegment(start=5, end=21, motif="AT", purity=1.0),)
     assert classification.bundle_members == ()
@@ -1190,8 +1230,8 @@ def test_a_candidate_under_min_score_bundles_nothing() -> None:
 def test_a_compound_candidate_bundles_nothing() -> None:
     # AAAAAAAA at 22, given as period 2, is compound and is dropped before bundling.
     contig = "CGCGC" + "AT" * 8 + "G" + "A" * 8 + "CGCGC"
-    compound = _iv(22, 30, 2, 100)
-    classification = _find_str_segments([_iv(5, 21, 2, 100), compound], contig, _PARAMS)
+    compound = _make_candidate(22, 30, 2, 100)
+    classification = _find_str_segments([_make_candidate(5, 21, 2, 100), compound], contig, _PARAMS)
     assert classification.str_segments == (_StrSegment(start=5, end=21, motif="AT", purity=1.0),)
     assert classification.bundle_members == ()
     assert classification.rejected == ((compound, _Rejection.COMPOUND),)
@@ -1199,28 +1239,34 @@ def test_a_compound_candidate_bundles_nothing() -> None:
 
 def test_a_candidate_shorter_than_its_period_is_turned_down_before_the_compound_test() -> None:
     # AA given as period 4 is both shorter than its period and, as a motif, compound.
-    rejections = _find_rejections([_iv(5, 7, 4, 100)], "CGCGCAAGCGCG", _PARAMS)
+    rejections = _find_rejections([_make_candidate(5, 7, 4, 100)], "CGCGCAAGCGCG", _PARAMS)
     assert rejections == [_Rejection.COPY_FLOOR]
 
 
 def test_a_candidate_exactly_one_period_long_still_bundles() -> None:
     # CG at 22, one copy of period 2, is not shorter than its period.
-    one_copy = _iv(22, 24, 2, 1)
-    classification = _find_str_segments([_iv(5, 21, 2, 100), one_copy], _CLEAN_AT, _PARAMS)
+    one_copy = _make_candidate(22, 24, 2, 1)
+    classification = _find_str_segments(
+        [_make_candidate(5, 21, 2, 100), one_copy], _CLEAN_AT, _PARAMS
+    )
     assert classification.str_segments == ()
-    assert classification.bundle_members == (_iv(5, 21, 2, 100), one_copy)
+    assert classification.bundle_members == (_make_candidate(5, 21, 2, 100), one_copy)
 
 
 def test_step_six_tests_the_copy_floor_then_the_purity_then_the_contig_ends() -> None:
     # The cut ATATGGATAT has 5 copies, under a floor of 6, and a purity of 0.8, under 0.9.
     contig = "CGCGC" + "ATATGGATAT" + "GCGCG"
     parameters = replace(_PARAMS, copy_floors=(10, 6, 4, 3, 3, 3), min_purity=0.9)
-    assert _find_rejections([_iv(5, 15, 2, 100)], contig, parameters) == [_Rejection.COPY_FLOOR]
+    assert _find_rejections([_make_candidate(5, 15, 2, 100)], contig, parameters) == [
+        _Rejection.COPY_FLOOR
+    ]
 
     # The cut ATATGGATATAT has a purity of 10/12, under 0.9, and starts on base 0.
     contig = "ATATGGATATAT" + "GCGCG"
     parameters = replace(_PARAMS, min_purity=0.9)
-    assert _find_rejections([_iv(0, 12, 2, 100)], contig, parameters) == [_Rejection.PURITY]
+    assert _find_rejections([_make_candidate(0, 12, 2, 100)], contig, parameters) == [
+        _Rejection.PURITY
+    ]
 
 
 # ---- The cut's bounds, pvc_eval's own ----------------------------------------------------------
@@ -1235,20 +1281,20 @@ def test_the_cut_reaches_no_further_than_half_the_repeat() -> None:
 def test_the_contig_end_flank_is_measured_on_the_cuts_end() -> None:
     # The detected span ends 12 bases from the contig's end, its cut 15.
     bases = "G" * 40 + "AT" * 8 + "GAT" + "G" * 12
-    candidate = _iv(40, 59, 2, 42)
+    candidate = _make_candidate(40, 59, 2, 42)
     assert list(_drop_near_contig_ends([candidate], bases, StrFinderParameters())) == [candidate]
 
 
 def test_a_bundle_member_starts_where_its_cut_starts() -> None:
-    member = _make_bundle_member(_iv(0, 11, 2, 5), "ATCATATATAT")
+    member = _make_bundle_member(_make_candidate(0, 11, 2, 5), "ATCATATATAT")
     assert member == _BundleMember(start=3, end=11, motif="AT")
 
 
 # A contig-end flank of 0 turns step 2 off: a repeat on the first base, or on the last, is
 # kept. pvc's values, from the transcription's row_flank_ok with a flank of 0.
 _NO_FLANK_CASES = [
-    ("on_the_first_base", "AT" * 8 + "G" * 20, _iv(0, 16, 2, 1)),
-    ("on_the_last_base", "G" * 20 + "AT" * 8, _iv(20, 36, 2, 1)),
+    ("on_the_first_base", "AT" * 8 + "G" * 20, _make_candidate(0, 16, 2, 1)),
+    ("on_the_last_base", "G" * 20 + "AT" * 8, _make_candidate(20, 36, 2, 1)),
 ]
 
 
@@ -1267,11 +1313,18 @@ def test_a_contig_end_flank_of_zero_drops_nothing(bases: str, candidate: _Candid
 # prefilter and classify.
 def test_an_empty_candidate_is_dropped_even_at_a_copy_floor_of_zero() -> None:
     no_floors = replace(_PARAMS, copy_floors=_ZERO_FLOORS)
-    assert list(_drop_under_copy_floor([_iv(5, 5, 2, 1), _iv(9, 7, 2, 1)], no_floors)) == []
+    assert (
+        list(
+            _drop_under_copy_floor(
+                [_make_candidate(5, 5, 2, 1), _make_candidate(9, 7, 2, 1)], no_floors
+            )
+        )
+        == []
+    )
 
 
 def test_an_empty_candidate_is_passed_over_by_step_four_without_a_reason() -> None:
-    classification = _find_str_segments([_iv(10, 10, 2, 1)], _CLEAN_AT, _PARAMS)
+    classification = _find_str_segments([_make_candidate(10, 10, 2, 1)], _CLEAN_AT, _PARAMS)
     assert classification.str_segments == ()
     assert classification.bundle_members == ()
     assert classification.rejected == ()
