@@ -1234,3 +1234,21 @@ def test_the_contig_end_flank_is_measured_on_the_cuts_end() -> None:
 def test_a_bundle_member_starts_where_its_cut_starts() -> None:
     member = _make_bundle_member(_iv(0, 11, 2, 5), "ATCATATATAT")
     assert member == _BundleMember(start=3, end=11, motif="AT")
+
+
+# A contig-end flank of 0 turns step 2 off: a repeat on the first base, or on the last, is
+# kept. pvc's values, from the transcription's row_flank_ok with a flank of 0.
+_NO_FLANK_CASES = [
+    ("on_the_first_base", "AT" * 8 + "G" * 20, _iv(0, 16, 2, 1)),
+    ("on_the_last_base", "G" * 20 + "AT" * 8, _iv(20, 36, 2, 1)),
+]
+
+
+@pytest.mark.parametrize(
+    ("bases", "candidate"),
+    [case[1:] for case in _NO_FLANK_CASES],
+    ids=[case[0] for case in _NO_FLANK_CASES],
+)
+def test_a_contig_end_flank_of_zero_drops_nothing(bases: str, candidate: _Candidate) -> None:
+    parameters = StrFinderParameters(contig_end_flank=0)
+    assert list(_drop_near_contig_ends([candidate], bases, parameters)) == [candidate]
