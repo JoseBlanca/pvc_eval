@@ -326,7 +326,7 @@ which keeps three columns.
 **`write_str_regions(reference, output, parameters, regions)`** does what the `str-regions` command
 does, below: it segments the contigs, keeps the STR regions that the requested regions overlap, or all
 of them when `regions` is `None` (no `--regions`), and writes the BED. The command calls it, and it is public because the
-`--regions` reader and the filter it uses are private to `pvc_eval.segments` (added on 19 October
+filter of STR regions by requested regions is private to `pvc_eval.segments` (added on 19 October
 2026, during the build).
 
 ## The `str-regions` command
@@ -376,9 +376,9 @@ status 1:
 
 - the reference or its `.fai` missing, which `IndexedFasta` reports;
 - an option value outside the table of the parameters;
-- a `--regions` file that is missing or cannot be read, and a `--regions` line with a contig the
-  `.fai` lacks, a start or end that is not a whole number, an end not after its start, or an end
-  past the contig's length;
+- what `pvc_eval.bed.parse_bed` refuses in a `--regions` BED: a file that is missing or cannot be
+  read, a BED with no region, a line with a contig the `.fai` lacks, a start or end that is not a
+  whole number, an end not after its start; and a region whose end is past the contig's length;
 - an `--output` that cannot be written: a directory, a path through a file, a directory without
   permission. These are checked before any contig is segmented, so that the user does not wait
   through a run to learn it.
@@ -386,11 +386,11 @@ status 1:
 A command line that cannot be parsed, an option missing or a value that is not a number, gets
 argparse's usage message and exit status 2, as for any program built on it.
 
-A `--regions` BED that holds no region writes a BED of the `##` and `#chrom` lines only, as
-`compare --regions` with such a file compares nothing.
+A `--regions` BED that holds no region stops the run, as it does for `compare --regions`.
 
-The `--regions` reader is a private function of `pvc_eval.segments`. `compare --regions` may share
-it once it is built.
+The `--regions` BED is read by `pvc_eval.bed.parse_bed`, the reader `compare --regions` uses, so a
+BED means the same to both commands, gzipped or not; `str-regions` adds the test of each end against
+its contig's length (changed on 19 October 2026, when the loci brought that reader into main).
 
 ## How it is verified
 
