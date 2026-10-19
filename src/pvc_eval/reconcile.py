@@ -118,28 +118,29 @@ def reconcile(
             f" has {locus.end - locus.start}"
         )
     _check_sample_indices(locus, sample_pairs)
-    files = (
-        ("A", locus.records_a, sorted({pair.index_a for pair in sample_pairs}), ploidy_a),
-        ("B", locus.records_b, sorted({pair.index_b for pair in sample_pairs}), ploidy_b),
-    )
     # The locus alleles by their index, the reference first (§4.3); a dict keeps them in
-    # order of first appearance.
+    # order of first appearance, file A's samples first.
     locus_alleles = {locus_bases: 0}
-    results: list[dict[int, SampleResult]] = []
-    for file_name, records, sample_indices, ploidy in files:
-        _check_genotype_ploidy(records, sample_indices, ploidy, file_name)
-        # Made once for the locus, and read by every haplotype of every sample.
-        edits = [_make_record_edits(vcf_record, locus.start, locus_bases) for vcf_record in records]
-        file_results: dict[int, SampleResult] = {}
-        for sample_index in sample_indices:
-            result = _find_sample_result(
-                locus.start, locus_bases, records, edits, sample_index, ploidy, phasing_cap
-            )
-            if isinstance(result, list):
-                result = _index_locus_genotypes(result, locus_alleles)
-            file_results[sample_index] = result
-        results.append(file_results)
-    results_a, results_b = results
+    results_a = _reconcile_file(
+        "A",
+        locus.records_a,
+        sorted({pair.index_a for pair in sample_pairs}),
+        ploidy_a,
+        locus.start,
+        locus_bases,
+        phasing_cap,
+        locus_alleles,
+    )
+    results_b = _reconcile_file(
+        "B",
+        locus.records_b,
+        sorted({pair.index_b for pair in sample_pairs}),
+        ploidy_b,
+        locus.start,
+        locus_bases,
+        phasing_cap,
+        locus_alleles,
+    )
     return ReconciledLocus(
         locus=locus, alleles=tuple(locus_alleles), results_a=results_a, results_b=results_b
     )
@@ -177,6 +178,36 @@ def reconcile_loci(
             ploidy_b=ploidy_b,
             phasing_cap=phasing_cap,
         )
+
+
+def _reconcile_file(
+    file_name: str,
+    records: Sequence[VcfRecord],
+    sample_indices: Sequence[int],
+    ploidy: int,
+    locus_start: int,
+    locus_bases: str,
+    phasing_cap: int,
+    locus_alleles: dict[str, int],
+) -> dict[int, SampleResult]:
+    """The sample result of each of a file's paired samples, by its index, in the order of
+    sample_indices; the locus alleles they carry are added to locus_alleles."""
+    _check_genotype_ploidy(records, sample_indices, ploidy, file_name)
+    # Made once for the locus, and read by every haplotype of every sample.
+    edits = [_make_record_edits(vcf_record, locus_start, locus_bases) for vcf_record in records]
+    return {
+        sample_index: _make_sample_result(
+            locus_start,
+            locus_bases,
+            records,
+            edits,
+            sample_index,
+            ploidy,
+            phasing_cap,
+            locus_alleles,
+        )
+        for sample_index in sample_indices
+    }
 
 
 def _check_settings(ploidy_a: int, ploidy_b: int, phasing_cap: int) -> None:
@@ -225,7 +256,7 @@ def _check_genotype_ploidy(
                 )
 
 
-def _find_sample_result(
+def _make_sample_result(
     locus_start: int,
     locus_bases: str,
     records: Sequence[VcfRecord],
@@ -233,10 +264,10 @@ def _find_sample_result(
     sample_index: int,
     ploidy: int,
     phasing_cap: int,
-) -> list[_SequenceGenotype] | InvalidReason | TOO_COMPLEX:
-    """A sample's locus genotypes, one per phase assignment that gives one, in the order
-    of the assignments; or the first reason of doc/specs/reconciliation.md §4 that
-    applies."""
+    locus_alleles: dict[str, int],
+) -> SampleResult:
+    """A sample's sample result: the first reason of doc/specs/reconciliation.md §4 that
+    applies, or its possible genotypes, whose locus alleles are added to locus_alleles."""
     if any(vcf_record.ref_mismatch for vcf_record in records):
         return InvalidReason.REF_MISMATCH
     genotypes = [vcf_record.genotypes[sample_index] for vcf_record in records]
@@ -256,7 +287,7 @@ def _find_sample_result(
             locus_genotypes.append(locus_genotype)
     if not locus_genotypes:
         return InvalidReason.CONTRADICTING_RECORDS
-    return locus_genotypes
+    return _make_possible_genotypes(locus_genotypes, locus_alleles)
 
 
 def _find_blocks(vcf_genotypes: Sequence[VcfGenotype]) -> list[int | None]:
@@ -346,14 +377,14 @@ def _make_locus_allele(
         edit = record_edits[allele_index]
         if edit is not None:
             carried_edits.append(edit)
-    if _has_collision(carried_edits):
+    if _is_colliding(carried_edits):
         return None
     for star_record in star_records:
         if not _is_star_covered(star_record, records, edits, haplotype):
             return None
     if any(allele_index is MISSING for allele_index in haplotype):
         return MISSING
-    return _apply_edits(locus_start, locus_bases, carried_edits)
+    return _make_edited_bases(locus_start, locus_bases, carried_edits)
 
 
 def _make_record_edits(vcf_record: VcfRecord, locus_start: int, locus_bases: str) -> _RecordEdits:
@@ -397,15 +428,16 @@ def _count_shared(first: str, second: str) -> int:
     return min(len(first), len(second))
 
 
-def _has_collision(edits: Sequence[_Edit]) -> bool:
+def _is_colliding(edits: Sequence[_Edit]) -> bool:
+    """Whether any two of a haplotype's edits collide."""
     return any(
-        _do_collide(edit, other_edit)
+        _is_collision(edit, other_edit)
         for index, edit in enumerate(edits)
         for other_edit in edits[index + 1 :]
     )
 
 
-def _do_collide(first: _Edit, second: _Edit) -> bool:
+def _is_collision(first: _Edit, second: _Edit) -> bool:
     """Two edits collide when they replace a position in common, when one is an insertion
     and the other replaces the positions on both sides of it, or when both are insertions
     at one point (§4.2)."""
@@ -465,7 +497,7 @@ def _find_placements(start: int, end: int, span: Span, locus_start: int, locus_b
     return first_start, end
 
 
-def _apply_edits(locus_start: int, locus_bases: str, edits: Iterable[_Edit]) -> str:
+def _make_edited_bases(locus_start: int, locus_bases: str, edits: Iterable[_Edit]) -> str:
     """The reference over the locus with edits that do not collide, applied in position
     order, an insertion before a replacement that starts at its point."""
     pieces = []
@@ -478,7 +510,7 @@ def _apply_edits(locus_start: int, locus_bases: str, edits: Iterable[_Edit]) -> 
     return "".join(pieces)
 
 
-def _index_locus_genotypes(
+def _make_possible_genotypes(
     locus_genotypes: Iterable[_SequenceGenotype], locus_alleles: dict[str, int]
 ) -> tuple[LocusGenotype, ...]:
     """A sample's possible genotypes (§4.3): each locus genotype as the sorted indices of
