@@ -83,7 +83,8 @@ def build_loci(
     Raises ValueError, when the stream starts, for a chain_distance that is not a whole
     number of 0 or more; and when the stream reaches it, for a record or a segment on a
     contig that contigs lacks, a record that comes before the one read before it in its
-    file, and an STR region that comes before the one read before it or overlaps it.
+    file, a segment that comes before the one read before it, and an STR region that
+    overlaps the STR region read before it.
     """
     _check_chain_distance(chain_distance)
     ranks = {contig: rank for rank, contig in enumerate(contigs)}
@@ -175,8 +176,10 @@ def _rank_segments(
     segments: Iterable[GenomeSegment], ranks: Mapping[str, int]
 ) -> Iterator[_RankedRegion]:
     """The segments with the rank of their contigs. Each is checked to be on a contig of
-    ranks, and each STR region to come after the one before it without overlapping it."""
-    previous: _RankedRegion | None = None
+    ranks and to start no earlier than the one before it, and each STR region not to
+    overlap the STR region before it."""
+    previous_segment: _RankedRegion | None = None
+    previous_region: _RankedRegion | None = None
     for segment in segments:
         if segment.contig not in ranks:
             raise ValueError(
@@ -184,24 +187,35 @@ def _rank_segments(
                 f" {segment.start} (0-based)"
             )
         ranked_segment = (ranks[segment.contig], segment)
+        # A GENERIC segment out of order would stop the reading of segments before an STR
+        # region a record touches, and the locus would come out too narrow.
+        _check_segment_order(ranked_segment, previous_segment)
+        previous_segment = ranked_segment
         if segment.region_type is not RegionType.GENERIC:
-            _check_region_order(ranked_segment, previous)
-            previous = ranked_segment
+            _check_region_overlap(ranked_segment, previous_region)
+            previous_region = ranked_segment
         yield ranked_segment
 
 
-def _check_region_order(ranked_region: _RankedRegion, previous: _RankedRegion | None) -> None:
+def _check_segment_order(ranked_segment: _RankedRegion, previous: _RankedRegion | None) -> None:
+    if previous is None:
+        return
+    rank, segment = ranked_segment
+    previous_rank, previous_segment = previous
+    if (rank, segment.start) < (previous_rank, previous_segment.start):
+        raise ValueError(
+            f"segments: a segment on {segment.contig} at start {segment.start} comes after"
+            f" one on {previous_segment.contig} at start {previous_segment.start} (0-based);"
+            " build_loci needs the segments by contig, in the order of contigs, and then by"
+            " start"
+        )
+
+
+def _check_region_overlap(ranked_region: _RankedRegion, previous: _RankedRegion | None) -> None:
     if previous is None:
         return
     rank, region = ranked_region
     previous_rank, previous_region = previous
-    if (rank, region.start) < (previous_rank, previous_region.start):
-        raise ValueError(
-            f"segments: an STR region on {region.contig} at start {region.start} comes after"
-            f" one on {previous_region.contig} at start {previous_region.start} (0-based);"
-            " build_loci needs the segments by contig, in the order of contigs, and then by"
-            " start"
-        )
     if rank == previous_rank and region.start < previous_region.end:
         raise ValueError(
             f"segments: the STR region {region.contig} {region.start}-{region.end} overlaps"

@@ -439,6 +439,12 @@ def test_generic_segments_between_the_str_regions_change_no_locus() -> None:
             (make_region(20, 35), make_region(30, 40)),
             "segments.*30-40 overlaps",
         ),
+        (
+            (make_snp(13), make_snp(2999)),
+            (),
+            (make_region(1000, 2000, region_type=RegionType.GENERIC), make_region(10, 20)),
+            "segments.*chr1 at start 10 comes after",
+        ),
     ],
     ids=[
         "record_on_an_unknown_contig",
@@ -448,6 +454,7 @@ def test_generic_segments_between_the_str_regions_change_no_locus() -> None:
         "str_region_on_an_earlier_contig",
         "str_region_with_an_earlier_start",
         "str_region_overlapping_the_one_before",
+        "str_region_before_a_generic_segment",
     ],
 )
 def test_inputs_out_of_order_or_on_an_unknown_contig_raise(
@@ -458,6 +465,14 @@ def test_inputs_out_of_order_or_on_an_unknown_contig_raise(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         run_build_loci(records_a, records_b, segments)
+
+
+def test_a_generic_segment_may_overlap_an_str_region_and_share_its_start() -> None:
+    snp = make_snp(9)
+    region = make_region(0, 10)
+    segments = (make_region(0, 30, region_type=RegionType.GENERIC), region)
+
+    assert run_build_loci((snp,), (), segments) == [make_locus(0, 10, (snp,), (), (region,))]
 
 
 @pytest.mark.parametrize("chain_distance", [-1, 1.5, True], ids=["negative", "float", "bool"])
