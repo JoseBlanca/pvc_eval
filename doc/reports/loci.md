@@ -209,6 +209,20 @@ with no ALT held forever in 0.2 s, with 285,272 and 4,499,744. Taking the least 
 measurements was tried and dropped: the peaks were the same at every size, and it doubled the
 suite's time, from 4.5 s to 9.1 s. The suite gives "371 passed, 1 skipped".
 
+## Milestone 6: one way to open a possibly gzipped file
+
+Done, in `7efedae`, by the owner's order: `src/pvc_eval/_text_files.py` holds the one function,
+`read_numbered_lines`, by which `parse_vcf` and `parse_bed` open a plain or gzipped file. A gzipped
+VCF with damaged compressed data now stops the run with "cut short or damaged at or after line N"
+instead of a `zlib.error` traceback, and a VCF starting with a byte-order mark is read like the
+same VCF without it; `doc/spec.md` §5.2 now says so. Three new tests in `tests/test_vcf.py` failed
+on the commit before; the four checks gave "593 passed, 1 skipped". The review found no defect:
+all 93 error messages the suite raises are byte-identical before and after, the line N of a
+truncated gzipped VCF is the same, files close on every path, and reading the 5 Mb chr20 VCF took
+40 to 44 ms of decoding either way; `parse_vcf` itself took 295 to 302 ms before and after, within
+the noise. The plan's check counted `fasta.py`'s refusal of a gzipped FASTA as a copy and was
+reworded.
+
 ## The check of the whole plan
 
 `build_loci` over `chr20_5mb_200s.vcf.gz` (18,310 records, 200 samples) against itself, with no STR

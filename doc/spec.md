@@ -327,6 +327,11 @@ is absent, and pvc_eval never needs pvc to run.
 
 ### 5.2 Reading and normalising VCF records
 
+**Reading.** A VCF, plain or gzipped (known by its first two bytes), is read as UTF-8 text; a
+byte-order mark at its start is dropped, as for a BED, and a gzip file cut short or damaged stops
+the run with a message naming the line it was reached at (decided by the owner on 19 October
+2026).
+
 **Checks.** Each VCF record's contig must be in the reference, its REF must lie within the contig's
 length, and records must come in the `.fai`'s contig order and by position; otherwise the run stops
 with an error naming the file and line. A position past a contig's end means the VCF was made on
