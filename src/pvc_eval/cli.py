@@ -10,6 +10,7 @@ Public: main, the `pvc_eval` entry point.
 import argparse
 import re
 import sys
+import textwrap
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -54,9 +55,7 @@ _FINDER_OPTIONS = (
         field="scan_max_period",
         metavar="N",
         parse=int,
-        help="the longest period, in bases, the scan for repeats looks for, from 1 to 6."
-        " A repeat of a period scanned and not admitted still drops repeats of longer"
-        " periods it covers by half, and still makes satellites",
+        help="the longest period, in bases, the scan for repeats looks for, from 1 to 6",
     ),
     _FinderOption(
         option="--min-period",
@@ -117,7 +116,7 @@ _FINDER_OPTIONS = (
         field="max_str_len",
         metavar="N",
         parse=int,
-        help="a stretch of repeats longer than N bases is a satellite; the bundle distance or more",
+        help="a stretch of repeats longer than N bases is a satellite; at least --bundle-distance",
     ),
     _FinderOption(
         option="--max-str-bundle-len",
@@ -152,6 +151,29 @@ _FINDER_OPTIONS = (
 )
 
 
+# The description of `pvc_eval str-regions --help`, one paragraph per item, in the words of
+# doc/specs/str_finder.md.
+_STR_REGIONS_ABOUT = (
+    "Find the STR regions of a reference, its STR segments, STR bundles and satellites, and"
+    " write them as a BED, which `pvc_eval compare --str-regions` reads.",
+    "A repeat is a stretch of the reference made of copies of a short sequence, its motif;"
+    " the motif's length, 1 to 6 bases, is the repeat's period. An STR segment is a repeat"
+    " with at least --bundle-distance bases between it and any other, trimmed to whole"
+    " copies of its motif. An STR bundle is a stretch of repeats with fewer than"
+    " --bundle-distance bases between each and the next. A satellite is a stretch of"
+    " repeats longer than --max-str-len bases, or an STR bundle longer than"
+    " --max-str-bundle-len bases.",
+    "The scan looks for repeats of periods --scan-min-period to --scan-max-period, and only"
+    " those of periods --min-period to --max-period become STR segments or members of STR"
+    " bundles; the others still make satellites.",
+    "The BED has a ## line for pvc_eval's version and one for each parameter, a #chrom"
+    " line, and one row per STR region, in the order of the reference's .fai and then by"
+    " start, with five columns: the contig; the start and the end, 0-based and half-open;"
+    " the region type, str, str-bundle or satellite; and the motif of an STR segment, or ."
+    " for the other two types.",
+)
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Run `pvc_eval` with these arguments, or those of the command line. A fault of the
     input prints its message to stderr and exits with status 1."""
@@ -172,9 +194,10 @@ def _make_parser() -> argparse.ArgumentParser:
     str_regions = commands.add_parser(
         "str-regions",
         help="find the STR regions of a reference and write them as a BED",
-        description="Find the STR regions of a reference, its STR segments, STR bundles and"
-        " satellites, and write them as a BED, 0-based and half-open, in the order of the"
-        " reference's .fai and then by start. `pvc_eval compare --str-regions` reads it.",
+        description="\n\n".join(
+            textwrap.fill(paragraph, break_on_hyphens=False) for paragraph in _STR_REGIONS_ABOUT
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     str_regions.add_argument(
         "--reference",

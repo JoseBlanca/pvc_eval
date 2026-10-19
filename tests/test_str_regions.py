@@ -632,6 +632,35 @@ def test_help_lists_every_option_with_its_default(capsys: pytest.CaptureFixture[
     }
 
 
+def test_help_says_what_the_bed_holds_and_what_its_words_mean(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        main(["str-regions", "--help"])
+    help_text = " ".join(capsys.readouterr().out.split())
+    for sentence in [
+        "A repeat is a stretch of the reference made of copies of a short sequence, its motif;"
+        " the motif's length, 1 to 6 bases, is the repeat's period.",
+        "An STR segment is a repeat with at least --bundle-distance bases between it and any"
+        " other, trimmed to whole copies of its motif.",
+        "An STR bundle is a stretch of repeats with fewer than --bundle-distance bases between"
+        " each and the next.",
+        "A satellite is a stretch of repeats longer than --max-str-len bases, or an STR bundle"
+        " longer than --max-str-bundle-len bases.",
+        "The scan looks for repeats of periods --scan-min-period to --scan-max-period, and only"
+        " those of periods --min-period to --max-period become STR segments or members of STR"
+        " bundles; the others still make satellites.",
+        "one row per STR region, in the order of the reference's .fai and then by start, with"
+        " five columns: the contig; the start and the end, 0-based and half-open; the region"
+        " type, str, str-bundle or satellite; and the motif of an STR segment, or . for the"
+        " other two types.",
+        "--max-str-len N a stretch of repeats longer than N bases is a satellite; at least"
+        " --bundle-distance (default 100)",
+    ]:
+        assert sentence in help_text
+    assert "by half" not in help_text
+
+
 # ---- read_str_regions -------------------------------------------------------------------
 
 
@@ -859,15 +888,17 @@ def _make_str_regions_errors(bed: Path) -> list[tuple[str, list[str], str]]:
             "overlap",
             ["chr1\t10\t20", "chr1\t19\t30"],
             f"{bed}, line 2: the region chr1 19 30 overlaps the one of line 1, chr1 10 20, and"
-            " STR regions must not overlap. Merge them with `bedtools merge -i"
-            f" {bed}`, which keeps three columns, and run again.",
+            f" STR regions must not overlap. Merge them with `bedtools merge -i {bed}`, and run"
+            " again. The merged BED has three columns: its regions still widen the loci, but"
+            " they have no region type, which `compare --strata pvc` reads.",
         ),
         (
             "overlap_after_a_comment",
             ["chr1\t10\t20", "# between", "chr1\t15\t30"],
             f"{bed}, line 3: the region chr1 15 30 overlaps the one of line 1, chr1 10 20, and"
-            " STR regions must not overlap. Merge them with `bedtools merge -i"
-            f" {bed}`, which keeps three columns, and run again.",
+            f" STR regions must not overlap. Merge them with `bedtools merge -i {bed}`, and run"
+            " again. The merged BED has three columns: its regions still widen the loci, but"
+            " they have no region type, which `compare --strata pvc` reads.",
         ),
     ]
 

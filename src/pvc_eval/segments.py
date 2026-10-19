@@ -1125,8 +1125,9 @@ def _check_str_region_order(
             f"{where}: the region {segment.contig} {segment.start} {segment.end} overlaps the"
             f" one of line {previous_line}, {previous_segment.contig}"
             f" {previous_segment.start} {previous_segment.end}, and STR regions must not"
-            f" overlap. Merge them with `bedtools merge -i {path}`, which keeps three columns,"
-            " and run again."
+            f" overlap. Merge them with `bedtools merge -i {path}`, and run again. The merged BED"
+            " has three columns: its regions still widen the loci, but they have no region"
+            " type, which `compare --strata pvc` reads."
         )
 
 
