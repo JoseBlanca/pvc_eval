@@ -32,15 +32,16 @@ CONTIG = "chr1"
 CONTIG_LENGTH = 80
 
 
-class Reader:
-    """Writes a case's reference and VCF files to a directory and reads them back."""
+class CaseFiles:
+    """Writes a case's reference and VCF files to a directory, and parses the VCF files
+    back with parse_vcf."""
 
     def __init__(self, directory: Path, stack: ExitStack) -> None:
         self._directory = directory
         self._stack = stack
         self._num_files = 0
 
-    def make_reference(self, ref_start_1based: int, bases: str) -> IndexedFasta:
+    def write_reference(self, ref_start_1based: int, bases: str) -> IndexedFasta:
         """A FASTA of CONTIG, N but for bases from ref_start_1based on, with its .fai."""
         contig = "N" * (ref_start_1based - 1) + bases
         contig += "N" * (CONTIG_LENGTH - len(contig))
@@ -52,7 +53,7 @@ class Reader:
         Path(f"{path}.fai").write_text(fai, encoding="utf-8")
         return self._stack.enter_context(IndexedFasta(path))
 
-    def read_records(
+    def write_and_parse_records(
         self,
         reference: IndexedFasta,
         lines: Sequence[str],
@@ -82,9 +83,9 @@ class Reader:
 
 
 @pytest.fixture
-def reader(tmp_path: Path) -> Iterator[Reader]:
+def case_files(tmp_path: Path) -> Iterator[CaseFiles]:
     with ExitStack() as stack:
-        yield Reader(tmp_path, stack)
+        yield CaseFiles(tmp_path, stack)
 
 
 def make_locus(
@@ -426,11 +427,13 @@ CASES = {
 
 @pytest.mark.parametrize("case", CASES.values(), ids=CASES.keys())
 def test_reconcile_gives_the_locus_alleles_and_possible_genotypes_of_each_case(
-    reader: Reader, case: Case
+    case_files: CaseFiles, case: Case
 ) -> None:
-    reference = reader.make_reference(case.ref_start, case.bases)
-    records_a = reader.read_records(reference, case.lines_a, span_limit=case.span_limit)
-    records_b = reader.read_records(reference, case.lines_b)
+    reference = case_files.write_reference(case.ref_start, case.bases)
+    records_a = case_files.write_and_parse_records(
+        reference, case.lines_a, span_limit=case.span_limit
+    )
+    records_b = case_files.write_and_parse_records(reference, case.lines_b)
     locus = make_locus(case.locus, records_a, records_b)
 
     reconciled = reconcile(locus, get_locus_bases(reference, locus), pair_samples(1))
@@ -452,9 +455,11 @@ def make_snp_lines(num_snps: int, gt: str) -> list[str]:
     return [f"{30 + index} {R9_BASES[index]} {R9_ALTS[index]} {gt}" for index in range(num_snps)]
 
 
-def test_reconcile_gives_too_complex_for_fourteen_blocks_R9(reader: Reader) -> None:  # noqa: N802 -- the label of the case of §4.4 in the test's id
-    reference = reader.make_reference(30, R9_BASES)
-    locus = make_locus((30, 44), reader.read_records(reference, make_snp_lines(14, "0/1")))
+def test_reconcile_gives_too_complex_for_fourteen_blocks_R9(case_files: CaseFiles) -> None:  # noqa: N802 -- the label of the case of §4.4 in the test's id
+    reference = case_files.write_reference(30, R9_BASES)
+    locus = make_locus(
+        (30, 44), case_files.write_and_parse_records(reference, make_snp_lines(14, "0/1"))
+    )
 
     reconciled = reconcile(locus, get_locus_bases(reference, locus), pair_samples(1))
 
@@ -462,9 +467,11 @@ def test_reconcile_gives_too_complex_for_fourteen_blocks_R9(reader: Reader) -> N
     assert reconciled.alleles == (R9_BASES,)
 
 
-def test_reconcile_reconciles_thirteen_blocks_R9(reader: Reader) -> None:  # noqa: N802 -- the label of the case of §4.4 in the test's id
-    reference = reader.make_reference(30, R9_BASES)
-    locus = make_locus((30, 44), reader.read_records(reference, make_snp_lines(13, "0/1")))
+def test_reconcile_reconciles_thirteen_blocks_R9(case_files: CaseFiles) -> None:  # noqa: N802 -- the label of the case of §4.4 in the test's id
+    reference = case_files.write_reference(30, R9_BASES)
+    locus = make_locus(
+        (30, 44), case_files.write_and_parse_records(reference, make_snp_lines(13, "0/1"))
+    )
 
     reconciled = reconcile(locus, get_locus_bases(reference, locus), pair_samples(1))
 
@@ -476,12 +483,12 @@ def test_reconcile_reconciles_thirteen_blocks_R9(reader: Reader) -> None:  # noq
     assert len(reconciled.alleles) == 8192
 
 
-def test_reconcile_counts_no_block_for_a_homozygous_genotype(reader: Reader) -> None:
+def test_reconcile_counts_no_block_for_a_homozygous_genotype(case_files: CaseFiles) -> None:
     # 13 blocks and a 1/1: 4096 assignments, within the cap; every haplotype carries the A
     # at 43, so the reference is no haplotype.
-    reference = reader.make_reference(30, R9_BASES)
+    reference = case_files.write_reference(30, R9_BASES)
     lines = [*make_snp_lines(13, "0/1"), "43 C A 1/1"]
-    locus = make_locus((30, 44), reader.read_records(reference, lines))
+    locus = make_locus((30, 44), case_files.write_and_parse_records(reference, lines))
 
     reconciled = reconcile(locus, get_locus_bases(reference, locus), pair_samples(1))
 
@@ -491,9 +498,11 @@ def test_reconcile_counts_no_block_for_a_homozygous_genotype(reader: Reader) -> 
     assert len(reconciled.alleles) == 8193
 
 
-def test_reconcile_gives_one_assignment_to_one_phase_set_R9(reader: Reader) -> None:  # noqa: N802 -- the label of the case of §4.4 in the test's id
-    reference = reader.make_reference(30, R9_BASES)
-    locus = make_locus((30, 44), reader.read_records(reference, make_snp_lines(14, "0|1:5")))
+def test_reconcile_gives_one_assignment_to_one_phase_set_R9(case_files: CaseFiles) -> None:  # noqa: N802 -- the label of the case of §4.4 in the test's id
+    reference = case_files.write_reference(30, R9_BASES)
+    locus = make_locus(
+        (30, 44), case_files.write_and_parse_records(reference, make_snp_lines(14, "0|1:5"))
+    )
 
     reconciled = reconcile(locus, get_locus_bases(reference, locus), pair_samples(1))
 
@@ -507,10 +516,12 @@ def test_reconcile_gives_one_assignment_to_one_phase_set_R9(reader: Reader) -> N
     ids=["cap-2-two-blocks", "cap-2-three-blocks", "cap-1-one-block", "cap-1-two-blocks"],
 )
 def test_reconcile_gives_too_complex_over_a_phasing_cap_it_is_given(
-    reader: Reader, phasing_cap: int, num_snps: int, is_too_complex: bool
+    case_files: CaseFiles, phasing_cap: int, num_snps: int, is_too_complex: bool
 ) -> None:
-    reference = reader.make_reference(30, R9_BASES)
-    locus = make_locus((30, 44), reader.read_records(reference, make_snp_lines(num_snps, "0/1")))
+    reference = case_files.write_reference(30, R9_BASES)
+    locus = make_locus(
+        (30, 44), case_files.write_and_parse_records(reference, make_snp_lines(num_snps, "0/1"))
+    )
 
     reconciled = reconcile(
         locus, get_locus_bases(reference, locus), pair_samples(1), phasing_cap=phasing_cap
@@ -536,10 +547,10 @@ def test_reconcile_gives_too_complex_over_a_phasing_cap_it_is_given(
     ],
 )
 def test_reconcile_gives_the_first_reason_that_applies(
-    reader: Reader, lines: list[str], reason: InvalidReason
+    case_files: CaseFiles, lines: list[str], reason: InvalidReason
 ) -> None:
-    reference = reader.make_reference(30, R9_BASES)
-    locus = make_locus((30, 44), reader.read_records(reference, lines))
+    reference = case_files.write_reference(30, R9_BASES)
+    locus = make_locus((30, 44), case_files.write_and_parse_records(reference, lines))
 
     reconciled = reconcile(locus, get_locus_bases(reference, locus), pair_samples(1))
 
@@ -547,10 +558,12 @@ def test_reconcile_gives_the_first_reason_that_applies(
     assert reconciled.alleles == (R9_BASES,)
 
 
-def test_reconcile_makes_every_sample_invalid_for_a_no_alt_ref_mismatch_R9(reader: Reader) -> None:  # noqa: N802 -- the label of the case of §4.4 in the test's id
+def test_reconcile_gives_ref_mismatch_to_every_sample_R9(case_files: CaseFiles) -> None:  # noqa: N802 -- the label of the case of §4.4 in the test's id
     # 28-31 is NNAC in the reference; the record says GGAC from 28, before the locus.
-    reference = reader.make_reference(30, R9_BASES)
-    records = reader.read_records(reference, ["28 GGAC . 0/0 0/0", "31 C A 0/1 1/1"], num_samples=2)
+    reference = case_files.write_reference(30, R9_BASES)
+    records = case_files.write_and_parse_records(
+        reference, ["28 GGAC . 0/0 0/0", "31 C A 0/1 1/1"], num_samples=2
+    )
     locus = make_locus((31, 31), records)
 
     reconciled = reconcile(locus, get_locus_bases(reference, locus), pair_samples(2))
@@ -565,10 +578,10 @@ def test_reconcile_makes_every_sample_invalid_for_a_no_alt_ref_mismatch_R9(reade
     ids=["R9-./.-ploidy-1-missing", "R9-.-ploidy-2-missing"],
 )
 def test_reconcile_gives_missing_for_a_gt_of_only_dots(
-    reader: Reader, gt: str, ploidy: int, result: SampleResult
+    case_files: CaseFiles, gt: str, ploidy: int, result: SampleResult
 ) -> None:
-    reference = reader.make_reference(30, "ACG")
-    records = reader.read_records(reference, [f"31 C T {gt}"], ploidy=ploidy)
+    reference = case_files.write_reference(30, "ACG")
+    records = case_files.write_and_parse_records(reference, [f"31 C T {gt}"], ploidy=ploidy)
     locus = make_locus((30, 32), records)
 
     reconciled = reconcile(
@@ -578,11 +591,13 @@ def test_reconcile_gives_missing_for_a_gt_of_only_dots(
     assert reconciled.results_a == {0: result}
 
 
-def test_reconcile_checks_impossible_before_missing(reader: Reader) -> None:
+def test_reconcile_checks_impossible_before_missing(case_files: CaseFiles) -> None:
     # The haplotype with the SNP collides with the deletion, and the other is missing at 12:
     # one assignment, impossible.
-    reference = reader.make_reference(9, "CAGTC")
-    records = reader.read_records(reference, ["9 CAGT C 1/1", "11 G A 0/1", "12 T G ./."])
+    reference = case_files.write_reference(9, "CAGTC")
+    records = case_files.write_and_parse_records(
+        reference, ["9 CAGT C 1/1", "11 G A 0/1", "12 T G ./."]
+    )
     locus = make_locus((9, 12), records)
 
     reconciled = reconcile(locus, get_locus_bases(reference, locus), pair_samples(1))
@@ -590,11 +605,13 @@ def test_reconcile_checks_impossible_before_missing(reader: Reader) -> None:
     assert reconciled.results_a == {0: CONTRADICTING}
 
 
-def test_reconcile_puts_an_insertion_before_a_replacement_at_its_point(reader: Reader) -> None:
+def test_reconcile_puts_an_insertion_before_a_replacement_at_its_point(
+    case_files: CaseFiles,
+) -> None:
     # doc/spec.md §5.2, the third case: both give CTA.
-    reference = reader.make_reference(10, "CG")
-    records_a = reader.read_records(reference, ["10 C CT 1/1", "11 G A 1/1"])
-    records_b = reader.read_records(reference, ["11 G TA 1/1"])
+    reference = case_files.write_reference(10, "CG")
+    records_a = case_files.write_and_parse_records(reference, ["10 C CT 1/1", "11 G A 1/1"])
+    records_b = case_files.write_and_parse_records(reference, ["11 G TA 1/1"])
     locus = make_locus((10, 11), records_a, records_b)
 
     reconciled = reconcile(locus, get_locus_bases(reference, locus), pair_samples(1))
@@ -604,11 +621,17 @@ def test_reconcile_puts_an_insertion_before_a_replacement_at_its_point(reader: R
     assert reconciled.results_b == {0: ((1, 1),)}
 
 
-def test_reconcile_takes_locus_alleles_from_file_a_then_b_in_header_order(reader: Reader) -> None:
+def test_reconcile_takes_locus_alleles_from_file_a_then_b_in_header_order(
+    case_files: CaseFiles,
+) -> None:
     # Reference 30-32 ACG. A's S0 has ACC, A's S1 TCG, B's S0 TCC on one assignment.
-    reference = reader.make_reference(30, "ACG")
-    records_a = reader.read_records(reference, ["30 A T 0/0 1/1", "32 G C 0/1 0/0"], num_samples=2)
-    records_b = reader.read_records(reference, ["30 A T 0/1 0/0", "32 G C 0/1 0/0"], num_samples=2)
+    reference = case_files.write_reference(30, "ACG")
+    records_a = case_files.write_and_parse_records(
+        reference, ["30 A T 0/0 1/1", "32 G C 0/1 0/0"], num_samples=2
+    )
+    records_b = case_files.write_and_parse_records(
+        reference, ["30 A T 0/1 0/0", "32 G C 0/1 0/0"], num_samples=2
+    )
     locus = make_locus((30, 32), records_a, records_b)
     sample_pairs = tuple(reversed(pair_samples(2)))
 
@@ -619,10 +642,10 @@ def test_reconcile_takes_locus_alleles_from_file_a_then_b_in_header_order(reader
     assert reconciled.results_b == {0: ((0, 3), (1, 2)), 1: ((0, 0),)}
 
 
-def test_reconcile_leaves_out_a_sample_in_no_pair(reader: Reader) -> None:
-    reference = reader.make_reference(30, "ACG")
-    records_a = reader.read_records(reference, ["30 A T 0/0 1/1"], num_samples=2)
-    records_b = reader.read_records(reference, ["30 A T 0/0 1/1"], num_samples=2)
+def test_reconcile_leaves_out_a_sample_in_no_pair(case_files: CaseFiles) -> None:
+    reference = case_files.write_reference(30, "ACG")
+    records_a = case_files.write_and_parse_records(reference, ["30 A T 0/0 1/1"], num_samples=2)
+    records_b = case_files.write_and_parse_records(reference, ["30 A T 0/0 1/1"], num_samples=2)
     locus = make_locus((30, 32), records_a, records_b)
     sample_pairs = (SamplePair(name_a="S0", index_a=0, name_b="S0", index_b=0),)
 
@@ -633,10 +656,12 @@ def test_reconcile_leaves_out_a_sample_in_no_pair(reader: Reader) -> None:
     assert reconciled.results_b == {0: ((0, 0),)}
 
 
-def test_reconcile_reads_a_record_with_no_alt_reaching_past_the_locus(reader: Reader) -> None:
+def test_reconcile_reads_a_record_with_no_alt_reaching_past_the_locus(
+    case_files: CaseFiles,
+) -> None:
     # The record's REF, 30-33, reaches before and after the locus, 31-32.
-    reference = reader.make_reference(30, "ACGT")
-    records = reader.read_records(reference, ["30 ACGT . 0/0 ./."], num_samples=2)
+    reference = case_files.write_reference(30, "ACGT")
+    records = case_files.write_and_parse_records(reference, ["30 ACGT . 0/0 ./."], num_samples=2)
     locus = make_locus((31, 32), records)
 
     reconciled = reconcile(locus, get_locus_bases(reference, locus), pair_samples(2))
@@ -645,9 +670,11 @@ def test_reconcile_reads_a_record_with_no_alt_reaching_past_the_locus(reader: Re
     assert reconciled.results_a == {0: ((0, 0),), 1: ((MISSING, MISSING),)}
 
 
-def test_reconcile_reads_ploidy_1_with_an_alt_and_a_ref(reader: Reader) -> None:
-    reference = reader.make_reference(30, "ACG")
-    records_a = reader.read_records(reference, ["30 A T 1 0"], num_samples=2, ploidy=1)
+def test_reconcile_reads_ploidy_1_with_an_alt_and_a_ref(case_files: CaseFiles) -> None:
+    reference = case_files.write_reference(30, "ACG")
+    records_a = case_files.write_and_parse_records(
+        reference, ["30 A T 1 0"], num_samples=2, ploidy=1
+    )
     locus = make_locus((30, 32), records_a)
 
     reconciled = reconcile(
@@ -660,9 +687,11 @@ def test_reconcile_reads_ploidy_1_with_an_alt_and_a_ref(reader: Reader) -> None:
     assert reconciled.results_b == {0: ((0,),), 1: ((0,),)}
 
 
-def test_reconcile_gives_one_assignment_at_ploidy_1_with_phase_sets(reader: Reader) -> None:
-    reference = reader.make_reference(30, "ACG")
-    records = reader.read_records(reference, ["30 A T 1", "31 C G .|.:7", "32 G C .|.:8"], ploidy=1)
+def test_reconcile_gives_one_assignment_at_ploidy_1_with_phase_sets(case_files: CaseFiles) -> None:
+    reference = case_files.write_reference(30, "ACG")
+    records = case_files.write_and_parse_records(
+        reference, ["30 A T 1", "31 C G .|.:7", "32 G C .|.:8"], ploidy=1
+    )
     first_genotype = records[1].genotypes[0]
     assert isinstance(first_genotype, VcfGenotype)
     assert first_genotype.phased
@@ -690,18 +719,18 @@ def test_reconcile_gives_one_assignment_at_ploidy_1_with_phase_sets(reader: Read
     ids=["ploidy-3", "ploidy-0", "cap-0", "genotype-of-other-ploidy"],
 )
 def test_reconcile_raises_for_an_argument_out_of_range(
-    reader: Reader, arguments: dict[str, int], message: str
+    case_files: CaseFiles, arguments: dict[str, int], message: str
 ) -> None:
-    reference = reader.make_reference(30, "ACG")
-    locus = make_locus((30, 32), reader.read_records(reference, ["30 A T 0/1"]))
+    reference = case_files.write_reference(30, "ACG")
+    locus = make_locus((30, 32), case_files.write_and_parse_records(reference, ["30 A T 0/1"]))
 
     with pytest.raises(ValueError, match=message):
         reconcile(locus, get_locus_bases(reference, locus), pair_samples(1), **arguments)
 
 
-def test_reconcile_raises_for_bases_of_another_length_than_the_locus(reader: Reader) -> None:
-    reference = reader.make_reference(30, "ACG")
-    locus = make_locus((30, 32), reader.read_records(reference, ["30 A T 0/1"]))
+def test_reconcile_raises_for_bases_of_another_length_than_the_locus(case_files: CaseFiles) -> None:
+    reference = case_files.write_reference(30, "ACG")
+    locus = make_locus((30, 32), case_files.write_and_parse_records(reference, ["30 A T 0/1"]))
 
     with pytest.raises(ValueError, match="locus_bases has 2 bases, and the locus, 29-32, has 3"):
         reconcile(locus, "AC", pair_samples(1))
@@ -713,12 +742,12 @@ def test_reconcile_raises_for_bases_of_another_length_than_the_locus(reader: Rea
     ids=["over-cap-too-complex", "within-cap-contradicting"],
 )
 def test_reconcile_gives_too_complex_before_contradicting_records(
-    reader: Reader, phasing_cap: int, result: SampleResult
+    case_files: CaseFiles, phasing_cap: int, result: SampleResult
 ) -> None:
     # Two blocks, and two deletions, of 33-34 and of 34-35, that collide on every haplotype.
-    reference = reader.make_reference(30, R9_BASES)
+    reference = case_files.write_reference(30, R9_BASES)
     lines = ["30 A C 0/1", "31 C A 0/1", "32 GTA G 1/1", "33 TAC T 1/1"]
-    locus = make_locus((30, 44), reader.read_records(reference, lines))
+    locus = make_locus((30, 44), case_files.write_and_parse_records(reference, lines))
 
     reconciled = reconcile(
         locus, get_locus_bases(reference, locus), pair_samples(1), phasing_cap=phasing_cap
@@ -727,10 +756,10 @@ def test_reconcile_gives_too_complex_before_contradicting_records(
     assert reconciled.results_a == {0: result}
 
 
-def test_reconcile_reads_each_file_with_its_own_ploidy(reader: Reader) -> None:
-    reference = reader.make_reference(30, "ACG")
-    records_a = reader.read_records(reference, ["30 A T 0/1"])
-    records_b = reader.read_records(reference, ["30 A T 1"], ploidy=1)
+def test_reconcile_reads_each_file_with_its_own_ploidy(case_files: CaseFiles) -> None:
+    reference = case_files.write_reference(30, "ACG")
+    records_a = case_files.write_and_parse_records(reference, ["30 A T 0/1"])
+    records_b = case_files.write_and_parse_records(reference, ["30 A T 1"], ploidy=1)
     locus = make_locus((30, 32), records_a, records_b)
     expected = ReconciledLocus(
         locus=locus, alleles=("ACG", "TCG"), results_a={0: ((0, 1),)}, results_b={0: ((1,),)}
@@ -743,9 +772,11 @@ def test_reconcile_reads_each_file_with_its_own_ploidy(reader: Reader) -> None:
     assert reconciled_loci == [expected]
 
 
-def test_reconcile_loci_passes_the_phasing_cap_on(reader: Reader) -> None:
-    reference = reader.make_reference(30, "ACG")
-    locus = make_locus((30, 32), reader.read_records(reference, ["30 A T 0/1", "32 G C 0/1"]))
+def test_reconcile_loci_passes_the_phasing_cap_on(case_files: CaseFiles) -> None:
+    reference = case_files.write_reference(30, "ACG")
+    locus = make_locus(
+        (30, 32), case_files.write_and_parse_records(reference, ["30 A T 0/1", "32 G C 0/1"])
+    )
 
     reconciled_loci = list(reconcile_loci(iter([locus]), reference, pair_samples(1), phasing_cap=1))
 
@@ -769,18 +800,18 @@ def test_reconcile_loci_passes_the_phasing_cap_on(reader: Reader) -> None:
     ids=["file-a", "file-b"],
 )
 def test_reconcile_raises_for_a_sample_index_beyond_the_genotypes(
-    reader: Reader, sample_pair: SamplePair, message: str
+    case_files: CaseFiles, sample_pair: SamplePair, message: str
 ) -> None:
-    reference = reader.make_reference(30, "ACG")
-    records = reader.read_records(reference, ["30 A T 0/1"])
+    reference = case_files.write_reference(30, "ACG")
+    records = case_files.write_and_parse_records(reference, ["30 A T 0/1"])
     locus = make_locus((30, 32), records, records)
 
     with pytest.raises(ValueError, match=message):
         reconcile(locus, get_locus_bases(reference, locus), (sample_pair,))
 
 
-def test_reconcile_loci_raises_for_a_ploidy_when_the_stream_starts(reader: Reader) -> None:
-    reference = reader.make_reference(30, "ACG")
+def test_reconcile_loci_raises_for_a_ploidy_when_the_stream_starts(case_files: CaseFiles) -> None:
+    reference = case_files.write_reference(30, "ACG")
 
     reconciled_loci = reconcile_loci(iter(()), reference, pair_samples(1), ploidy_b=3)
 
@@ -788,13 +819,13 @@ def test_reconcile_loci_raises_for_a_ploidy_when_the_stream_starts(reader: Reade
         next(reconciled_loci)
 
 
-def test_reconcile_loci_gives_what_reconcile_gives_on_each_locus(reader: Reader) -> None:
+def test_reconcile_loci_gives_what_reconcile_gives_on_each_locus(case_files: CaseFiles) -> None:
     # Two loci of one contig, 30-32 and 40-44 (R8), with the bases read from the FASTA.
-    reference = reader.make_reference(30, "ACGNNNNNNNCAAAG")
-    records_a = reader.read_records(
+    reference = case_files.write_reference(30, "ACGNNNNNNNCAAAG")
+    records_a = case_files.write_and_parse_records(
         reference, ["30 A T 0/1", "32 G C 0/1", "40 C CA 0/1", "41 AA A 0/1"]
     )
-    records_b = reader.read_records(reference, ["30 A T 0|1", "32 G C 1|0"])
+    records_b = case_files.write_and_parse_records(reference, ["30 A T 0|1", "32 G C 1|0"])
     loci = [
         make_locus((30, 32), records_a[:2], records_b),
         make_locus((40, 44), records_a[2:]),
