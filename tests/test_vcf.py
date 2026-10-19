@@ -435,6 +435,58 @@ def test_file_without_chrom_line_stops_the_run(
         list(parse_vcf(path, reference))
 
 
+@pytest.mark.parametrize(
+    ("kind", "message"),
+    [
+        ("missing", r"a\.vcf does not exist\. Check its path and run again\.$"),
+        ("directory", r"a\.vcf is a directory, not a VCF file\. Check its path and run again\.$"),
+        (
+            "unreadable",
+            r"a\.vcf cannot be read: permission denied\. Allow reading it and run again\.$",
+        ),
+    ],
+    ids=["missing", "directory", "unreadable"],
+)
+def test_vcf_that_cannot_be_opened_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta, kind: str, message: str
+) -> None:
+    path = tmp_path / "a.vcf"
+    if kind == "directory":
+        path.mkdir()
+    elif kind == "unreadable":
+        path.write_text(HEADER, encoding="utf-8")
+        path.chmod(0)
+
+    with pytest.raises(PvcEvalInputError, match=message):
+        parse_vcf_samples(path)
+    with pytest.raises(PvcEvalInputError, match=message):
+        list(parse_vcf(path, reference))
+
+
+@pytest.mark.parametrize(
+    ("chrom_line", "column"),
+    [
+        ("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tHG002\t\n", 11),
+        ("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t\tHG002\n", 10),
+    ],
+    ids=["trailing_tab", "two_tabs"],
+)
+def test_empty_sample_name_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta, chrom_line: str, column: int
+) -> None:
+    path = tmp_path / "a.vcf"
+    path.write_text("##fileformat=VCFv4.3\n" + chrom_line, encoding="utf-8")
+    message = (
+        rf"a\.vcf, line 2: the #CHROM line has an empty sample name in column {column}; each"
+        r" sample needs a name, and the columns are separated by one tab\."
+    )
+
+    with pytest.raises(PvcEvalInputError, match=message):
+        parse_vcf_samples(path)
+    with pytest.raises(PvcEvalInputError, match=message):
+        list(parse_vcf(path, reference))
+
+
 def test_lower_case_alleles_are_read_in_upper_case_and_normalise_alike(
     tmp_path: Path, reference: IndexedFasta
 ) -> None:

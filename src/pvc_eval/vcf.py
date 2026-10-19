@@ -130,7 +130,8 @@ class VcfRecord:
 def parse_vcf_samples(path: Path) -> tuple[str, ...]:
     """The sample names of a VCF file, in the order of its columns.
 
-    Raises PvcEvalInputError when the file has no #CHROM line after its ## lines.
+    Raises PvcEvalInputError for a path that does not exist, is a directory or cannot be
+    read, when the file has no #CHROM line after its ## lines, and for an empty sample name.
     """
     with closing(_read_numbered_lines(path)) as numbered_lines:
         return _parse_samples(numbered_lines, path)
@@ -174,8 +175,9 @@ def parse_vcf(
 
     Raises PvcEvalInputError, when the stream reaches it, for a VCF record on a contig
     the reference lacks or whose REF reaches past the end of its contig, for records out
-    of the `.fai`'s contig order or out of position order, for a file with no #CHROM line
-    after its ## lines, for a line that does not hold a VCF record, and for one whose
+    of the `.fai`'s contig order or out of position order, for a path that does not exist,
+    is a directory or cannot be read, for a file with no #CHROM line after its ## lines, for
+    an empty sample name in it, for a line that does not hold a VCF record, and for one whose
     number of sample columns differs from the number of samples the #CHROM line names. A
     blank line is skipped. A record with a symbolic allele is skipped, and the number
     skipped is logged as a warning at the end (§9). A QUAL or GQ that is not a number is
@@ -530,8 +532,21 @@ def _read_numbered_lines(path: Path) -> Generator[tuple[int, str]]:
 
 
 def _open_text(path: Path) -> TextIO:
-    with path.open("rb") as raw:
-        is_gzipped = raw.read(len(_GZIP_MAGIC)) == _GZIP_MAGIC
+    """Raises PvcEvalInputError for a path that does not exist, is a directory or cannot
+    be read."""
+    try:
+        with path.open("rb") as raw:
+            is_gzipped = raw.read(len(_GZIP_MAGIC)) == _GZIP_MAGIC
+    except FileNotFoundError:
+        raise PvcEvalInputError(f"{path} does not exist. Check its path and run again.") from None
+    except IsADirectoryError:
+        raise PvcEvalInputError(
+            f"{path} is a directory, not a VCF file. Check its path and run again."
+        ) from None
+    except PermissionError:
+        raise PvcEvalInputError(
+            f"{path} cannot be read: permission denied. Allow reading it and run again."
+        ) from None
     if is_gzipped:
         return gzip.open(path, "rt", encoding="utf-8")
     return path.open(encoding="utf-8")
@@ -543,7 +558,7 @@ def _parse_samples(numbered_lines: Iterator[tuple[int, str]], path: Path) -> tup
         if line.startswith("##") or not line.strip():
             continue
         if line.startswith("#CHROM"):
-            return tuple(line.rstrip("\n").split("\t")[_NUM_FIXED_COLUMNS:])
+            return _parse_sample_names(line, path, line_number)
         raise PvcEvalInputError(
             f"{path}, line {line_number}: a VCF file has a #CHROM line after its ## lines,"
             " and this line comes before any. Check that the file is a VCF with its header."
@@ -552,6 +567,20 @@ def _parse_samples(numbered_lines: Iterator[tuple[int, str]], path: Path) -> tup
         f"{path} has no #CHROM line after its ## lines. Check that the file is a VCF with"
         " its header."
     )
+
+
+def _parse_sample_names(chrom_line: str, path: Path, line_number: int) -> tuple[str, ...]:
+    """The sample names of a #CHROM line; raises PvcEvalInputError for an empty one, which
+    a trailing tab or two tabs in a row make."""
+    names = tuple(chrom_line.rstrip("\n").split("\t")[_NUM_FIXED_COLUMNS:])
+    if "" in names:
+        column = _NUM_FIXED_COLUMNS + names.index("") + 1
+        raise PvcEvalInputError(
+            f"{path}, line {line_number}: the #CHROM line has an empty sample name in column"
+            f" {column}; each sample needs a name, and the columns are separated by one tab."
+            " Correct the line and run again."
+        )
+    return names
 
 
 def _check_num_samples(fields: list[str], num_samples: int, path: Path, line_number: int) -> None:
