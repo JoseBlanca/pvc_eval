@@ -299,6 +299,13 @@ cut every insertion, whose span always holds the base after it). With no limit n
 left a later record can start, the stream holds the records of a contig until the next contig
 begins.
 
+**Threads.** The reader parses the sample columns of batches of VCF records on a pool of threads,
+4 by default, and 1 parses them in the calling thread with no pool; whatever the number, it gives
+the same records, in the same order, with the same errors and warnings (decided by the owner on
+19 October 2026, for a measured gain of about three times on 200 samples). The number is set in
+the Python API; whether the command line sets it too, and how two files read together share the
+cores, is not decided yet.
+
 **Three cases.** The first is valid, and would be made invalid by moving its deletion; the other
 two are one haplotype written twice, which only the span puts in one locus.
 
