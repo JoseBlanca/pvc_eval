@@ -10,9 +10,8 @@ sample carries over the locus, in both files, under every phase the VCF genotype
 then names those sequences by one shared list, so that two files that spelled a haplotype
 differently give it the same index. Evaluation compares the two samples of each sample pair at the
 locus and gives them one outcome of `doc/spec.md` §5.5, with the pair of possible genotypes that
-decided it. Together they fill the columns of `doc/spec.md` §6 that depend on genotypes. A wrong
-rule here gives a table whose rows look right and are not, so every rule below has a case with
-its result, and the case is a test.
+decided it. Together they fill the columns of `doc/spec.md` §6 that depend on genotypes. Every rule below
+has a case with its result, and each case is a test.
 
 This spec also gives what goes in and what comes out: the sample pairs, the ploidy each file is
 read with, and `OutcomeRow`, one row of the table, which every evaluator yields (`doc/spec.md` §8).
@@ -29,6 +28,17 @@ The owner decided, on 19 October 2026:
 - the phasing cap stays at 4096 by default, to be lowered if it costs too much time (`doc/spec.md`
   Open 2).
 
+What the owner is asked, besides approving the spec:
+
+- **Open 4** (§11): whether a `*` under an edit that is not a deletion, as GATK writes with MNPs
+  turned on, is covered.
+- The changes to `doc/spec.md` that the decisions above need beyond its §5.4 and §5.5 (§10),
+  among them the options `--ploidy-a` and `--ploidy-b`.
+- Four points this spec decides, each where it stands: two files of different ploidies are
+  compared by the same rules, with no rule of their own (§2); a sample in no pair is not
+  reconciled (§4); a reason is written whenever a sample is invalid, also in a row *too complex*
+  because of its partner (§6); and `quality` and `gq` count a `*` as an ALT (§6).
+
 Positions in the cases are 1-based and inclusive, as in VCF and in `doc/spec.md`; in the Python
 interface they are 0-based and half-open, as everywhere inside pvc_eval.
 
@@ -36,7 +46,16 @@ interface they are 0-based and half-open, as everywhere inside pvc_eval.
 
 The terms of `doc/spec.md` §2 keep their meaning: locus, locus allele, locus genotype, possible
 genotypes, missing, invalid, haplotype, phasing cap. §5.4 of it defines an edit, a block and an
-impossible haplotype in bold, and this spec makes each of them exact. It adds:
+impossible haplotype in bold, and this spec makes each of them exact. Names from the code are those of `doc/spec.md` §4 and of the VCF reader. A `Locus` holds a
+locus's records of each file; a `VcfRecord` is one VCF record, normalised, with its span
+(`doc/spec.md` §5.2: every position the record could have been written at, cut back to its REF
+when it would reach further than the span limit, 10 kb by default); a `VcfGenotype` is one
+sample's GT at it. Where a GT cannot be a genotype the reader puts a marker in its place,
+`MALFORMED_GT` or `HAPLOID_GT`, and `MISSING` stands for a `.` haplotype. These markers are
+sentinels, objects made by Python 3.15's `sentinel()` that are compared with `is` and can stand in
+a type hint (`.claude/skills/coding/python.md`).
+
+It adds:
 
 | term | meaning | not |
 |---|---|---|
@@ -44,7 +63,7 @@ impossible haplotype in bold, and this spec makes each of them exact. It adds:
 | **phase unit** | the VCF genotypes of one sample whose order on the haplotypes is fixed together: one unphased VCF genotype, or every phased VCF genotype of one phase set | "phase block" |
 | **block** | a phase unit with a heterozygous VCF genotype in it (`doc/spec.md` §5.4) | |
 | **phase assignment** | one choice of order for every block of a sample at a locus; it gives each haplotype one VCF allele of each VCF record | "phasing" |
-| **placement** | a position at which a deletion deletes bases that give the same haplotype as where it was written (`doc/spec.md` §5.2's slide) | "shift" |
+| **placement** | a stretch a deletion could delete instead of the one it was written over and give the same haplotype: one of its slides of `doc/spec.md` §5.2 | "shift" |
 | **sample result** | what reconciliation gives one sample of one file at one locus: its possible genotypes, *too complex*, or *invalid* with its reason | |
 
 ## 2. Ploidy
@@ -130,8 +149,9 @@ whose records are wrong is invalid however many blocks it has.
 
 ### 4.1 Phase assignments and the cap
 
-A sample's VCF genotypes at the locus's records of its file, in the order `Locus` holds them,
-fall into phase units:
+A sample's VCF genotypes at the locus's records of its file fall into phase units. `Locus` holds
+each file's records by span start, and in the file's order where two spans start together
+(`doc/spec.md` §4); that order numbers the blocks below.
 
 - A VCF genotype written with `|` belongs to the phase unit of its phase set: its `PS`, or, with
   no `PS`, the one phase set VCF gives every phased genotype of the sample that has none (VCF 4.3
@@ -186,7 +206,7 @@ leaves nothing of either, one that spells REF, makes no edit.
   carries counts. So does a deletion among the alleles of a record where the haplotype is
   `MISSING`, since it might carry that one. The placements of a deletion are where it was
   written and every slide of `doc/spec.md` §5.2 that deletes only positions of its record's span:
-  a span cut to its REF by the span limit allows only the slides within the REF. A deletion is an
+  a record whose span the span limit cut back to its REF allows only the slides within its REF. A deletion is an
   edit that replaces one or more positions with no bases; the anchor base of a deletion is
   deleted by none of its placements.
 
@@ -196,7 +216,7 @@ haplotype missing at one record and with colliding edits at others is impossible
 
 **The sequence.** Otherwise the edits are applied to the reference over the locus in position
 order, an insertion before a replacement that starts at its point. Every edit lies within the
-locus: the locus covers the REF of every record with an ALT (`doc/spec.md` §4), and a record with
+locus: the locus covers the span, and so the REF, of every record with an ALT (`doc/spec.md` §4), and a record with
 no ALT makes no edit, however far its REF reaches.
 
 An assignment in which any haplotype is impossible gives no locus genotype. The others each give
@@ -216,10 +236,10 @@ every index. A sample's possible genotypes are the distinct tuples, sorted in th
 indices let §5 compare two files by number, since one sequence has one index whichever file
 spelled it.
 
-Every possible genotype of a sample has a missing haplotype as soon as any VCF genotype of the
-sample in the locus has a `.`. The `.` lands on some haplotype in every assignment, so the
-missing outcomes of §5 never meet a sample whose possible genotypes are missing in some and not
-others.
+When any VCF genotype of a sample in the locus has a `.`, every possible genotype of the sample
+has a missing haplotype, since each assignment puts the `.` on one haplotype or the other. So a
+sample's possible genotypes are either all missing somewhere or none is, and §5 never meets a
+mix.
 
 ### 4.4 Cases
 
@@ -233,7 +253,7 @@ two `bcftools norm` outputs were run with bcftools 1.24 (`bcftools norm -f ref.f
 |---|---|
 | `9 CAGT C 1/1`, `11 G A 0/1` | invalid, `contradicting records`: the SNP collides with the deletion on the haplotype that carries it |
 | `9 CAGT C 0/1`, `11 G A 0/1` | alleles `CAGT,CAAT,C`; possible genotypes `(1, 2)`. Assignment 0 puts both on one haplotype, which is impossible |
-| `9 CAGT C 0/1`, `11 G A,* 1/2` (GATK) | alleles `CAGT,CAAT,C`; possible genotypes `(1, 2)`: against the row above, *same genotype* |
+| `9 CAGT C 0/1`, `11 G A,* 1/2` (GATK) | alleles `CAGT,CAAT,C`; possible genotypes `(1, 2)`: against the second row, *same genotype* |
 | `9 CAGT C 0/1`, `9 C G,* 1/2` | invalid, `contradicting records`: a `*` on the deletion's anchor base alone is not covered |
 | `11 G A,* 1/2` | invalid, `contradicting records`: no deletion |
 | `9 CAGT C ./.`, `11 G A,* 1/2` | possible genotypes `(MISSING, MISSING)`: the `*` might be covered |
@@ -263,20 +283,26 @@ possible genotypes are `(0, 1)` with alleles `TAG,TCAG`. Trimmed from the right 
 insertion would go before 52 and give `TACG`.
 
 **R6. One insertion, two spellings.** Reference 10–12 `GCT`. `10 G GCA 1/1` in A and
-`11 C CAC 1/1` in B both give `GCACT`, alleles `GCT,GCACT`, `(1, 1)` in both: *same genotype*.
+`11 C CAC 1/1` in B both span 10–12, since the insertion slides from after 10 to after 11 and an
+insertion's span holds the base after it; the locus is 10–12. Both give `GCACT`, alleles `GCT,GCACT`, `(1, 1)` in both: *same genotype*.
 
 **R7. Phase.** Reference 30–32 `ACG`, SNPs `30 A T` and `32 G C`.
 
-| file A | possible genotypes of A, alleles | against B: `0|1`, `1|0` |
+File B has the two SNPs phased on different haplotypes, `30 A T 0|1` and `32 G C 1|0`, which give
+it one possible genotype, `ACC` and `TCG`.
+
+| file A | possible genotypes of A, alleles | against B |
 |---|---|---|
 | `0/1`, `0/1` | `(0, 1)`, `(2, 3)`; `ACG,TCC,ACC,TCG` | *same genotype*, reported `(2, 3)` and `(2, 3)` |
 | `0|1` PS 7, `1|0` PS 8 | `(0, 3)`, `(1, 2)`; `ACG,ACC,TCG,TCC` | *same genotype*, reported `(1, 2)` and `(1, 2)` |
 | `0|1`, `0|1` | `(0, 1)`; `ACG,TCC,ACC,TCG` | *different*, reported `(0, 1)` and `(2, 3)` |
 
 The alleles are listed in the order A's assignments meet them, so they differ between the first
-two rows.
+two rows, and B's genotype has other indices in each. In the third row A has both SNPs on one
+haplotype and B on two, so no genotype matches, and their ALT sets differ too.
 
-**R8. Edits that cancel.** Reference 40–44 `CAAAG`, `40 C CA 0/1` and `41 AA A 0/1`, unphased. One
+**R8. Edits that cancel.** Reference 40–44 `CAAAG`, `40 C CA 0/1` and `41 AA A 0/1`, unphased.
+The insertion of an A slides along the homopolymer and spans 40–44; the locus is 40–44. One
 assignment puts the insertion and the deletion of an A on one haplotype, which is then the
 reference, and gives `(0, 0)`; the other gives `(1, 2)`, alleles `CAAAG,CAAG,CAAAAG`. Against a
 file with no records there, *same genotype*, since some possible genotype of A matches. The two
@@ -285,7 +311,8 @@ records cannot tell which, and `doc/spec.md` §5.5 asks only whether the files c
 **R9. The cap and the order of reasons.** Fourteen unphased `0/1` SNPs in one locus: *too
 complex*; thirteen: reconciled. Fourteen `0|1` SNPs with one `PS`: reconciled, one assignment. A
 sample with a malformed GT in a file whose records include a REF mismatch: invalid, `REF
-mismatch`. A malformed GT in a sample with fourteen blocks: invalid, `malformed GT`.
+mismatch`. A malformed GT, or a GT of another ploidy, in a sample with fourteen blocks: invalid, `malformed
+GT` or `ploidy mismatch`.
 
 ## 5. Evaluation
 
@@ -362,7 +389,7 @@ is `None`, and the closed sets are enums whose values are the words the table wr
 | `possible_a`, `possible_b` | `int \| None` | how many possible genotypes; 0 for an invalid sample; `None` for a sample too complex, or from another evaluator |
 | `quality_a`, `quality_b` | `float \| None` | the lowest QUAL among the records of the file in the locus at which the sample's VCF genotype has an index other than 0; records with no QUAL are passed over; `None` when no record is left |
 | `gq_a`, `gq_b` | `int \| None` | the lowest GQ among the same records, likewise |
-| `records_a`, `records_b` | `int` | how many records of the file in the locus have an ALT |
+| `records_a`, `records_b` | `int` | how many records of the file in the locus have an ALT, whatever the sample carries at them |
 | `invalid_reason_a`, `invalid_reason_b` | `InvalidReason \| None` | the sample's reason when it is invalid, whatever the outcome; `None` otherwise |
 
 `quality` and `gq` count a `*` as an index other than 0, since it is an ALT of the record (§2 of
@@ -541,16 +568,18 @@ The VCF reader changes as §2 says, in a milestone of its own before reconciliat
 haplotype whose event starts before the record and overlaps it, whatever the event
 (`AssemblyBasedCallerUtils.java`, in the GATK at commit e8c49f6). With its default
 `--max-mnp-distance 0` the events that overlap a later record are deletions. With MNPs turned on,
-as Mutect2's default of 1 does, an MNP can be one too. The rule of §4.2, settled by the owner on 19
-October 2026, counts only deletions, so a `*` under an MNP makes the sample invalid. The options:
+as Mutect2's default of 1 does, an MNP can be one too. The owner settled on 19 October 2026 that a `*` needs a deletion, which is what the VCF
+specification says a `*` is (VCF 4.3 §1.6.1, ALT); GATK's code shows it writing one under an MNP
+too, which that answer did not weigh. Under the rule of §4.2 such a `*` makes the sample invalid.
+The options:
 
 - *Deletions only*, as now: nothing to build, and such a `*` is reported as contradicting
   records.
 - *Any edit that replaces a position of the `*` record's REF, as written, also covers it*: one
   more clause in §4.2, and GATK's files with MNPs are compared.
 
-I recommend the second, since it reads `*` as GATK writes it, and pvc_eval's users are mostly
-comparing germline calls where it seldom arises either way. Meanwhile the implementer builds
+I recommend the second, since it reads `*` as GATK writes it. How many of the owner's files
+hold MNPs is not known; with HaplotypeCaller's defaults there are none. Meanwhile the implementer builds
 deletions only, in one function, so that the other answer adds a clause there.
 
 ## 12. Not in this spec
