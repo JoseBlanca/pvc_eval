@@ -34,9 +34,9 @@ What the owner is asked, besides approving the spec:
   turned on, is covered.
 - The changes to `doc/spec.md` that the decisions above need beyond its §5.4 and §5.5 (§10),
   among them the options `--ploidy-a` and `--ploidy-b`.
-- Four points this spec decides, each where it stands: two files of different ploidies are
-  compared by the same rules, with no rule of their own (§2); a sample in no pair is not
-  reconciled (§4); a reason is written whenever a sample is invalid, also in a row *too complex*
+- **Open 5** (§11): how two files of different ploidies compare where neither carries an ALT.
+- Four points this spec decides, each where it stands: a GT of only `.` is missing whatever its
+  number of alleles (§2); a sample in no pair is not reconciled (§4); a reason is written whenever a sample is invalid, also in a row *too complex*
   because of its partner (§6); and `quality` and `gq` count a `*` as an ALT (§6).
 
 Positions in the cases are 1-based and inclusive, as in VCF and in `doc/spec.md`; in the Python
@@ -51,7 +51,7 @@ locus's records of each file; a `VcfRecord` is one VCF record, normalised, with 
 (`doc/spec.md` §5.2: every position the record could have been written at, cut back to its REF
 when it would reach further than the span limit, 10 kb by default); a `VcfGenotype` is one
 sample's GT at it. Where a GT cannot be a genotype the reader puts a marker in its place,
-`MALFORMED_GT` or `HAPLOID_GT`, and `MISSING` stands for a `.` haplotype. These markers are
+`MALFORMED_GT` or, after §2, `OTHER_PLOIDY_GT`, and `MISSING` stands for a `.` haplotype. These markers are
 sentinels, objects made by Python 3.15's `sentinel()` that are compared with `is` and can stand in
 a type hint (`.claude/skills/coding/python.md`).
 
@@ -83,19 +83,21 @@ So the VCF reader takes the ploidy:
 - A GT is `MALFORMED_GT` when one of its alleles is neither `.` nor an index of one of the
   record's VCF alleles.
 - A GT whose alleles are all `.` or such indices, and whose number of alleles differs from the
-  ploidy, is `OTHER_PLOIDY_GT`, which replaces `HAPLOID_GT`.
-- A GT of a single `.` is `MISSING` on every haplotype, ploidy times, as now.
+  ploidy, is `OTHER_PLOIDY_GT`, which replaces `HAPLOID_GT`, unless every allele is `.`.
+- A GT whose alleles are all `.`, a single `.` or `./.` in a file of either ploidy, is `MISSING`
+  on every haplotype, ploidy times (decided here: it says nothing about any haplotype, and
+  callers write `./.` for a no-call in haploid files too).
 - `PLOIDY` becomes `DEFAULT_PLOIDY = 2`.
 
 Reconciliation handles ploidy 1 and 2. A ploidy of 1 has no phase to choose: each sample has one
-phase assignment. A higher ploidy raises `ValueError`, as `doc/spec.md` §9 foresees for the phase
-enumeration.
+phase assignment. A higher ploidy raises `ValueError` in `reconcile`, as `doc/spec.md` §9 foresees
+for the phase enumeration, and the command line refuses `--ploidy-a` or `--ploidy-b` other than 1
+or 2 before it reads anything (the spec of `compare`).
 
-Two files read with different ploidies are compared by the same rules, which then never give
-*same genotype*, since a genotype of one haplotype never equals one of two. A haploid `1` against
-a diploid `1/1` is *same alleles, other genotype* (case E8, §5); a haploid `0` against `0/0` is
-*reference in both*. This was decided here as what the rules of §5 give, with no rule of its
-own.
+Two files read with different ploidies are compared by the rules of §5, where a genotype of one
+haplotype never equals one of two, with one rule of their own (**Open 5**, below): two genotypes
+all REF count as equal whatever their ploidies. A haploid `1` against a diploid `1/1` is *same
+alleles, other genotype* (E8 of §5); a haploid `0` against `0/0` is *reference in both*.
 
 ## 3. Sample pairs
 
@@ -207,8 +209,9 @@ leaves nothing of either, one that spells REF, makes no edit.
   `MISSING`, since it might carry that one. The placements of a deletion are where it was
   written and every slide of `doc/spec.md` §5.2 that deletes only positions of its record's span:
   a record whose span the span limit cut back to its REF allows only the slides within its REF. A deletion is an
-  edit that replaces one or more positions with no bases; the anchor base of a deletion is
-  deleted by none of its placements.
+  edit that replaces one or more positions with no bases. Where the span is not cut, the base
+  before the deletion's left-aligned form, its anchor in `bcftools norm`'s spelling, is deleted
+  by none of its placements; the base before it as written may be, when it slides left.
 
 **Missing.** A haplotype that is not impossible and carries `MISSING` at any record has a missing
 locus allele, however many other records give it a definite allele. Impossibility comes first: a
@@ -276,6 +279,8 @@ phased haplotype: invalid, `contradicting records`. Against each other, *invalid
 |---|---|---|
 | 10–12 `CAG`, followed by `T` | `10 CAG C`, `11 A AT` | invalid: the T goes in between 11 and 12, both deleted |
 | 10–14 `CAGTA` | `10 CAG C`, `12 G GT` | alleles `CAGTA,CTTA`, `(1, 1)`: the T goes in after 12, at the end of the deleted stretch |
+| 10–11 `CG` | `10 C CA`, `10 C CT` | invalid: two insertions after 10 |
+| 10–11 `CG` | `10 C A`, `11 G T` | alleles `CG,AT`, `(1, 1)`: two replacements side by side |
 
 **R5. The insertion after the anchor.** Reference 51–54 `TAGC`, locus 51–53, `52 A C 1|0` and
 `52 AG A,AAG 2|0`: the first haplotype has C at 52 and an A inserted after it, `TCAG`, and the
@@ -301,6 +306,11 @@ The alleles are listed in the order A's assignments meet them, so they differ be
 two rows, and B's genotype has other indices in each. In the third row A has both SNPs on one
 haplotype and B on two, so no genotype matches, and their ALT sets differ too.
 
+Phase sets can interleave. Reference 30–34 `ACGTA`, `30 A T 0|1` PS 7, `32 G C 0|1` PS 8,
+`34 A G 1|0` PS 7: PS 7 is block 0, by its record at 30, and PS 8 block 1. Assignment 0 gives
+`ACGTG` and `TCCTA`, assignment 1 `ACCTG` and `TCGTA`: alleles `ACGTA,ACGTG,TCCTA,ACCTG,TCGTA`,
+possible genotypes `(1, 2)`, `(3, 4)`.
+
 **R8. Edits that cancel.** Reference 40–44 `CAAAG`, `40 C CA 0/1` and `41 AA A 0/1`, unphased.
 The insertion of an A slides along the homopolymer and spans 40–44; the locus is 40–44. One
 assignment puts the insertion and the deletion of an A on one haplotype, which is then the
@@ -312,7 +322,9 @@ records cannot tell which, and `doc/spec.md` §5.5 asks only whether the files c
 complex*; thirteen: reconciled. Fourteen `0|1` SNPs with one `PS`: reconciled, one assignment. A
 sample with a malformed GT in a file whose records include a REF mismatch: invalid, `REF
 mismatch`. A malformed GT, or a GT of another ploidy, in a sample with fourteen blocks: invalid, `malformed
-GT` or `ploidy mismatch`.
+GT` or `ploidy mismatch`. A record with no ALT and a REF mismatch, starting before the locus and
+reaching into it: every sample of its file invalid, `REF mismatch`. `./.` read with ploidy 1, and
+`.` with ploidy 2: missing.
 
 ## 5. Evaluation
 
@@ -328,8 +340,8 @@ of its indices other than 0:
 | invalid in A, in B, in both | that sample is invalid | none |
 | missing in A, in B, in both | every genotype of that sample's *P* has a `MISSING` | the first of each |
 | reference in both | *P*<sub>A</sub> and *P*<sub>B</sub> each hold one genotype, all REF | the first of each |
-| same genotype | some genotype of *P*<sub>A</sub> equals one of *P*<sub>B</sub> | the first such pair |
-| same alleles, other genotype | some genotype of *P*<sub>A</sub> and one of *P*<sub>B</sub> have the same ALT set, not empty | the first such pair |
+| same genotype | some genotype of *P*<sub>A</sub> equals one of *P*<sub>B</sub>, two genotypes all REF counting as equal | the first such pair |
+| same alleles, other genotype | some genotype of *P*<sub>A</sub> and one of *P*<sub>B</sub> have the same ALT set | the first such pair |
 | only in A | *P*<sub>B</sub> holds one genotype, all REF | the first of each |
 | only in B | *P*<sub>A</sub> holds one genotype, all REF | the first of each |
 | different | anything else | the first of each |
@@ -337,14 +349,14 @@ of its indices other than 0:
 "The first such pair" takes the genotypes of *P*<sub>A</sub> in order and, for each, those of
 *P*<sub>B</sub> in order, as `doc/spec.md` §5.5 says. The rules leave no pair without an outcome.
 *Different* takes what is left, and in what is left both samples have a genotype with an ALT.
-*Only in A* needs no condition on A within one ploidy: had A a genotype all REF, *same genotype*
-would have applied. An empty ALT set is left out of *same alleles*, which names ALTs the two
-files share: within one ploidy two genotypes with no ALT are equal and already *same genotype*,
-and across two ploidies E11 would otherwise share no ALT and still be *same alleles*.
+*Only in A* needs no condition on A: had A a genotype all REF, *same genotype* would have
+applied. Within one ploidy two genotypes all REF are equal anyway; the words "counting as equal"
+matter only across ploidies (Open 5).
 
 *Too complex* and *invalid* report no pair, and in the row a sample that is too complex or invalid
 has no genotype. Its partner, when it is reconciled, shows its first possible genotype, as
-`doc/spec.md` §6 says column by column. So a row *invalid in A* still shows what B called.
+`doc/spec.md` §6 says column by column. So a row *invalid in A* still shows what B called. `PairEvaluation` holds only the reported pair;
+`make_outcome_rows` takes the partner's genotype from its own sample result.
 
 **Cases**, as `evaluate_pair` sees them, with `.` for `MISSING`:
 
@@ -360,12 +372,12 @@ has no genotype. Its partner, when it is reconciled, shows its first possible ge
 | 8 | `(1,)` | `(1, 1)` | same alleles, other genotype | `(1,)`, `(1, 1)` |
 | 9 | `(0, 1)`, `(0, 2)` | `(0, 0)` | only in A | `(0, 1)`, `(0, 0)` |
 | 10 | `(0, 0)` | `(0, 0)`, `(1, 2)` | same genotype | `(0, 0)`, `(0, 0)` |
-| 11 | `(0,)` | `(0, 0)`, `(1, 2)` | only in B | `(0,)`, `(0, 0)` |
+| 11 | `(0,)` | `(0, 0)`, `(1, 2)` | same genotype | `(0,)`, `(0, 0)` |
 | 12 | `(0, 1)` | `(2, 3)` | different | `(0, 1)`, `(2, 3)` |
 | 13 | `(0, 1)` | `(1, 2)` | different | `(0, 1)`, `(1, 2)` |
 
-E3 is the owner's `./1` against `./1` (`doc/spec.md` §5.5). E10 is R8 against a file with no
-records. E11 shows an empty ALT set kept out of *same alleles* across ploidies. In E13 both carry
+E3 is the owner's `./1` against `./1` (`doc/spec.md` §5.5). E10 is R8's sample, in file B, against a file A
+with no records there. E11 is the same across two ploidies (Open 5). In E13 both carry
 locus allele 1, on one haplotype each, but B carries a second ALT, so the ALT sets differ.
 
 ## 6. The row of the table
@@ -374,18 +386,18 @@ locus allele 1, on one haplotype each, but B carries a second ALT, so the ALT se
 yields it (`doc/spec.md` §8), so its fields are fixed here, for all of them. It follows the Python
 API (decided by the owner on 19 October 2026). Positions are 0-based and half-open, as in
 `Locus`, and the table writer converts them to the 1-based ones of `doc/spec.md` §6. A value the table writes as `.`
-is `None`, and the closed sets are enums whose values are the words the table writes.
+is `None`, except a stratum, which is the loci spec's text, and the closed sets are enums whose values are the words the table writes.
 
 | field | type | value |
 |---|---|---|
 | `contig`, `start`, `end` | `str`, `int`, `int` | the locus |
 | `kind` | `Kind` | `locus_kind(locus)` (`doc/specs/loci.md`) |
-| `stratum` | `str \| None` | the stratum, `None` without `--strata` |
+| `stratum` | `str \| None` | the stratum as the loci spec gives it, `.` included for a locus no interval of the BED overlaps; `None` without `--strata` |
 | `str_regions` | `tuple[GenomeSegment, ...]` | `locus.str_regions` |
 | `sample_a`, `sample_b` | `str` | the names of the pair |
 | `outcome` | `Outcome` | §5 |
 | `alleles` | `tuple[str, ...] \| None` | the locus alleles, REF first; `None` from an evaluator that builds none |
-| `genotype_a`, `genotype_b` | `LocusGenotype \| None` | the reported genotype; `None` for a sample too complex or invalid, or from another evaluator |
+| `genotype_a`, `genotype_b` | `LocusGenotype \| None` | the reported genotype; in a row *too complex* or *invalid*, the first possible genotype of a sample that has one (§5); `None` for a sample too complex or invalid, or from another evaluator |
 | `possible_a`, `possible_b` | `int \| None` | how many possible genotypes; 0 for an invalid sample; `None` for a sample too complex, or from another evaluator |
 | `quality_a`, `quality_b` | `float \| None` | the lowest QUAL among the records of the file in the locus at which the sample's VCF genotype has an index other than 0; records with no QUAL are passed over; `None` when no record is left |
 | `gq_a`, `gq_b` | `int \| None` | the lowest GQ among the same records, likewise |
@@ -533,12 +545,18 @@ a literal.
   sample; the partner's genotype in a row *invalid in A*; the reason in a row *too complex*;
   `quality` and `gq` with a QUAL absent, and with a `*`.
 - **At `parse_vcf`**: `1` read with ploidy 2 is `OTHER_PLOIDY_GT`, with ploidy 1 a genotype;
-  `1/1` read with ploidy 1 is `OTHER_PLOIDY_GT`; `3/1` with two ALTs is `MALFORMED_GT`; a ploidy
-  of 0 raises.
-- **A property**, with hypothesis: for a locus whose records of B are those of A, every row is
-  *same genotype*, *reference in both*, *missing in both*, *invalid in both* or *too complex*
-  (`doc/spec.md` §7.3), over generated references and records read by `parse_vcf`. A re-spelled
-  file (§7.4) needs the loci, and is tested over the whole pipeline once `build_loci` exists.
+  `1/1` read with ploidy 1 is `OTHER_PLOIDY_GT`; `./.` read with ploidy 1 and `.` with ploidy 2
+  are `MISSING` on every haplotype; `3/1` with two ALTs is `MALFORMED_GT`; a ploidy of 0 raises.
+- **A property**, with hypothesis, at `reconcile` and `make_outcome_rows`: file B is file A
+  re-spelled, each record decomposed into records of one replaced base or one indel, phased,
+  with a phase set of its own for each record of A so that no block is added (`doc/spec.md`
+  §7.4). The records of both are read by `parse_vcf` over a generated reference, and the `Locus`
+  is built in the test over the spans of both. Every row is then *same genotype*, *reference in
+  both*, *missing in both*, *invalid in both* or *too complex*, the last three only where A
+  itself has a missing haplotype, an invalid sample or a sample over the cap (`doc/spec.md`
+  §7.3). B being A itself would check little, since both then get the same results by
+  construction. The other re-spellings of §7.4 move records, and are tested over the whole
+  pipeline once `build_loci` exists.
 
 ## 10. Changes to `doc/spec.md`
 
@@ -548,12 +566,18 @@ their own, after this spec is approved:
 
 - §2, *ploidy*: the number of haplotypes each sample of a file has at every locus, 1 or 2, given
   per file, 2 by default.
-- §3: the options `--ploidy-a N` and `--ploidy-b N`, default 2, and `CompareConfig` holds them.
+- §3: the options `--ploidy-a N` and `--ploidy-b N`, 1 or 2, default 2, and `CompareConfig`
+  holds them; and three more errors that stop the run, from §3 of this spec: a line of
+  `--sample-map` that is not two fields, a pair given twice, and a sample name given twice in a
+  header that a pair needs.
 - §5.4: an insertion collides with an edit that replaces both bases beside it; a `*` is covered
   by a deletion the haplotype might carry where it is missing; a GT of another ploidy, in place
-  of a haploid GT, with the reason `ploidy mismatch`; a pointer to this spec.
-- §5.5: a row *too complex* or *invalid* shows the reconciled partner's first genotype; a pointer
-  to this spec.
+  of a haploid GT, with the reason `ploidy mismatch`, and a GT of only `.` missing whatever its
+  number of alleles; the shared locus alleles taken from the paired samples, not from "any sample
+  of either file"; a pointer to this spec.
+- §5.5: a row *too complex* or *invalid* shows the reconciled partner's first genotype; with
+  Open 5's answer, how two genotypes all REF of different ploidies compare; a pointer to this
+  spec.
 - §6: `ploidy mismatch` in place of `haploid GT`, and the reason written whenever the sample is
   invalid.
 - §7.2: "ploidy mismatch, and a file of ploidy 1" in place of "haploid GT".
@@ -581,6 +605,21 @@ The options:
 I recommend the second, since it reads `*` as GATK writes it. How many of the owner's files
 hold MNPs is not known; with HaplotypeCaller's defaults there are none. Meanwhile the implementer builds
 deletions only, in one function, so that the other answer adds a clause there.
+
+**Open 5. Two genotypes all REF of different ploidies.** A file read with ploidy 1 and one read
+with ploidy 2 give genotypes of different lengths, which are never equal. Where both are all
+REF, `(0,)` against `(0, 0)`, the files agree that the sample carries the reference. That
+matters when B has other possible genotypes besides `(0, 0)` (E11 of §5):
+
+- *Equal*: two genotypes all REF count as equal whatever their ploidies, so E11 is *same
+  genotype*, as the same case within one ploidy (E10) is. One clause in the rule of *same
+  genotype*.
+- *Not equal*: E11 falls through to *only in B*, and the row reports B's `(0, 0)`, which carries
+  no ALT. To make that row readable, *same alleles* would also need to leave out empty ALT
+  sets, and *only in B* to report B's first genotype with an ALT.
+
+I recommend *equal*: it gives E11 the outcome its same-ploidy twin gets, at the cost of one
+clause. Meanwhile the implementer builds *equal*, in the function that compares two genotypes.
 
 ## 12. Not in this spec
 
