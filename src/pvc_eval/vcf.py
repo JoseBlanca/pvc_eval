@@ -338,7 +338,7 @@ def _parse_genotype(
 type _ParsedGt = tuple[tuple[int | MISSING, ...], bool]
 """A GT's alleles, and whether it was written with `|`."""
 
-_MISSING_GT: _ParsedGt = ((MISSING,) * PLOIDY, False)
+_PARSED_MISSING_GT: _ParsedGt = ((MISSING,) * PLOIDY, False)
 
 
 # GTs repeat, so each pair of GT and number of alleles is parsed once and the genotypes
@@ -347,7 +347,10 @@ _MISSING_GT: _ParsedGt = ((MISSING,) * PLOIDY, False)
 # there this cache still makes parse_vcf 8.9% faster (1.469 s against 1.601 s) and its peak
 # memory with no span limit 132.6 MiB instead of 160.4 MiB. The cache is bounded and holds
 # only immutable values, and lru_cache is safe to share between threads.
-@functools.lru_cache(maxsize=1024)
+_GT_CACHE_SIZE = 1024
+
+
+@functools.lru_cache(maxsize=_GT_CACHE_SIZE)
 def _parse_gt(gt: str, num_alleles: int) -> _ParsedGt | MALFORMED_GT | HAPLOID_GT:
     """What a GT field says whatever the sample's PS and GQ: its alleles and whether it is
     phased, HAPLOID_GT or MALFORMED_GT (§5.4).
@@ -355,7 +358,7 @@ def _parse_gt(gt: str, num_alleles: int) -> _ParsedGt | MALFORMED_GT | HAPLOID_G
     A single `.` says nothing about either haplotype, and is both MISSING.
     """
     if gt == ".":
-        return _MISSING_GT
+        return _PARSED_MISSING_GT
     parts = gt.replace("|", "/").split("/")
     if len(parts) == 1 and _is_allele_index(gt, num_alleles):
         return HAPLOID_GT
@@ -545,6 +548,10 @@ def _parse_record(
     return record, num_not_numbers, is_beyond_reach
 
 
+# An index past the end of every sample field, for a key that FORMAT lacks.
+_ABSENT_KEY_INDEX = sys.maxsize
+
+
 def _parse_genotypes(
     fields: list[str], num_alleles: int
 ) -> tuple[tuple[VcfGenotype | MALFORMED_GT | HAPLOID_GT, ...], int]:
@@ -560,52 +567,29 @@ def _parse_genotypes(
     keys = fields[8].split(":")
     # The keys are found once per record and each sample read by position, rather than
     # into a dict of its own: parse_vcf is 39% faster on the 5 Mb, 200-sample GATK-like
-    # benchmark input, and 42% on the 64 Mb one.
-    gt_index = _find_key_index(keys, "GT")
-    gq_index = _find_key_index(keys, "GQ")
-    ps_index = _find_key_index(keys, "PS")
+    # benchmark input, and 42% on the 64 Mb one. VCF does not allow a key twice; when it
+    # is, the last copy counts, as it did when each sample was read into a dict. Unlike that
+    # dict, a sample that drops the last copy has no value for the key, even when it has one
+    # at an earlier copy; so a GQ that is not a number at that earlier copy is not counted
+    # as taken as absent.
+    key_indices = {key: index for index, key in enumerate(keys)}
+    gt_index = key_indices.get("GT", _ABSENT_KEY_INDEX)
+    gq_index = key_indices.get("GQ", _ABSENT_KEY_INDEX)
+    ps_index = key_indices.get("PS", _ABSENT_KEY_INDEX)
     for sample_field in fields[_NUM_FIXED_COLUMNS:]:
         # VCF lets trailing sample fields be dropped, so an index past the last value, or
-        # the index of a key FORMAT lacks, has no value.
+        # the index of a key FORMAT lacks, has no value; a GT with none says what `.` says.
         values = sample_field.split(":")
         num_values = len(values)
-        gt = values[gt_index] if gt_index < num_values else None
+        gt = values[gt_index] if gt_index < num_values else "."
         gq = values[gq_index] if gq_index < num_values else None
         phase_set = values[ps_index] if ps_index < num_values else None
         if phase_set == ".":
             phase_set = None
         quality = _parse_gq(gq)
         num_not_numbers += _is_taken_as_absent(gq, quality)
-        if gt is None:
-            genotypes.append(
-                VcfGenotype(
-                    alleles=(MISSING,) * PLOIDY,
-                    phased=False,
-                    phase_set=phase_set,
-                    quality=quality,
-                )
-            )
-            continue
         genotypes.append(_parse_genotype(gt, num_alleles, phase_set, quality))
     return tuple(genotypes), num_not_numbers
-
-
-# An index past the end of every sample field, for a key that FORMAT lacks.
-_ABSENT_KEY_INDEX = sys.maxsize
-
-
-def _find_key_index(keys: list[str], key: str) -> int:
-    """Where key is among a record's FORMAT keys, or _ABSENT_KEY_INDEX when it is not.
-
-    VCF does not allow a key twice; when it is, the last one counts, as it did when each
-    sample was read into a dict. Unlike the dict, a sample that drops that last value has
-    none for the key, even when it has a value at an earlier copy; so a GQ that is not a
-    number at that earlier copy is no longer counted as taken as absent.
-    """
-    for index in range(len(keys) - 1, -1, -1):
-        if keys[index] == key:
-            return index
-    return _ABSENT_KEY_INDEX
 
 
 # QUAL and GQ only annotate a row of the table (§6), where an absent value is written `.`;
