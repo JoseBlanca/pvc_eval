@@ -425,10 +425,20 @@ def test_generic_segments_between_the_str_regions_change_no_locus() -> None:
             (make_snp(9, contig="chr2"),),
             (),
             (make_region(0, 5, contig="chr2"), make_region(30, 35, contig="chr1")),
-            "segments.*chr1",
+            "segments.*chr1 at start 30 comes after",
         ),
-        ((make_snp(99),), (), (make_region(30, 35), make_region(20, 25)), "segments.*20"),
-        ((make_snp(99),), (), (make_region(20, 35), make_region(30, 40)), "segments.*30"),
+        (
+            (make_snp(99),),
+            (),
+            (make_region(30, 35), make_region(20, 25)),
+            "segments.*start 20 comes after",
+        ),
+        (
+            (make_snp(99),),
+            (),
+            (make_region(20, 35), make_region(30, 40)),
+            "segments.*30-40 overlaps",
+        ),
     ],
     ids=[
         "record_on_an_unknown_contig",
