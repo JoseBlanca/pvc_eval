@@ -497,12 +497,12 @@ def test_a_window_extends_forward_and_backward_and_starts_again_far_away(window_
             (("chr1", 8, 11), "GGT", ("chr1", 6, 18)),
             # overlapping both ends, within a block of each
             (("chr1", 4, 20), "AACCGGTTACGTACGT", ("chr1", 2, 22)),
-            # more than a block past the end: a new buffer at the request
+            # a block or more past the end of the last request: a new buffer at the request
             (("chr1", 27, 29), "GT", ("chr1", 27, 31)),
             (("chr1", 31, 38), "TTTACCA", ("chr1", 27, 38)),
             # a block's read stops at the end of the contig
             (("chr1", 38, 39), "G", ("chr1", 27, 40)),
-            # more than a block before the start: a new buffer
+            # a block or more before the start of the first request: a new buffer
             (("chr1", 0, 3), "ACG", ("chr1", 0, 4)),
             # another contig drops the buffer
             (("chr2", 6, 9), "TTT", ("chr2", 6, 9)),
@@ -515,6 +515,39 @@ def test_a_window_extends_forward_and_backward_and_starts_again_far_away(window_
                 expected_held,
             )
             assert window.resident_bases == expected_held[2] - expected_held[1]
+
+
+def test_a_new_buffer_starts_a_block_clear_of_the_requests(window_fa: Path) -> None:
+    with IndexedFasta(window_fa) as indexed_fasta:
+        window = FastaWindow(indexed_fasta, block_bases=4)
+        steps = [
+            # request, its bases, then the region the window holds
+            (("chr1", 10, 12), "TT", ("chr1", 10, 14)),
+            # three bases past the last request's end, 12: extends forward by a block
+            (("chr1", 15, 16), "T", ("chr1", 10, 18)),
+            # four bases, a block, past the last request's end, 16: a new buffer
+            (("chr1", 20, 21), "N", ("chr1", 20, 24)),
+            # three bases before the first request's start, 20: extends backward by a block
+            (("chr1", 16, 17), "A", ("chr1", 16, 24)),
+            # four bases, a block, before the first request's start, 16: a new buffer
+            (("chr1", 11, 12), "T", ("chr1", 11, 15)),
+        ]
+        for request, expected_bases, expected_held in steps:
+            assert (window.get_bases(*request), window.held_region) == (
+                expected_bases,
+                expected_held,
+            )
+
+
+def test_requests_a_block_apart_hold_one_block_at_most(window_fa: Path) -> None:
+    # The read-ahead of each request is never asked for, and does not count in the gap.
+    with IndexedFasta(window_fa) as indexed_fasta:
+        window = FastaWindow(indexed_fasta, block_bases=4)
+        held_regions = []
+        for start in range(0, 36, 5):
+            assert window.get_bases("chr1", start, start + 1) == CHR1[start]
+            held_regions.append(window.held_region)
+        assert held_regions == [("chr1", start, start + 4) for start in range(0, 36, 5)]
 
 
 def test_an_empty_request_reads_nothing(window_fa: Path) -> None:

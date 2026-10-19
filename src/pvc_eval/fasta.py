@@ -261,17 +261,21 @@ class FastaWindow:
 
     It follows the windowed reader of pvc (`WindowedRefSeq`): a request inside the buffer
     is a slice of it; one that runs past either end of the buffer extends it, reading
-    the missing bases in blocks of at least block_bases; one more than block_bases clear
-    of the buffer starts a new buffer at the request instead of reading the gap; one on
+    the missing bases in blocks of at least block_bases; one at least block_bases clear
+    of the requests the buffer has served, past the end of the last or before the start
+    of the first, starts a new buffer at the request instead of reading the gap; one on
     another contig drops the buffer. A new buffer and a forward extension read a whole
-    block, since a walk asks next for the bases that follow.
+    block after the request, a backward extension a whole block before it, since a walk
+    asks next for the bases beyond. The gap is measured from the requests and not from
+    the buffer, so that the bases read beyond them, which nobody asked for, do not let
+    requests a block apart extend the buffer over the whole contig, as pvc's rule avoids.
 
     A window belongs to one thread: it changes its buffer on every request, without a
     lock. Threads share the IndexedFasta, each with its own window.
 
     BLOCK_BASES is 64 Ki bases, the 64 KiB pvc reads at a time. The block size barely
     changes the time: a forward walk over a 20 Mb contig in requests of 20 bases every 10,
-    evicting 100 behind, took 0.69 s with blocks of 1 Ki to 1 Mi bases and 0.74 s with 256,
+    evicting 100 behind, took 0.75 s with blocks of 1 Ki to 1 Mi bases and 0.80 s with 256,
     and one in requests every 1000 bases 0.05 s to 0.07 s (CPython 3.15t, Apple M5 Pro,
     19 October 2026). What the block costs is memory, about one block per window, which
     is small at 64 Ki.
@@ -283,6 +287,9 @@ class FastaWindow:
         self._contig: str | None = None
         self._start = 0  # the contig position of the first byte of _buffer
         self._buffer = bytearray()  # upper-case ASCII bases
+        # The span of the requests the buffer has served, from which a gap is measured.
+        self._requested_start = 0
+        self._requested_end = 0
 
     def get_bases(self, contig: str, start: int, end: int) -> str:
         """The bases of a region of a contig, 0-based and half-open, in upper case.
@@ -296,13 +303,16 @@ class FastaWindow:
         if (
             contig != self._contig
             or not self._buffer
-            or start >= buffer_end + self._block_bases
-            or end + self._block_bases <= self._start
+            or start >= self._requested_end + self._block_bases
+            or end + self._block_bases <= self._requested_start
         ):
             block_end = min(length, max(end, start + self._block_bases))
             self._buffer = self._indexed_fasta._read_upper_bytes(contig, start, block_end)
             self._contig, self._start = contig, start
+            self._requested_start, self._requested_end = start, end
         else:
+            self._requested_start = min(self._requested_start, start)
+            self._requested_end = max(self._requested_end, end)
             if end > buffer_end:
                 block_end = min(length, max(end, buffer_end + self._block_bases))
                 self._buffer += self._indexed_fasta._read_upper_bytes(contig, buffer_end, block_end)
