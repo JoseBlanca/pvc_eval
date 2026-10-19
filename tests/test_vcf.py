@@ -1179,9 +1179,8 @@ def test_gt_with_an_index_the_record_lacks_or_one_allele_is_kept_as_its_case(
     assert record.genotypes == (MALFORMED_GT, HAPLOID_GT)
 
 
-# More lines than 4 threads take in their first batches (2 each of vcf._BATCH_SIZE), and
-# more genotypes than one thread keeps (vcf._MAX_GENOTYPES_SEEN), so that every thread
-# parses several batches and the one thread starts its genotypes again.
+# More lines than 4 threads take in their first batches (2 each of vcf._BATCH_SIZE), so
+# that the pool has several batches for every thread.
 NUM_THREADED_LINES = 3000
 
 
@@ -1290,3 +1289,37 @@ def test_a_pool_of_4_threads_runs_4_items_at_once_and_gives_them_in_order() -> N
         return item
 
     assert list(vcf._map_in_order(wait_for_4, range(8), 4)) == list(range(8))
+
+
+def make_placed_line(gt: str, gq: int) -> vcf._PlacedLine:
+    """A SNP at the first base of chr1 with one sample, of this GT and GQ."""
+    fields = ["chr1", "1", ".", "A", "C", "30", ".", ".", "GT:GQ", f"{gt}:{gq}"]
+    return vcf._PlacedLine(
+        pos=0,
+        contig="chr1",
+        start=0,
+        alleles=("A", "C"),
+        qual=30.0,
+        line_number=gq,
+        ref_mismatch=False,
+        span=(0, 1),
+        fields=fields,
+    )
+
+
+def test_genotypes_and_gts_a_thread_keeps_are_bounded() -> None:
+    # Every genotype has a GQ of its own, so none is seen twice, and the thread passes its
+    # bound of 4,096 twice in 10,000 lines. The bound is checked when a batch starts, so a
+    # thread holds at most one batch more. The first batch's GT, 1/1, is not seen again.
+    seen_by_thread = threading.local()
+    batch_size = 64
+    vcf._parse_batch([make_placed_line("1/1", gq) for gq in range(batch_size)], seen_by_thread)
+    most_held = 0
+    for start in range(batch_size, 10_000, batch_size):
+        lines = [make_placed_line("0/1", gq) for gq in range(start, start + batch_size)]
+        vcf._parse_batch(lines, seen_by_thread)
+        most_held = max(most_held, len(seen_by_thread.genotypes))
+
+    assert most_held == 4096 + batch_size
+    assert len(seen_by_thread.genotypes) < 4096
+    assert set(seen_by_thread.gts) == {("0/1", 2)}
