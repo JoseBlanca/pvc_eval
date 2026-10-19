@@ -12,7 +12,6 @@ DEFAULT_PLOIDY, DEFAULT_SPAN_LIMIT and DEFAULT_NUM_THREADS.
 """
 
 import functools
-import gzip
 import heapq
 import logging
 import math
@@ -24,8 +23,8 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
 
+from pvc_eval._text_files import read_numbered_lines
 from pvc_eval.errors import PvcEvalInputError, format_count
 from pvc_eval.fasta import BLOCK_BASES, FastaWindow, IndexedFasta
 
@@ -50,7 +49,11 @@ with its own reason, `ploidy mismatch` (doc/specs/reconciliation.md §2). A GT o
 `.` is MISSING instead, whatever its number of alleles."""
 
 _SPANNING_DELETION = "*"
-_GZIP_MAGIC = b"\x1f\x8b"
+# How to put right a VCF that is not UTF-8 text, the end of the message that says so.
+_NOT_UTF8_ADVICE = (
+    "If it is a BCF file, convert it to a VCF with `bcftools view -Oz -o file.vcf.gz"
+    " file.bcf`; if it is a VCF in another encoding, convert it to UTF-8; and run again."
+)
 _DECIMAL_NUMBER = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?")
 _NUM_FIXED_COLUMNS = 9  # CHROM to FORMAT
 # doc/spec.md §5.2: the span limit when the caller sets none. A span that would reach
@@ -142,9 +145,10 @@ def parse_vcf_samples(path: Path) -> tuple[str, ...]:
     """The sample names of a VCF file, in the order of its columns.
 
     Raises PvcEvalInputError for a path that does not exist, is a directory or cannot be
-    read, when the file has no #CHROM line after its ## lines, and for an empty sample name.
+    read, for a file that is not UTF-8 text once decompressed or is a gzip file cut short or
+    damaged, when the file has no #CHROM line after its ## lines, and for an empty sample name.
     """
-    with closing(_read_numbered_lines(path)) as numbered_lines:
+    with closing(read_numbered_lines(path, "VCF", _NOT_UTF8_ADVICE)) as numbered_lines:
         return _parse_samples(numbered_lines, path)
 
 
@@ -158,7 +162,7 @@ def parse_vcf(
 ) -> Iterator[VcfRecord]:
     """The VCF records of a file, plain or bgzipped, normalised and given their spans
     (§5.2), in order of span start, and in the file's order where two spans start at one
-    position.
+    position. A byte-order mark at the start of the text is dropped.
 
     reference: the reference. The contigs, their order and their lengths are those of its
         `.fai`. The reader reads it through a FastaWindow of its own, which gives the bases
@@ -188,7 +192,8 @@ def parse_vcf(
     the reference lacks, whose REF reaches past the end of its contig or whose REF differs
     from the reference's bases there, compared without regard to case, for records out
     of the `.fai`'s contig order or out of position order, for a path that does not exist,
-    is a directory or cannot be read, for a file with no #CHROM line after its ## lines, for
+    is a directory or cannot be read, for a file that is not UTF-8 text once decompressed or
+    is a gzip file cut short or damaged, for a file with no #CHROM line after its ## lines, for
     an empty sample name in it, for a line that does not hold a VCF record, and for one whose
     number of sample columns differs from the number of samples the #CHROM line names. A
     blank line is skipped. A record with a symbolic allele is skipped once its contig and
@@ -369,7 +374,7 @@ def _parse_lines_without_samples(
     # The records with no symbolic allele whose REF agreed with the reference, which tells
     # a VCF made on another reference from a damaged line (§5.2).
     num_agreeing = 0
-    with closing(_read_numbered_lines(path)) as numbered_lines:
+    with closing(read_numbered_lines(path, "VCF", _NOT_UTF8_ADVICE)) as numbered_lines:
         num_samples = len(_parse_samples(numbered_lines, path))
         for line_number, line in numbered_lines:
             if line.startswith("#") or not line.strip():
@@ -662,54 +667,6 @@ def _has_too_many_digits(text: str) -> bool:
     """text has more digits than int() reads (sys.get_int_max_str_digits(), 0 for none)."""
     max_digits = sys.get_int_max_str_digits()
     return max_digits != 0 and len(text) > max_digits
-
-
-def _read_numbered_lines(path: Path) -> Generator[tuple[int, str]]:
-    """The lines of a VCF file, plain or bgzipped, each with its 1-based number.
-
-    Raises PvcEvalInputError for a file that is not UTF-8 text, a BCF among them, and
-    for a gzip file that is cut short or damaged.
-    """
-    # Text is decoded and decompressed in blocks, so a fault is found somewhere after the
-    # last line read, and only that is known.
-    line_number = 0
-    try:
-        with _open_text(path) as lines:
-            for line_number, line in enumerate(lines, start=1):
-                yield line_number, line
-    except UnicodeDecodeError as err:
-        raise PvcEvalInputError(
-            f"{path} is not UTF-8 text: a byte at or after line {line_number + 1} cannot be read"
-            " as UTF-8. If it is a BCF file, convert it to a VCF with"
-            " `bcftools view -Oz -o file.vcf.gz file.bcf`; if it is a VCF in another"
-            " encoding, convert it to UTF-8; and run again."
-        ) from err
-    except (EOFError, gzip.BadGzipFile) as err:
-        raise PvcEvalInputError(
-            f"{path} is a gzip file cut short or damaged at or after line {line_number + 1}."
-            " Compress or copy it again, and run again."
-        ) from err
-
-
-def _open_text(path: Path) -> TextIO:
-    """Raises PvcEvalInputError for a path that does not exist, is a directory or cannot
-    be read."""
-    try:
-        with path.open("rb") as raw:
-            is_gzipped = raw.read(len(_GZIP_MAGIC)) == _GZIP_MAGIC
-    except FileNotFoundError:
-        raise PvcEvalInputError(f"{path} does not exist. Check its path and run again.") from None
-    except IsADirectoryError:
-        raise PvcEvalInputError(
-            f"{path} is a directory, not a VCF file. Check its path and run again."
-        ) from None
-    except PermissionError:
-        raise PvcEvalInputError(
-            f"{path} cannot be read: permission denied. Allow reading it and run again."
-        ) from None
-    if is_gzipped:
-        return gzip.open(path, "rt", encoding="utf-8")
-    return path.open(encoding="utf-8")
 
 
 def _parse_samples(numbered_lines: Iterator[tuple[int, str]], path: Path) -> tuple[str, ...]:

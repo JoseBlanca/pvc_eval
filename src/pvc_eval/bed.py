@@ -5,22 +5,25 @@ Positions are 0-based and half-open, as a BED gives them.
 Public: BedLine, one interval of a BED; parse_bed, which yields them.
 """
 
-import gzip
-import zlib
 from collections.abc import Iterator, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
 
+from pvc_eval._text_files import read_numbered_lines
 from pvc_eval.errors import PvcEvalInputError
 
 # The first word of the header lines of a BED that is not a comment; the STR finder's spec
 # has read_str_regions skip the same lines.
 _HEADER_WORDS = ("track", "browser")
 
-# The first two bytes of a gzip file, and so of a bgzipped one; decided by the owner on
-# 19 October 2026, a BED is read as parse_vcf reads a VCF, since GIAB's BEDs come gzipped.
-_GZIP_MAGIC = b"\x1f\x8b"
+# How to put right a BED that is not UTF-8 text, the end of the message that says so. A
+# BED is read as parse_vcf reads a VCF, gzipped or not, decided by the owner on
+# 19 October 2026, since GIAB's BEDs come gzipped.
+_NOT_UTF8_ADVICE = (
+    "If it is compressed by a program other than gzip or bgzip, decompress it; if it is text"
+    " in another encoding, convert it to UTF-8; and run again."
+)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -54,38 +57,13 @@ def parse_bed(path: Path, contigs: Sequence[str]) -> Iterator[BedLine]:
     reference lacks.
     """
     reference_contigs = frozenset(contigs)
-    # Text is decoded and decompressed in blocks, so a fault is found somewhere after the
-    # last line read, and only that is known.
-    line_number = 0
     has_bed_line = False
-    try:
-        with _open_text(path) as bed:
-            for line_number, line in enumerate(bed, start=1):
-                if _is_skipped(line):
-                    continue
-                has_bed_line = True
-                yield _parse_bed_line(line, path, line_number, reference_contigs)
-    except FileNotFoundError:
-        raise PvcEvalInputError(f"{path} does not exist. Check its path and run again.") from None
-    except IsADirectoryError:
-        raise PvcEvalInputError(
-            f"{path} is a directory, not a BED file. Check its path and run again."
-        ) from None
-    except PermissionError:
-        raise PvcEvalInputError(
-            f"{path} cannot be read: permission denied. Allow reading it and run again."
-        ) from None
-    except UnicodeDecodeError as err:
-        raise PvcEvalInputError(
-            f"{path} is not UTF-8 text: a byte at or after line {line_number + 1} cannot be read"
-            " as UTF-8. If it is compressed by a program other than gzip or bgzip, decompress"
-            " it; if it is text in another encoding, convert it to UTF-8; and run again."
-        ) from err
-    except (EOFError, gzip.BadGzipFile, zlib.error) as err:
-        raise PvcEvalInputError(
-            f"{path} is a gzip file cut short or damaged at or after line {line_number + 1}."
-            " Compress or copy it again, and run again."
-        ) from err
+    with closing(read_numbered_lines(path, "BED", _NOT_UTF8_ADVICE)) as numbered_lines:
+        for line_number, line in numbered_lines:
+            if _is_skipped(line):
+                continue
+            has_bed_line = True
+            yield _parse_bed_line(line, path, line_number, reference_contigs)
     # Decided by the owner on 19 October 2026: an empty --regions BED would skip every
     # locus without a word.
     if not has_bed_line:
@@ -94,19 +72,6 @@ def parse_bed(path: Path, contigs: Sequence[str]) -> Iterator[BedLine]:
             " track and browser lines. Give a BED with at least one line of contig, start and"
             " end, separated by tabs, and run again."
         )
-
-
-def _open_text(path: Path) -> TextIO:
-    """Open a BED, plain or gzipped, known by its first two bytes, as UTF-8 text, with a
-    byte-order mark at the start of the text dropped and one anywhere else kept.
-    """
-    with path.open("rb") as raw:
-        is_gzipped = raw.read(len(_GZIP_MAGIC)) == _GZIP_MAGIC
-    # utf-8-sig drops the byte-order mark only at the start of the text; kept, it would
-    # become part of the first contig's name (doc/specs/loci.md, Regions).
-    if is_gzipped:
-        return gzip.open(path, "rt", encoding="utf-8-sig")
-    return path.open(encoding="utf-8-sig")
 
 
 def _is_skipped(line: str) -> bool:

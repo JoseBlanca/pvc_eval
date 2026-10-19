@@ -564,6 +564,44 @@ def test_truncated_gzip_file_stops_the_run(tmp_path: Path, reference: IndexedFas
         list(parse_vcf(path, reference))
 
 
+def test_gzip_file_with_damaged_compressed_data_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    whole = gzip.compress((HEADER + "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n" * 50).encode())
+    path = tmp_path / "damaged.vcf.gz"
+    # The first byte of the deflate stream, after the gzip header of 10, given the block type
+    # 3, which deflate does not have (RFC 1951, 3.2.3), so that zlib cannot decompress it.
+    path.write_bytes(whole[:10] + bytes([whole[10] | 0b110]) + whole[11:])
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == (
+        f"{path} is a gzip file cut short or damaged at or after line 1. Compress or copy it"
+        " again, and run again."
+    )
+
+
+_BYTE_ORDER_MARK_VCF = ("﻿" + HEADER + "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n").encode()
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [_BYTE_ORDER_MARK_VCF, gzip.compress(_BYTE_ORDER_MARK_VCF)],
+    ids=["plain", "gzipped"],
+)
+def test_byte_order_mark_at_the_start_is_dropped(
+    tmp_path: Path, reference: IndexedFasta, contents: bytes
+) -> None:
+    path = tmp_path / "a.vcf"
+    path.write_bytes(contents)
+
+    assert parse_vcf_samples(path) == ("HG002", "HG003")
+    assert [(record.start, record.alleles) for record in parse_vcf(path, reference)] == [
+        (4, ("A", "T"))
+    ]
+
+
 @pytest.mark.parametrize(
     ("qual", "gq", "expected", "warning"),
     [
