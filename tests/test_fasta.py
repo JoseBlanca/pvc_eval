@@ -34,7 +34,9 @@ def write_fasta(directory: Path, name: str, fasta: bytes, fai: str | None) -> Pa
     return path
 
 
-def fasta_and_fai(contigs: dict[str, str], line_width: int, line_end: str) -> tuple[bytes, str]:
+def make_fasta_and_fai(
+    contigs: dict[str, str], line_width: int, line_end: str
+) -> tuple[bytes, str]:
     """A FASTA of the contigs, wrapped at line_width, and the .fai samtools would write."""
     fasta = ""
     fai_lines = []
@@ -61,7 +63,7 @@ def crlf_fa(tmp_path: Path) -> Path:
 def test_contigs_and_lengths_come_from_the_fai(one_fa: Path) -> None:
     with IndexedFasta(one_fa) as indexed_fasta:
         assert indexed_fasta.contigs == ("chr1", "chr2", "chr3")
-        assert [indexed_fasta.length(contig) for contig in indexed_fasta.contigs] == [12, 6, 7]
+        assert [indexed_fasta.get_length(contig) for contig in indexed_fasta.contigs] == [12, 6, 7]
 
 
 def test_contig_order_is_the_fai_order_not_the_fasta_order(tmp_path: Path) -> None:
@@ -69,7 +71,7 @@ def test_contig_order_is_the_fai_order_not_the_fasta_order(tmp_path: Path) -> No
     path = write_fasta(tmp_path, "one.fa", ONE_FA, fai)
     with IndexedFasta(path) as indexed_fasta:
         assert indexed_fasta.contigs == ("chr3", "chr1", "chr2")
-        assert indexed_fasta.bases("chr3", 0, 7) == "ACGTACG"
+        assert indexed_fasta.get_bases("chr3", 0, 7) == "ACGTACG"
 
 
 @pytest.mark.parametrize(
@@ -113,7 +115,7 @@ def test_bases_of_a_region_in_upper_case(
     one_fa: Path, contig: str, start: int, end: int, expected: str
 ) -> None:
     with IndexedFasta(one_fa) as indexed_fasta:
-        assert indexed_fasta.bases(contig, start, end) == expected
+        assert indexed_fasta.get_bases(contig, start, end) == expected
 
 
 @pytest.mark.parametrize(
@@ -141,7 +143,7 @@ def test_bases_with_windows_line_ends(
     crlf_fa: Path, contig: str, start: int, end: int, expected: str
 ) -> None:
     with IndexedFasta(crlf_fa) as indexed_fasta:
-        assert indexed_fasta.bases(contig, start, end) == expected
+        assert indexed_fasta.get_bases(contig, start, end) == expected
 
 
 @pytest.mark.skipif(shutil.which("samtools") is None, reason="samtools is not installed")
@@ -150,7 +152,7 @@ def test_bases_agree_with_a_fai_made_by_samtools(tmp_path: Path) -> None:
     subprocess.run(["samtools", "faidx", str(path)], check=True)
     with IndexedFasta(path) as indexed_fasta:
         assert indexed_fasta.contigs == ("chr1", "chr2", "chr3")
-        assert indexed_fasta.bases("chr1", 3, 11) == "TACGTNNA"
+        assert indexed_fasta.get_bases("chr1", 3, 11) == "TACGTNNA"
 
 
 @given(
@@ -166,15 +168,15 @@ def test_every_region_is_the_upper_case_slice_of_its_contig(
     # tmp_path_factory and not tmp_path, which hypothesis refuses: tmp_path would be one
     # directory for all the examples.
     contigs = {f"contig{i}": sequence for i, sequence in enumerate(sequences)}
-    fasta, fai = fasta_and_fai(contigs, line_width, line_end)
+    fasta, fai = make_fasta_and_fai(contigs, line_width, line_end)
     path = write_fasta(tmp_path_factory.mktemp("example"), "ref.fa", fasta, fai)
     with IndexedFasta(path) as indexed_fasta:
         assert indexed_fasta.contigs == tuple(contigs)
         for name, sequence in contigs.items():
-            assert indexed_fasta.length(name) == len(sequence)
+            assert indexed_fasta.get_length(name) == len(sequence)
             for start in range(len(sequence) + 1):
                 for end in range(start, len(sequence) + 1):
-                    assert indexed_fasta.bases(name, start, end) == sequence[start:end].upper()
+                    assert indexed_fasta.get_bases(name, start, end) == sequence[start:end].upper()
 
 
 def test_threads_reading_one_indexed_fasta_get_the_bases_one_thread_gets(tmp_path: Path) -> None:
@@ -182,7 +184,7 @@ def test_threads_reading_one_indexed_fasta_get_the_bases_one_thread_gets(tmp_pat
     contigs = {
         f"chr{i}": "".join(rng.choices("ACGTacgtN", k=rng.randint(2000, 5000))) for i in range(4)
     }
-    fasta, fai = fasta_and_fai(contigs, 60, "\n")
+    fasta, fai = make_fasta_and_fai(contigs, 60, "\n")
     path = write_fasta(tmp_path, "ref.fa", fasta, fai)
     num_threads, regions_per_thread = 8, 200
     regions = []
@@ -192,10 +194,10 @@ def test_threads_reading_one_indexed_fasta_get_the_bases_one_thread_gets(tmp_pat
         end = rng.randint(start, min(start + 300, len(contigs[name])))
         regions.append((name, start, end))
     with IndexedFasta(path) as indexed_fasta:
-        one_thread = [indexed_fasta.bases(*region) for region in regions]
+        one_thread = [indexed_fasta.get_bases(*region) for region in regions]
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             several_threads = list(
-                executor.map(lambda region: indexed_fasta.bases(*region), regions)
+                executor.map(lambda region: indexed_fasta.get_bases(*region), regions)
             )
     assert several_threads == one_thread
     assert one_thread == [contigs[name][start:end].upper() for name, start, end in regions]
@@ -329,7 +331,7 @@ def test_a_wrong_fai_line_is_named(tmp_path: Path, fai: str, line_number: int, f
         IndexedFasta(path)
 
 
-def not_bases_message(path: Path, region: str, fai_line_number: int) -> str:
+def make_not_bases_message(path: Path, region: str, fai_line_number: int) -> str:
     return (
         f"{path}: the bytes of {region} that its .fai, line {fai_line_number}, gives are not"
         f" all letters. Make the .fai again with `samtools faidx {path}`, check that the"
@@ -389,21 +391,21 @@ def test_bytes_that_are_not_bases_where_the_fai_says_are_named(
     fai_line_number: int,
 ) -> None:
     path = write_fasta(tmp_path, "ref.fa", fasta, fai)
-    expected = not_bases_message(path, region, fai_line_number)
+    expected = make_not_bases_message(path, region, fai_line_number)
     with (
         IndexedFasta(path) as indexed_fasta,
         pytest.raises(PvcEvalInputError, match=f"^{re.escape(expected)}$"),
     ):
-        indexed_fasta.bases(contig, start, end)
+        indexed_fasta.get_bases(contig, start, end)
 
 
 def test_a_fasta_cut_short_after_opening_is_named(tmp_path: Path) -> None:
     path = write_fasta(tmp_path, "one.fa", ONE_FA, ONE_FAI)
-    expected = not_bases_message(path, "chr3:1-7", 3)
+    expected = make_not_bases_message(path, "chr3:1-7", 3)
     with IndexedFasta(path) as indexed_fasta:
         os.truncate(path, len(ONE_FA) - 2)
         with pytest.raises(PvcEvalInputError, match=f"^{re.escape(expected)}$"):
-            indexed_fasta.bases("chr3", 0, 7)
+            indexed_fasta.get_bases("chr3", 0, 7)
 
 
 @pytest.mark.parametrize(
@@ -430,7 +432,7 @@ def test_a_region_outside_its_contig_is_a_value_error(
         IndexedFasta(one_fa) as indexed_fasta,
         pytest.raises(ValueError, match=f"^{re.escape(message.format(path=one_fa))}$"),
     ):
-        indexed_fasta.bases(contig, start, end)
+        indexed_fasta.get_bases(contig, start, end)
 
 
 def test_length_of_an_unknown_contig_is_a_value_error(one_fa: Path) -> None:
@@ -438,14 +440,14 @@ def test_length_of_an_unknown_contig_is_a_value_error(one_fa: Path) -> None:
         IndexedFasta(one_fa) as indexed_fasta,
         pytest.raises(ValueError, match=f"^{re.escape(f'contig chr9 is not in {one_fa}')}$"),
     ):
-        indexed_fasta.length("chr9")
+        indexed_fasta.get_length("chr9")
 
 
 def test_a_closed_indexed_fasta_reads_nothing(one_fa: Path) -> None:
     with IndexedFasta(one_fa) as indexed_fasta:
         pass
     with pytest.raises(OSError, match="Bad file descriptor"):
-        indexed_fasta.bases("chr1", 0, 3)
+        indexed_fasta.get_bases("chr1", 0, 3)
 
 
 def test_closing_twice_leaves_a_file_opened_between_alone(one_fa: Path, tmp_path: Path) -> None:
@@ -508,14 +510,17 @@ def test_a_window_extends_forward_and_backward_and_starts_again_far_away(window_
             (("chr1", 22, 23), "N", ("chr1", 22, 26)),
         ]
         for request, expected_bases, expected_held in steps:
-            assert (window.bases(*request), window.held_region) == (expected_bases, expected_held)
+            assert (window.get_bases(*request), window.held_region) == (
+                expected_bases,
+                expected_held,
+            )
             assert window.resident_bases == expected_held[2] - expected_held[1]
 
 
 def test_an_empty_request_reads_nothing(window_fa: Path) -> None:
     with IndexedFasta(window_fa) as indexed_fasta:
         window = FastaWindow(indexed_fasta, block_bases=4)
-        assert window.bases("chr1", 5, 5) == ""
+        assert window.get_bases("chr1", 5, 5) == ""
         assert window.held_region is None
         assert window.resident_bases == 0
 
@@ -523,33 +528,35 @@ def test_an_empty_request_reads_nothing(window_fa: Path) -> None:
 def test_evicted_bases_are_read_again_when_asked_for(window_fa: Path) -> None:
     with IndexedFasta(window_fa) as indexed_fasta:
         window = FastaWindow(indexed_fasta, block_bases=4)
-        assert window.bases("chr1", 10, 16) == "TTACGT"
+        assert window.get_bases("chr1", 10, 16) == "TTACGT"
         assert window.held_region == ("chr1", 10, 16)
         window.evict_before(14)
         assert window.held_region == ("chr1", 14, 16)
         window.evict_before(12)
         assert window.held_region == ("chr1", 14, 16)
-        assert window.bases("chr1", 10, 16) == "TTACGT"
+        assert window.get_bases("chr1", 10, 16) == "TTACGT"
         assert window.held_region == ("chr1", 10, 16)
         window.evict_before(25)
         assert window.held_region is None
         assert window.resident_bases == 0
-        assert window.bases("chr1", 18, 21) == "GTN"
+        assert window.get_bases("chr1", 18, 21) == "GTN"
 
 
 def test_a_window_raises_for_a_region_outside_its_contig(window_fa: Path) -> None:
     with IndexedFasta(window_fa) as indexed_fasta:
         window = FastaWindow(indexed_fasta, block_bases=4)
         with pytest.raises(ValueError, match=r"^end 41 is past the length of chr1, 40$"):
-            window.bases("chr1", 38, 41)
+            window.get_bases("chr1", 38, 41)
         with pytest.raises(
             ValueError, match=f"^{re.escape(f'contig chr9 is not in {window_fa}')}$"
         ):
-            window.bases("chr9", 0, 1)
+            window.get_bases("chr9", 0, 1)
 
 
 @st.composite
-def window_requests(draw: st.DrawFn, lengths: dict[str, int]) -> list[tuple[str | None, int, int]]:
+def generate_window_requests(
+    draw: st.DrawFn, lengths: dict[str, int]
+) -> list[tuple[str | None, int, int]]:
     """Requests (contig, start, end) and evictions (None, position, position)."""
     actions = []
     for _ in range(draw(st.integers(min_value=1, max_value=30))):
@@ -579,9 +586,9 @@ def test_every_window_answer_is_the_slice_and_eviction_drops_what_it_says(
     data: st.DataObject,
 ) -> None:
     contigs = {f"contig{i}": sequence for i, sequence in enumerate(sequences)}
-    fasta, fai = fasta_and_fai(contigs, line_width, "\n")
+    fasta, fai = make_fasta_and_fai(contigs, line_width, "\n")
     path = write_fasta(tmp_path_factory.mktemp("example"), "ref.fa", fasta, fai)
-    actions = data.draw(window_requests({name: len(seq) for name, seq in contigs.items()}))
+    actions = data.draw(generate_window_requests({name: len(seq) for name, seq in contigs.items()}))
     with IndexedFasta(path) as indexed_fasta:
         window = FastaWindow(indexed_fasta, block_bases=block_bases)
         for contig, start, end in actions:
@@ -590,7 +597,7 @@ def test_every_window_answer_is_the_slice_and_eviction_drops_what_it_says(
                 held_region = window.held_region
                 assert held_region is None or held_region[1] >= start
             else:
-                assert window.bases(contig, start, end) == contigs[contig][start:end].upper()
+                assert window.get_bases(contig, start, end) == contigs[contig][start:end].upper()
             held_region = window.held_region
             assert window.resident_bases == (
                 0 if held_region is None else held_region[2] - held_region[1]
@@ -601,13 +608,15 @@ def test_a_forward_walk_with_eviction_holds_a_few_blocks(tmp_path: Path) -> None
     rng = random.Random(19)
     length = 1_000_000
     contigs = {"chr1": "".join(rng.choices("ACGT", k=length))}
-    fasta, fai = fasta_and_fai(contigs, 60, "\n")
+    fasta, fai = make_fasta_and_fai(contigs, 60, "\n")
     path = write_fasta(tmp_path, "ref.fa", fasta, fai)
     most_held = 0
     with IndexedFasta(path) as indexed_fasta:
         window = FastaWindow(indexed_fasta)
         for start in range(0, length - 20, 10):
-            assert window.bases("chr1", start, start + 20) == contigs["chr1"][start : start + 20]
+            assert (
+                window.get_bases("chr1", start, start + 20) == contigs["chr1"][start : start + 20]
+            )
             window.evict_before(start - 100)
             most_held = max(most_held, window.resident_bases)
     assert 0 < most_held <= 2 * BLOCK_BASES
@@ -618,7 +627,7 @@ def test_threads_each_with_a_window_over_one_indexed_fasta_agree(tmp_path: Path)
     contigs = {
         f"chr{i}": "".join(rng.choices("ACGTacgtN", k=rng.randint(2000, 5000))) for i in range(3)
     }
-    fasta, fai = fasta_and_fai(contigs, 60, "\n")
+    fasta, fai = make_fasta_and_fai(contigs, 60, "\n")
     path = write_fasta(tmp_path, "ref.fa", fasta, fai)
     num_threads, requests_per_thread = 8, 200
     walks = []
@@ -635,7 +644,7 @@ def test_threads_each_with_a_window_over_one_indexed_fasta_agree(tmp_path: Path)
         window = FastaWindow(indexed_fasta, block_bases=256)
         answers = []
         for name, start, end in walk:
-            answers.append(window.bases(name, start, end))
+            answers.append(window.get_bases(name, start, end))
             window.evict_before(start)
         return answers
 

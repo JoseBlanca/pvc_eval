@@ -33,7 +33,7 @@ class _FaiLine:
     line_bytes: int
     line_number: int
 
-    def byte_of(self, position: int) -> int:
+    def find_byte(self, position: int) -> int:
         """The byte of the FASTA that holds the base at a 0-based position."""
         line, column = divmod(position, self.line_bases)
         return self.offset + line * self.line_bytes + column
@@ -74,29 +74,29 @@ class IndexedFasta:
         self.contigs = tuple(self._fai_lines)
         """The contig names, in the order of the `.fai`."""
 
-    def length(self, contig: str) -> int:
+    def get_length(self, contig: str) -> int:
         """The number of bases of a contig.
 
         Raises ValueError for a contig the `.fai` lacks.
         """
-        return self._fai_line(contig).length
+        return self._get_fai_line(contig).length
 
-    def bases(self, contig: str, start: int, end: int) -> str:
+    def get_bases(self, contig: str, start: int, end: int) -> str:
         """The bases of a region of a contig, 0-based and half-open, in upper case.
 
         Raises ValueError for a contig the `.fai` lacks, a negative start, an end before
         the start or past the end of the contig. Raises PvcEvalInputError when the bytes
         of the region are not bases where the `.fai` says they are.
         """
-        return self._upper_bytes(contig, start, end).decode("ascii")
+        return self._read_upper_bytes(contig, start, end).decode("ascii")
 
-    def _upper_bytes(self, contig: str, start: int, end: int) -> bytearray:
-        """What bases gives, as ASCII bytes."""
-        fai_line = self._checked_region(contig, start, end)
+    def _read_upper_bytes(self, contig: str, start: int, end: int) -> bytearray:
+        """What get_bases gives, as ASCII bytes."""
+        fai_line = self._check_region(contig, start, end)
         if start == end:
             return bytearray()
-        first_byte = fai_line.byte_of(start)
-        num_bytes = fai_line.byte_of(end - 1) + 1 - first_byte
+        first_byte = fai_line.find_byte(start)
+        num_bytes = fai_line.find_byte(end - 1) + 1 - first_byte
         fasta_bytes = os.pread(self._fd, num_bytes, first_byte)
         # fasta_bytes is shorter only when the FASTA was cut short after it was opened,
         # and then the region stays empty, which isalpha takes as not letters.
@@ -117,12 +117,12 @@ class IndexedFasta:
             )
         return region.upper()
 
-    def _checked_region(self, contig: str, start: int, end: int) -> _FaiLine:
+    def _check_region(self, contig: str, start: int, end: int) -> _FaiLine:
         """The .fai line of the contig of a region, 0-based and half-open.
 
         Raises ValueError for a contig the `.fai` lacks or a region outside the contig.
         """
-        fai_line = self._fai_line(contig)
+        fai_line = self._get_fai_line(contig)
         if start < 0:
             raise ValueError(f"start must be 0 or more, not {start}")
         if end < start:
@@ -148,7 +148,7 @@ class IndexedFasta:
     ) -> None:
         self.close()
 
-    def _fai_line(self, contig: str) -> _FaiLine:
+    def _get_fai_line(self, contig: str) -> _FaiLine:
         try:
             return self._fai_lines[contig]
         except KeyError:
@@ -180,7 +180,7 @@ def _read_fai(fasta: Path, fasta_size: int) -> dict[str, _FaiLine]:
                 f"{where} names contig {name} again, which line"
                 f" {fai_lines[name].line_number} named first.{remedy}"
             )
-        if fai_line.length and fai_line.byte_of(fai_line.length - 1) >= fasta_size:
+        if fai_line.length and fai_line.find_byte(fai_line.length - 1) >= fasta_size:
             raise PvcEvalInputError(
                 f"{where} puts the bases of {name} past the end of the FASTA, which has"
                 f" {fasta_size} bytes.{remedy}"
@@ -284,12 +284,12 @@ class FastaWindow:
         self._start = 0  # the contig position of the first byte of _buffer
         self._buffer = bytearray()  # upper-case ASCII bases
 
-    def bases(self, contig: str, start: int, end: int) -> str:
+    def get_bases(self, contig: str, start: int, end: int) -> str:
         """The bases of a region of a contig, 0-based and half-open, in upper case.
 
-        Raises what IndexedFasta.bases raises.
+        Raises what IndexedFasta.get_bases raises.
         """
-        length = self._indexed_fasta._checked_region(contig, start, end).length
+        length = self._indexed_fasta._check_region(contig, start, end).length
         if start == end:
             return ""
         buffer_end = self._start + len(self._buffer)
@@ -300,15 +300,15 @@ class FastaWindow:
             or end + self._block_bases <= self._start
         ):
             block_end = min(length, max(end, start + self._block_bases))
-            self._buffer = self._indexed_fasta._upper_bytes(contig, start, block_end)
+            self._buffer = self._indexed_fasta._read_upper_bytes(contig, start, block_end)
             self._contig, self._start = contig, start
         else:
             if end > buffer_end:
                 block_end = min(length, max(end, buffer_end + self._block_bases))
-                self._buffer += self._indexed_fasta._upper_bytes(contig, buffer_end, block_end)
+                self._buffer += self._indexed_fasta._read_upper_bytes(contig, buffer_end, block_end)
             if start < self._start:
                 block_start = max(0, min(start, self._start - self._block_bases))
-                self._buffer[:0] = self._indexed_fasta._upper_bytes(
+                self._buffer[:0] = self._indexed_fasta._read_upper_bytes(
                     contig, block_start, self._start
                 )
                 self._start = block_start
