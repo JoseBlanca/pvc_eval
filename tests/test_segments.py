@@ -594,10 +594,11 @@ def test_the_candidates_come_by_period_then_start() -> None:
 
 @pytest.mark.slow
 def test_step_one_holds_far_fewer_than_every_candidate_of_four_million_bases() -> None:
-    # The plan's bound. Measured with tracemalloc on CPython 3.15t, 19 October 2026: a peak
-    # of 8.0 MB, 4 MB of it the bases as bytes, in 14 s. The same run in one block of the
-    # whole sequence, which holds every candidate and every subsequence of the scores until
-    # the end, peaked at 804.5 MB.
+    # The plan's bound. Measured on CPython 3.15t, Apple M5 Pro, 19 October 2026: a peak of
+    # 8.0 MB, 4 MB of it the bases as bytes; _find_candidates took 23 to 25 s under
+    # tracemalloc, and this test 34 s. The same run in one block of the whole sequence,
+    # which holds every candidate and every subsequence of the scores until the end,
+    # peaked at 965.6 MB.
     bases = _make_random_bases(seed=19, length=4_000_000, alphabet="ACGT")
     tracemalloc.start()
     try:

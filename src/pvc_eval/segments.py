@@ -52,8 +52,8 @@ _MAX_PERIOD = 6  # the longest motif the finder scans, doc/specs/str_finder.md s
 
 # Bases each period scores before the candidates found so far are tested and the ones
 # nothing needs any more are let go (doc/specs/str_finder.md, "What it holds"). On 4 Mb of
-# random bases, tracemalloc's peak was 8.0 MB with 4,096, 11.9 MB with 16,384 and 29.4 MB
-# with 65,536, at the same time (CPython 3.15t, 19 October 2026).
+# random bases, tracemalloc's peak was 8.0 MB with 4,096, 13.2 MB with 16,384 and 35.1 MB
+# with 65,536, in 23 to 26 s each (CPython 3.15t, Apple M5 Pro, 19 October 2026).
 _BLOCK_BASES = 1 << 12
 
 # Every byte to its canonical base: A, C, G and T in either case to the upper-case base,
