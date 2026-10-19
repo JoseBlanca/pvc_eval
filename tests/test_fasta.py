@@ -617,6 +617,11 @@ def test_a_window_stops_on_a_byte_it_reads_ahead(tmp_path: Path) -> None:
             window.get_bases("chr1", 0, 2)
 
 
+def test_a_window_gives_the_indexed_fasta_it_reads(window_fa: Path) -> None:
+    with IndexedFasta(window_fa) as indexed_fasta:
+        assert FastaWindow(indexed_fasta).indexed_fasta is indexed_fasta
+
+
 def test_an_empty_request_reads_nothing(window_fa: Path) -> None:
     with IndexedFasta(window_fa) as indexed_fasta:
         window = FastaWindow(indexed_fasta, block_bases=4)

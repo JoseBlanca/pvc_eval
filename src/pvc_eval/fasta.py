@@ -5,6 +5,9 @@ Only the bytes of the region asked for are read from disk, so the FASTA is never
 memory. An IndexedFasta is shared by threads; a FastaWindow, one per thread, keeps the
 bases around a walk along a contig in a buffer the walk shrinks behind it. Positions are
 0-based and half-open, as in the `.fai`.
+
+Public: IndexedFasta, which reads any region of the FASTA; and FastaWindow, which reads
+through a buffer one thread walks along a contig.
 """
 
 import os
@@ -15,8 +18,8 @@ from typing import Self
 
 from pvc_eval.errors import PvcEvalInputError
 
-GZIP_MAGIC = b"\x1f\x8b"  # the first two bytes of a gzip or bgzip file
-FAI_COLUMNS = ("name", "length", "offset", "bases per line", "bytes per line")
+_GZIP_MAGIC = b"\x1f\x8b"  # the first two bytes of a gzip or bgzip file
+_FAI_COLUMNS = ("name", "length", "offset", "bases per line", "bytes per line")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -53,10 +56,10 @@ class IndexedFasta:
     """
 
     def __init__(self, path: Path) -> None:
-        self.path = path
+        self._path = path
         try:
             with path.open("rb") as fasta:
-                magic = fasta.read(len(GZIP_MAGIC))
+                magic = fasta.read(len(_GZIP_MAGIC))
                 fasta_size = os.fstat(fasta.fileno()).st_size
         except FileNotFoundError:
             raise PvcEvalInputError(
@@ -68,13 +71,13 @@ class IndexedFasta:
             ) from None
         except PermissionError:
             raise PvcEvalInputError(_make_cannot_read_message(path)) from None
-        if magic == GZIP_MAGIC:
+        if magic == _GZIP_MAGIC:
             raise PvcEvalInputError(
                 f"{path} is compressed with gzip or bgzip, and pvc_eval reads only an"
                 f" uncompressed FASTA. Decompress it with `gunzip -c {path} > file.fa`,"
                 " index it with `samtools faidx file.fa`, and give file.fa instead."
             )
-        self._fai_lines = _read_fai(path, fasta_size)
+        self._fai_lines = _parse_fai(path, fasta_size)
         # One descriptor read with os.pread, which takes the byte to start at and so
         # leaves no file position for threads to share.
         self._fd = os.open(path, os.O_RDONLY)
@@ -103,13 +106,13 @@ class IndexedFasta:
         if start == end:
             return bytearray()
         if self._fd < 0:
-            raise ValueError(f"{self.path} is closed")
+            raise ValueError(f"{self._path} is closed")
         first_byte = fai_line.find_byte(start)
         num_bytes = fai_line.find_byte(end - 1) + 1 - first_byte
         fasta_bytes = os.pread(self._fd, num_bytes, first_byte)
         if len(fasta_bytes) != num_bytes:
             raise PvcEvalInputError(
-                f"{self.path} ends before {contig}:{start + 1}-{end}, where its .fai, line"
+                f"{self._path} ends before {contig}:{start + 1}-{end}, where its .fai, line"
                 f" {fai_line.line_number}, puts bases: it was cut short after it was opened."
                 " Run again once nothing is writing to it."
             )
@@ -120,9 +123,9 @@ class IndexedFasta:
         if not region.isalpha():
             first_bad = next(i for i, byte in enumerate(region) if not bytes([byte]).isalpha())
             raise PvcEvalInputError(
-                f"{self.path}: {contig}:{start + first_bad + 1} is not a letter where its .fai,"
+                f"{self._path}: {contig}:{start + first_bad + 1} is not a letter where its .fai,"
                 f" line {fai_line.line_number}, puts a base. Make the .fai again with"
-                f" `samtools faidx {self.path}`, check that the FASTA holds only letters"
+                f" `samtools faidx {self._path}`, check that the FASTA holds only letters"
                 " between its header lines, and run again."
             )
         return region.upper()
@@ -162,14 +165,14 @@ class IndexedFasta:
         try:
             return self._fai_lines[contig]
         except KeyError:
-            raise ValueError(f"contig {contig} is not in {self.path}") from None
+            raise ValueError(f"contig {contig} is not in {self._path}") from None
 
 
 def _make_cannot_read_message(path: Path) -> str:
     return f"{path} cannot be read: permission denied. Allow reading it and run again."
 
 
-def _read_fai(fasta: Path, fasta_size: int) -> dict[str, _FaiLine]:
+def _parse_fai(fasta: Path, fasta_size: int) -> dict[str, _FaiLine]:
     """The lines of the `.fai` of a FASTA of fasta_size bytes, by contig, in its order."""
     fai = Path(f"{fasta}.fai")
     remedy = f" Make the .fai again with `samtools faidx {fasta}` and run again."
@@ -215,16 +218,16 @@ def _read_fai(fasta: Path, fasta_size: int) -> dict[str, _FaiLine]:
 def _parse_fai_line(line: str, line_number: int, where: str, remedy: str) -> tuple[str, _FaiLine]:
     """The contig name of a `.fai` line and where its bases are."""
     columns = line.split("\t")
-    if len(columns) != len(FAI_COLUMNS):
+    if len(columns) != len(_FAI_COLUMNS):
         raise PvcEvalInputError(
-            f"{where} has {len(columns)} columns where a .fai has {len(FAI_COLUMNS)}:"
-            f" {', '.join(FAI_COLUMNS)}.{remedy}"
+            f"{where} has {len(columns)} columns where a .fai has {len(_FAI_COLUMNS)}:"
+            f" {', '.join(_FAI_COLUMNS)}.{remedy}"
         )
     name = columns[0]
     if not name:
         raise PvcEvalInputError(f"{where} has no contig name.{remedy}")
     numbers = []
-    for column, value in zip(FAI_COLUMNS[1:], columns[1:], strict=True):
+    for column, value in zip(_FAI_COLUMNS[1:], columns[1:], strict=True):
         if not value.isdecimal():
             raise PvcEvalInputError(
                 f"{where} has {value} as its {column}, which is not a whole number of 0 or"
@@ -273,7 +276,7 @@ def _drop_line_ends(
     return region
 
 
-BLOCK_BASES = 65536  # bases read at least at a time by a FastaWindow; see its docstring
+_BLOCK_BASES = 65536  # bases read at least at a time by a FastaWindow; see its docstring
 
 
 class FastaWindow:
@@ -298,7 +301,7 @@ class FastaWindow:
     A window belongs to one thread: it changes its buffer on every request, without a
     lock. Threads share the IndexedFasta, each with its own window.
 
-    BLOCK_BASES is 64 Ki bases, the 64 KiB pvc reads at a time. The block size barely
+    The default block is 64 Ki bases, the 64 KiB pvc reads at a time. The block size barely
     changes the time: a forward walk over a 20 Mb contig in requests of 20 bases every 10,
     evicting 100 behind, took 0.75 s with blocks of 1 Ki to 1 Mi bases and 0.80 s with 256,
     and one in requests every 1000 bases 0.05 s to 0.07 s (CPython 3.15t, Apple M5 Pro,
@@ -306,7 +309,7 @@ class FastaWindow:
     is small at 64 Ki.
     """
 
-    def __init__(self, indexed_fasta: IndexedFasta, *, block_bases: int = BLOCK_BASES) -> None:
+    def __init__(self, indexed_fasta: IndexedFasta, *, block_bases: int = _BLOCK_BASES) -> None:
         if block_bases < 1:
             raise ValueError(f"block_bases must be 1 or more, not {block_bases}")
         self._indexed_fasta = indexed_fasta
@@ -317,6 +320,11 @@ class FastaWindow:
         # The span of the requests the buffer has served, from which a gap is measured.
         self._requested_start = 0
         self._requested_end = 0
+
+    @property
+    def indexed_fasta(self) -> IndexedFasta:
+        """The IndexedFasta the window reads, which gives the contigs and their lengths."""
+        return self._indexed_fasta
 
     def get_bases(self, contig: str, start: int, end: int) -> str:
         """The bases of a region of a contig, 0-based and half-open, in upper case.
