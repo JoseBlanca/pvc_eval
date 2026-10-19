@@ -752,6 +752,33 @@ def test_reconcile_loci_passes_the_phasing_cap_on(reader: Reader) -> None:
     assert [reconciled.results_a for reconciled in reconciled_loci] == [{0: TOO_COMPLEX}]
 
 
+@pytest.mark.parametrize(
+    ("sample_pair", "message"),
+    [
+        (
+            SamplePair(name_a="S1", index_a=1, name_b="S0", index_b=0),
+            "the sample pair S1 of file A and S0 of file B names sample 1 of file A, and its"
+            " VCF record at line 3 has genotypes for 1 sample",
+        ),
+        (
+            SamplePair(name_a="S0", index_a=0, name_b="S3", index_b=3),
+            "the sample pair S0 of file A and S3 of file B names sample 3 of file B, and its"
+            " VCF record at line 3 has genotypes for 1 sample",
+        ),
+    ],
+    ids=["file-a", "file-b"],
+)
+def test_reconcile_raises_for_a_sample_index_beyond_the_genotypes(
+    reader: Reader, sample_pair: SamplePair, message: str
+) -> None:
+    reference = reader.make_reference(30, "ACG")
+    records = reader.read_records(reference, ["30 A T 0/1"])
+    locus = make_locus((30, 32), records, records)
+
+    with pytest.raises(ValueError, match=message):
+        reconcile(locus, get_locus_bases(reference, locus), (sample_pair,))
+
+
 def test_reconcile_loci_raises_for_a_ploidy_when_the_stream_starts(reader: Reader) -> None:
     reference = reader.make_reference(30, "ACG")
 

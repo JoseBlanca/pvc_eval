@@ -406,3 +406,16 @@ def test_every_sample_paired_gives_no_warning(
     make_sample_pairs(path_a, path_b)
 
     assert _get_warnings(caplog) == []
+
+
+@pytest.mark.parametrize(
+    ("index_a", "index_b", "message"),
+    [
+        (-1, 0, "index_a must be 0 or more, not -1"),
+        (0, -2, "index_b must be 0 or more, not -2"),
+    ],
+    ids=["index-a-negative", "index-b-negative"],
+)
+def test_sample_pair_raises_for_a_negative_index(index_a: int, index_b: int, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        SamplePair(name_a="HG002", index_a=index_a, name_b="HG002", index_b=index_b)

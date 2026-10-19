@@ -13,6 +13,7 @@ sample result of a sample over the phasing cap; and PHASING_CAP, the default cap
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
+from pvc_eval.errors import format_count
 from pvc_eval.fasta import FastaWindow, IndexedFasta
 from pvc_eval.locus import Locus
 from pvc_eval.outcome import InvalidReason, LocusGenotype
@@ -100,7 +101,7 @@ def reconcile(
     Raises ValueError for a ploidy other than 1 or 2, a phasing cap under 1, bases of
     another length than the locus, and a VCF genotype of a paired sample with another
     number of alleles than its file's ploidy, which means its file was read with another
-    ploidy.
+    ploidy, and for a sample pair whose index is not one of a record's genotypes.
     """
     _check_settings(ploidy_a, ploidy_b, phasing_cap)
     if len(locus_bases) != locus.end - locus.start:
@@ -108,6 +109,7 @@ def reconcile(
             f"locus_bases has {len(locus_bases)} bases, and the locus, {locus.start}-{locus.end},"
             f" has {locus.end - locus.start}"
         )
+    _check_sample_indices(locus, sample_pairs)
     files = (
         ("A", locus.records_a, sorted({pair.index_a for pair in sample_pairs}), ploidy_a),
         ("B", locus.records_b, sorted({pair.index_b for pair in sample_pairs}), ploidy_b),
@@ -177,6 +179,24 @@ def _check_settings(ploidy_a: int, ploidy_b: int, phasing_cap: int) -> None:
 
 def _is_whole(number: int) -> bool:
     return isinstance(number, int) and not isinstance(number, bool)
+
+
+def _check_sample_indices(locus: Locus, sample_pairs: Iterable[SamplePair]) -> None:
+    """Raise ValueError when a sample pair names a sample beyond the genotypes of a record
+    of its file."""
+    for sample_pair in sample_pairs:
+        for file_name, records, sample_index in (
+            ("A", locus.records_a, sample_pair.index_a),
+            ("B", locus.records_b, sample_pair.index_b),
+        ):
+            for vcf_record in records:
+                if sample_index >= len(vcf_record.genotypes):
+                    raise ValueError(
+                        f"the sample pair {sample_pair.name_a} of file A and"
+                        f" {sample_pair.name_b} of file B names sample {sample_index} of file"
+                        f" {file_name}, and its VCF record at line {vcf_record.line_number} has"
+                        f" genotypes for {format_count(len(vcf_record.genotypes), 'sample')}"
+                    )
 
 
 def _check_genotype_ploidy(

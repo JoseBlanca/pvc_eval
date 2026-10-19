@@ -25,12 +25,20 @@ _BYTE_ORDER_MARK = "\ufeff"  # U+FEFF, which UTF-8 writes as EF BB BF
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SamplePair:
-    """A sample of file A and the sample of file B it is compared with."""
+    """A sample of file A and the sample of file B it is compared with.
+
+    Raises ValueError for a negative index.
+    """
 
     name_a: str
     index_a: int  # the sample's place among file A's sample columns, from 0
     name_b: str
     index_b: int  # the sample's place among file B's sample columns, from 0
+
+    def __post_init__(self) -> None:
+        for name, index in (("index_a", self.index_a), ("index_b", self.index_b)):
+            if index < 0:
+                raise ValueError(f"{name} must be 0 or more, not {index}")
 
 
 def make_sample_pairs(
