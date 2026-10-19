@@ -1,6 +1,7 @@
 # The loci
 
-*Status: draft, 19 October 2026, for review; not yet approved by the owner. No code yet. It
+*Status: approved by the owner on 19 October 2026, with kind and stratum in this spec rather than
+in reconciliation's. No code yet. It
 depends on `doc/spec.md` §2 (vocabulary), §4 (the two contracts, "What stage 1 yields" and "What
 stage 3 yields"), §5.2 (spans), §5.3 (loci), §5.6 (kind) and §5.7 (strata), and on
 `doc/specs/str_finder.md` for the segments.*
