@@ -1,6 +1,6 @@
 # Reconciliation and evaluation — specification
 
-*Status: draft, 19 October 2026, for review before any code. No code of these stages exists. It
+*Status: approved by the owner on 19 October 2026. No code of these stages exists yet. It
 builds stages 4 and 5 of `doc/spec.md` §4 and stands on `doc/spec.md` §2, §4, §5.2, §5.4, §5.5 and
 §6, on the VCF reader (`src/pvc_eval/vcf.py`) and on the loci's spec, `doc/specs/loci.md`, which
 gives the kind and the stratum of a locus.*
@@ -26,16 +26,13 @@ The owner decided, on 19 October 2026:
 - each file is read with one ploidy, given by the user, 2 by default, which settles `doc/spec.md`
   Open 1; a GT of another ploidy makes the sample invalid;
 - the phasing cap stays at 4096 by default, to be lowered if it costs too much time (`doc/spec.md`
-  Open 2).
+  Open 2);
+- a `*` is covered by any edit that replaces a position of its record's REF, as GATK writes `*`
+  under an MNP, over deletions only (Open 4 of the draft);
+- two genotypes all REF count as equal whatever their ploidies (Open 5 of the draft).
 
-What the owner is asked, besides approving the spec:
-
-- **Open 4** (§11): whether a `*` under an edit that is not a deletion, as GATK writes with MNPs
-  turned on, is covered.
-- The changes to `doc/spec.md` that the decisions above need beyond its §5.4 and §5.5 (§10),
-  among them the options `--ploidy-a` and `--ploidy-b`.
-- **Open 5** (§11): how two files of different ploidies compare where neither carries an ALT.
-- Four points this spec decides, each where it stands: a GT of only `.` is missing whatever its
+The decisions change `doc/spec.md` beyond its §5.4 and §5.5, as §10 lists. Four smaller points
+are decided here, each where it stands: a GT of only `.` is missing whatever its
   number of alleles (§2); a sample in no pair is not reconciled (§4); a reason is written whenever a sample is invalid, also in a row *too complex*
   because of its partner (§6); and `quality` and `gq` count a `*` as an ALT (§6).
 
@@ -95,7 +92,7 @@ for the phase enumeration, and the command line refuses `--ploidy-a` or `--ploid
 or 2 before it reads anything (the spec of `compare`).
 
 Two files read with different ploidies are compared by the rules of §5, where a genotype of one
-haplotype never equals one of two, with one rule of their own (**Open 5**, below): two genotypes
+haplotype never equals one of two, with one rule of their own (decided by the owner on 19 October 2026): two genotypes
 all REF count as equal whatever their ploidies. A haploid `1` against a diploid `1/1` is *same
 alleles, other genotype* (E8 of §5); a haploid `0` against `0/0` is *reference in both*.
 
@@ -204,9 +201,10 @@ leaves nothing of either, one that spells REF, makes no edit.
   when they go in at the same point. An insertion at either end of a replaced stretch, or a
   replacement next to another, does not collide.
 - It carries a `*` that no deletion **covers**. A deletion covers a `*` when one of its placements
-  deletes a position of the `*` record's REF. A deletion of a record whose allele the haplotype
-  carries counts. So does a deletion among the alleles of a record where the haplotype is
-  `MISSING`, since it might carry that one. The placements of a deletion are where it was
+  deletes a position of the `*` record's REF; any other edit covers it when, as written, it
+  replaces such a position, as GATK writes `*` under an MNP (decided by the owner on 19 October
+  2026). An edit of a record whose allele the haplotype carries counts. So does an edit among the
+  alleles of a record where the haplotype is `MISSING`, since it might carry that one. The placements of a deletion are where it was
   written and every slide of `doc/spec.md` §5.2 that deletes only positions of its record's span:
   a record whose span the span limit cut back to its REF allows only the slides within its REF. A deletion is an
   edit that replaces one or more positions with no bases. Where the span is not cut, the base
@@ -258,7 +256,8 @@ two `bcftools norm` outputs were run with bcftools 1.24 (`bcftools norm -f ref.f
 | `9 CAGT C 0/1`, `11 G A 0/1` | alleles `CAGT,CAAT,C`; possible genotypes `(1, 2)`. Assignment 0 puts both on one haplotype, which is impossible |
 | `9 CAGT C 0/1`, `11 G A,* 1/2` (GATK) | alleles `CAGT,CAAT,C`; possible genotypes `(1, 2)`: against the second row, *same genotype* |
 | `9 CAGT C 0/1`, `9 C G,* 1/2` | invalid, `contradicting records`: a `*` on the deletion's anchor base alone is not covered |
-| `11 G A,* 1/2` | invalid, `contradicting records`: no deletion |
+| `11 G A,* 1/2` | invalid, `contradicting records`: no edit covers the `*` |
+| `10 AG TC 0/1`, `11 G A,* 1/2` | locus 10–11, alleles `AG,AA,TC`, `(1, 2)`: the MNP replaces 11 and covers the `*` |
 | `9 CAGT C ./.`, `11 G A,* 1/2` | possible genotypes `(MISSING, MISSING)`: the `*` might be covered |
 
 **R2. A `*` after `bcftools norm`.** Reference 19–24 `TAAAAG`, locus 19–23. GATK's form,
@@ -351,7 +350,7 @@ of its indices other than 0:
 *Different* takes what is left, and in what is left both samples have a genotype with an ALT.
 *Only in A* needs no condition on A: had A a genotype all REF, *same genotype* would have
 applied. Within one ploidy two genotypes all REF are equal anyway; the words "counting as equal"
-matter only across ploidies (Open 5).
+matter only across ploidies (decided by the owner on 19 October 2026).
 
 *Too complex* and *invalid* report no pair, and in the row a sample that is too complex or invalid
 has no genotype. Its partner, when it is reconciled, shows its first possible genotype, as
@@ -377,7 +376,7 @@ has no genotype. Its partner, when it is reconciled, shows its first possible ge
 | 13 | `(0, 1)` | `(1, 2)` | different | `(0, 1)`, `(1, 2)` |
 
 E3 is the owner's `./1` against `./1` (`doc/spec.md` §5.5). E10 is R8's sample, in file B, against a file A
-with no records there. E11 is the same across two ploidies (Open 5). In E13 both carry
+with no records there. E11 is the same across two ploidies. In E13 both carry
 locus allele 1, on one haplotype each, but B carries a second ALT, so the ALT sets differ.
 
 ## 6. The row of the table
@@ -571,12 +570,13 @@ their own, after this spec is approved:
   `--sample-map` that is not two fields, a pair given twice, and a sample name given twice in a
   header that a pair needs.
 - §5.4: an insertion collides with an edit that replaces both bases beside it; a `*` is covered
-  by a deletion the haplotype might carry where it is missing; a GT of another ploidy, in place
+  by a deletion the haplotype might carry where it is missing, and by any other edit that
+  replaces a position of its record's REF; a GT of another ploidy, in place
   of a haploid GT, with the reason `ploidy mismatch`, and a GT of only `.` missing whatever its
   number of alleles; the shared locus alleles taken from the paired samples, not from "any sample
   of either file"; a pointer to this spec.
-- §5.5: a row *too complex* or *invalid* shows the reconciled partner's first genotype; with
-  Open 5's answer, how two genotypes all REF of different ploidies compare; a pointer to this
+- §5.5: a row *too complex* or *invalid* shows the reconciled partner's first genotype; two
+  genotypes all REF of different ploidies count as equal; a pointer to this
   spec.
 - §6: `ploidy mismatch` in place of `haploid GT`, and the reason written whenever the sample is
   invalid.
@@ -588,38 +588,10 @@ The VCF reader changes as §2 says, in a milestone of its own before reconciliat
 
 ## 11. Open points
 
-**Open 4. A `*` under an edit that is not a deletion.** GATK's HaplotypeCaller writes `*` for a
-haplotype whose event starts before the record and overlaps it, whatever the event
-(`AssemblyBasedCallerUtils.java`, in the GATK at commit e8c49f6). With its default
-`--max-mnp-distance 0` the events that overlap a later record are deletions. With MNPs turned on,
-as Mutect2's default of 1 does, an MNP can be one too. The owner settled on 19 October 2026 that a `*` needs a deletion, which is what the VCF
-specification says a `*` is (VCF 4.3 §1.6.1, ALT); GATK's code shows it writing one under an MNP
-too, which that answer did not weigh. Under the rule of §4.2 such a `*` makes the sample invalid.
-The options:
-
-- *Deletions only*, as now: nothing to build, and such a `*` is reported as contradicting
-  records.
-- *Any edit that replaces a position of the `*` record's REF, as written, also covers it*: one
-  more clause in §4.2, and GATK's files with MNPs are compared.
-
-I recommend the second, since it reads `*` as GATK writes it. How many of the owner's files
-hold MNPs is not known; with HaplotypeCaller's defaults there are none. Meanwhile the implementer builds
-deletions only, in one function, so that the other answer adds a clause there.
-
-**Open 5. Two genotypes all REF of different ploidies.** A file read with ploidy 1 and one read
-with ploidy 2 give genotypes of different lengths, which are never equal. Where both are all
-REF, `(0,)` against `(0, 0)`, the files agree that the sample carries the reference. That
-matters when B has other possible genotypes besides `(0, 0)` (E11 of §5):
-
-- *Equal*: two genotypes all REF count as equal whatever their ploidies, so E11 is *same
-  genotype*, as the same case within one ploidy (E10) is. One clause in the rule of *same
-  genotype*.
-- *Not equal*: E11 falls through to *only in B*, and the row reports B's `(0, 0)`, which carries
-  no ALT. To make that row readable, *same alleles* would also need to leave out empty ALT
-  sets, and *only in B* to report B's first genotype with an ALT.
-
-I recommend *equal*: it gives E11 the outcome its same-ploidy twin gets, at the cost of one
-clause. Meanwhile the implementer builds *equal*, in the function that compares two genotypes.
+No point is open. The two the review raised were answered by the owner on 19 October 2026:
+**Open 4**, a `*` under an edit that is not a deletion, which GATK writes with MNPs turned on
+(`AssemblyBasedCallerUtils.java` at GATK commit e8c49f6), is covered by that edit (§4.2); and
+**Open 5**, two genotypes all REF of different ploidies count as equal (§5).
 
 ## 12. Not in this spec
 
