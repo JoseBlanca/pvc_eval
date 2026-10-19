@@ -1252,3 +1252,18 @@ _NO_FLANK_CASES = [
 def test_a_contig_end_flank_of_zero_drops_nothing(bases: str, candidate: _Candidate) -> None:
     parameters = StrFinderParameters(contig_end_flank=0)
     assert list(_drop_near_contig_ends([candidate], bases, parameters)) == [candidate]
+
+
+# pvc's prefilter keeps only a candidate whose end is after its start, and its classify
+# passes over one that is not, without a reason. pvc's values, from the transcription's
+# prefilter and classify.
+def test_an_empty_candidate_is_dropped_even_at_a_copy_floor_of_zero() -> None:
+    no_floors = replace(_PARAMS, copy_floors=_ZERO_FLOORS)
+    assert list(_drop_under_copy_floor([_iv(5, 5, 2, 1), _iv(9, 7, 2, 1)], no_floors)) == []
+
+
+def test_an_empty_candidate_is_passed_over_by_step_four_without_a_reason() -> None:
+    classification = _find_str_segments([_iv(10, 10, 2, 1)], _CLEAN_AT, _PARAMS)
+    assert classification.str_segments == ()
+    assert classification.bundle_members == ()
+    assert classification.rejected == ()

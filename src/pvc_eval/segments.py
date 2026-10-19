@@ -441,10 +441,13 @@ def _drop_under_copy_floor(
     candidates: Iterable[_Candidate], parameters: StrFinderParameters
 ) -> Iterator[_Candidate]:
     """Step 3 of doc/specs/str_finder.md: drop a candidate whose detected span has fewer
-    copies than the copy floor of its period (pvc segment_criteria.rs, prefilter)."""
+    copies than the copy floor of its period, or whose end is not after its start (pvc
+    segment_criteria.rs, prefilter)."""
     for candidate in candidates:
         copies = (candidate.end - candidate.start) // candidate.period
-        if copies >= _get_copy_floor(parameters, candidate.period):
+        if candidate.end > candidate.start and copies >= _get_copy_floor(
+            parameters, candidate.period
+        ):
             yield candidate
 
 
@@ -484,8 +487,8 @@ class _BundleMember:
 class _Classification:
     """What steps 4 to 6 make of the candidates of a contig, pvc's Classified: the STR
     segments, the bundle members as they came in, and each candidate turned down with
-    its reason. A candidate outside the periods admitted, or under min_score, is in
-    none of the three, as in pvc."""
+    its reason. A candidate outside the periods admitted, under min_score, or whose end
+    is not after its start is in none of the three, as in pvc."""
 
     str_segments: tuple[_StrSegment, ...]
     bundle_members: tuple[_Candidate, ...]
@@ -597,7 +600,7 @@ def _find_str_segments(
     for candidate in candidates:
         if not parameters.min_period <= candidate.period <= parameters.max_period:
             continue
-        if candidate.score < parameters.min_score:
+        if candidate.score < parameters.min_score or candidate.end <= candidate.start:
             continue
         if candidate.end - candidate.start < candidate.period:
             rejected.append((candidate, _Rejection.COPY_FLOOR))
