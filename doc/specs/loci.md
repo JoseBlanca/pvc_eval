@@ -47,9 +47,9 @@ The terms of `doc/spec.md` §2 keep their meaning. These are added:
 `doc/spec.md` §5.3 gives the rules, and they are not repeated here beyond this summary. A locus
 starts from the leftmost record with an ALT that is not yet in a locus. It takes in every record
 with an ALT that chains to it, and widens to every STR region that a record with an ALT in it
-touches, until neither adds anything. A record that chains can be one already in a locus, and then
-the two loci are one. These sections say how each rule applies at its
-boundaries.
+touches, until neither adds anything. A locus that then lies within the chain distance of the
+locus before it on its contig is joined to it (§5.3 step 4). These sections say how each rule
+applies at its boundaries.
 
 **Chaining.** A record whose span starts *g* positions after the end of the locus leaves a gap of
 *g* − 1. It chains when that gap is at most the chain distance. With the default of 10, a locus
@@ -86,16 +86,18 @@ at that edge, and STR regions do not overlap.
 
 **A locus that reaches back to the one before it.** A locus can widen to an STR region that
 starts before its first record. When that brings it to within the chain distance of the locus
-before it, step 2 of §5.3 takes in that locus's records, and the two are one locus (decided by the
-owner on 19 October 2026, over keeping them apart). With a SNP at 100 and a satellite at 105–3000
-that it does not touch:
+before it, the two are one locus (§5.3 step 4, decided by the owner on 19 October 2026, over
+keeping them apart). The distance is measured between the two loci, whose edges can be STR regions,
+and not to their records. With a SNP at 100 and a satellite at 105–3000 that it does not touch:
 
 | other records with an ALT | loci | why |
 |---|---|---|
-| SNP at 2990 | 100–3000 | the SNP at 2990 pulls in the satellite, which starts 4 positions after 100 |
+| SNP at 2990 | 100–3000 | the SNP at 2990 pulls in the satellite, which leaves a gap of 4 after the locus at 100 |
 | SNP at 3001 | 100–3001 | the SNP touches the satellite at its end, and pulls it in the same way |
 | SNP at 3005 | 100 and 3005 | no record touches the satellite, which lies inside neither locus and is in neither |
-| SNP at 2990, satellite at 112–3000 instead | 100 and 112–3000 | the satellite starts 11 positions after 100, more than the chain distance |
+| SNP at 2990, satellite at 112–3000 instead | 100 and 112–3000 | the satellite leaves a gap of 11, more than the chain distance |
+| SNP at 2990, satellite at 205–3000 instead, and a satellite at 101–200 | 100–3000 | the SNP at 100 touches 101–200, so its locus is 100–200, and 205–3000 leaves a gap of 4 after it, although the SNP is 104 positions away |
+| SNP at 2990, and a homopolymer at 102–103 besides the satellite | 100–3000 | as in the first row; the homopolymer touches no record and lies inside the joined locus. The reach (below) must be computed after the satellite is read |
 
 Two loci therefore never lie within the chain distance of each other. They never overlap either:
 an STR region that overlapped a locus would lie inside it, as above.
@@ -153,9 +155,9 @@ later starts there or after, since both files come in that order.
 
 `build_loci` reads the records one at a time, in the order of the section above. Before it handles
 a record, of either kind, it reads the segments up to the first one that comes after the end of
-its span, `(rank, segment.start) > (rank, span_end)`, so every STR region that the record's span
-could touch has been read. After the last
-record it reads no more segments. GENERIC segments, the generic regions of `segment_contig`, whose
+its span: until `(segment rank, segment.start) > (record rank, span_end)`, the rank of each being
+that of its contig. Every STR region that the record's span could touch has then been read. After
+the last record it reads no more segments. GENERIC segments, the generic regions of `segment_contig`, whose
 `region_type` is `RegionType.GENERIC`, are read and dropped.
 
 A locus is open from the record with an ALT that starts it until it is yielded. Its **reach** is
@@ -166,9 +168,13 @@ taken: a record with an ALT joins the locus and widens it, with the STR regions 
 record with no ALT is held. A record with an ALT that starts past `end + chain_distance` and no
 further than the end of such a region always touches the region, since the region starts before
 the record and ends at or after its start; by §5.3 that region joins the record's locus, which is
-then within the chain distance of this one, so the two are one locus. The reach is recomputed each
-time the locus widens. The locus is yielded when the next record is on a later contig, starts
-past the reach, or does not exist. No later record can then join it. It is yielded with its records
+then within the chain distance of this one, so step 4 makes the two one locus. For each next
+record, `build_loci` first reads the segments up to it, as above, then computes the reach from the
+locus and every STR region held at that moment, and only then decides whether the record is taken
+or the locus is yielded. The reach must not be kept from the last time the locus widened: an STR
+region that starts within the chain distance is often read only when the next record's segments
+are, as in the last row of the table above. The locus is yielded when the next record is on a
+later contig, starts past the reach, or does not exist. No later record can then join it. It is yielded with its records
 with an ALT, and with the held STR regions and records with no ALT that overlap it.
 
 What is held besides the open locus, and when each is dropped:
@@ -186,13 +192,13 @@ So the records with no ALT of an all-sites VCF are dropped as soon as the readin
 except over an STR region that may still join a locus. Over a satellite of 5 kb with no record with
 an ALT in it, that holds about 5,000 records until the reading passes the satellite's end. When
 such a satellite starts within the chain distance after the open locus, the locus is held too,
-until the reading passes the satellite's end: the third row of the table above holds the locus at
-100 until the SNP at 3005 is read. The open locus itself grows with the data, as §5.3's simulation shows, and with the satellites it
-holds; nothing here bounds it, which is what the phasing cap (§5.4) is for.
+until the reading passes the satellite's end: the third row of the table of a locus that reaches
+back holds the locus at 100 until the SNP at 3005 is read. The open locus itself grows with the
+data, as §5.3's simulation shows, and with the satellites it holds; nothing here bounds it, which is what the phasing cap (§5.4) is for.
 
-When the segments come from the STR finder, a contig is segmented only if the caller asks for it,
-since the segments are read only as far as the records need. `compare` passes the segments of the
-contigs that hold records (see "Not in this spec").
+Because the segments are read only as far as the records need, a segment iterator that runs the
+STR finder contig by contig, lazily, is asked for no contig past the last record. `compare` builds
+such an iterator over the contigs that hold records (see "Not in this spec").
 
 ### What `build_loci` checks
 
@@ -354,9 +360,11 @@ it. With no records it is never read.
 **A property, at `build_loci`, with hypothesis.** A slow version of `doc/spec.md` §5.3, written in
 the test from the rules alone, holds every record and STR region in lists and applies the rules
 until nothing changes. On generated records with an ALT and without, of both files, on two contigs, with STR regions
-and records generated near the end of the first contig and the start of the second,
+and records generated near the end of the first contig and the start of the second, and STR
+regions next to each other within the chain distance,
 with STR regions and chain distances from 0 to 20, its loci equal `build_loci`'s. The same cases
-also check that every record with an ALT is in exactly one locus, inside it; that each record with
+also check that every record with an ALT is in exactly one locus, inside it; that no two loci of a
+contig lie within the chain distance of each other; that each record with
 no ALT is in exactly the loci its REF overlaps; and that the loci of a contig come by start and do
 not overlap.
 
