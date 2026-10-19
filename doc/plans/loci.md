@@ -1,6 +1,6 @@
 # Plan: the loci
 
-*Status: approved by the owner on 19 October 2026; done on 19 October 2026. It builds `doc/specs/loci.md`,
+*Status: approved by the owner on 19 October 2026; milestones 1 to 5 done, milestone 6 under way. It builds `doc/specs/loci.md`,
 approved by the owner on 19 October 2026, on the branch `loci` in `.claude/worktrees/loci`; the
 owner's handoff named the branch `loci`, so it is not `plan/loci`. The work report will be
 `doc/reports/loci.md`.*
@@ -193,6 +193,33 @@ same BED without it. Check: their tests in `tests/test_bed.py`, which fail on th
 The four checks of `python.md` pass.
 
 **What it stands on.** Milestone 4.
+
+- [ ] 6. One way to open a possibly gzipped file, for VCFs and BEDs
+
+Added on 19 October 2026 by the owner's order, after milestone 5 showed that `parse_vcf` and
+`parse_bed` each hold a copy of the code that opens a plain or gzipped file, and that only the
+BED's copy turns damaged compressed data (`zlib.error`) into an error for the user and drops a
+leading UTF-8 byte-order mark.
+
+**What it gives.** A gzipped VCF whose compressed data is damaged stops the run with the message
+"cut short or damaged" instead of a traceback, and a VCF that starts with a byte-order mark is read
+like the same VCF without it.
+
+**The spec it builds.** `doc/specs/loci.md`, Regions, on the BED's byte-order mark and gzip, now
+held by VCFs too; `doc/spec.md` §3, an error of the input is a message, not a traceback.
+
+**Deliverables.**
+
+- One private function, used by `vcf.py` and `bed.py`, that opens a file as UTF-8 text, gzipped or
+  not by its first two bytes, with a leading byte-order mark dropped, and one place that turns
+  `EOFError`, `gzip.BadGzipFile` and `zlib.error` into `PvcEvalInputError`. Check: the copies in
+  `vcf.py` and `bed.py` are gone (`grep -n "_GZIP_MAGIC" src/pvc_eval/*.py` finds one definition).
+- In `tests/test_vcf.py`: a gzipped VCF with damaged deflate data refused with the message, and a
+  plain and a gzipped VCF starting with a byte-order mark read like the same VCF without it. Check:
+  they fail on the commit before; every existing test passes unchanged.
+- The four checks of `python.md` pass.
+
+**What it stands on.** Milestone 5.
 
 ## The check of the whole plan
 
