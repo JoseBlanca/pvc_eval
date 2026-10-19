@@ -401,6 +401,8 @@ def _find_candidates(
                 for candidate in kept_now
                 if (candidate.end - candidate.start) // period >= floor
             )
+            # After the last block nothing is open and no candidate starts later; the length
+            # is past every end, so the longer periods can test all that is left.
             no_later_start = len(canonical) if open_from is None else open_from
             tested_to[period] = queue[0].start if queue else no_later_start
         for period in periods:
