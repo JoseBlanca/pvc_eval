@@ -25,6 +25,10 @@ class Locus:
     records_a, records_b: file A's records in the locus, and file B's.
     str_regions: the STR regions the locus contains, in position order, with no GENERIC
         segment.
+
+    Raises ValueError when end is not after start, for a record on another contig, and for
+    a record with an ALT whose span is not within the locus (doc/specs/reconciliation.md
+    §7): the loci build no such Locus, and one built by hand is checked here.
     """
 
     contig: str
@@ -33,3 +37,24 @@ class Locus:
     records_a: tuple[VcfRecord, ...]
     records_b: tuple[VcfRecord, ...]
     str_regions: tuple[GenomeSegment, ...]
+
+    def __post_init__(self) -> None:
+        if self.end <= self.start:
+            raise ValueError(
+                f"a locus's end must be after its start: {self.contig}, {self.start}-{self.end}"
+            )
+        where = f"the locus {self.contig}:{self.start}-{self.end}"
+        for vcf_record in (*self.records_a, *self.records_b):
+            if vcf_record.contig != self.contig:
+                raise ValueError(
+                    f"{where} holds a VCF record of {vcf_record.contig}, line"
+                    f" {vcf_record.line_number}"
+                )
+            span_start, span_end = vcf_record.span
+            # A record with no ALT is in every locus its REF overlaps (doc/spec.md §4).
+            is_within = self.start <= span_start and span_end <= self.end
+            if len(vcf_record.alleles) > 1 and not is_within:
+                raise ValueError(
+                    f"{where} holds the VCF record of line {vcf_record.line_number}, whose"
+                    f" span, {span_start}-{span_end}, is not within it"
+                )
