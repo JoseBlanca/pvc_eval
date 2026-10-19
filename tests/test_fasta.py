@@ -331,21 +331,21 @@ def test_a_wrong_fai_line_is_named(tmp_path: Path, fai: str, line_number: int, f
         IndexedFasta(path)
 
 
-def make_not_bases_message(path: Path, region: str, fai_line_number: int) -> str:
+def make_not_bases_message(path: Path, position: str, fai_line_number: int) -> str:
     return (
-        f"{path}: the bytes of {region} that its .fai, line {fai_line_number}, gives are not"
-        f" all letters. Make the .fai again with `samtools faidx {path}`, check that the"
+        f"{path}: {position} is not a letter where its .fai, line {fai_line_number}, puts a"
+        f" base. Make the .fai again with `samtools faidx {path}`, check that the"
         " FASTA holds only letters between its header lines, and run again."
     )
 
 
 # Each FASTA differs from the one its .fai was made for.
 @pytest.mark.parametrize(
-    ("fasta", "fai", "contig", "start", "end", "region", "fai_line_number"),
+    ("fasta", "fai", "contig", "start", "end", "position", "fai_line_number"),
     [
         # The lines have four bases, not the five the .fai says, so the region read
         # crosses a line end the .fai does not know of.
-        (b">chr1\nACGT\nACGT\nACGT\n", "chr1\t12\t6\t5\t6\n", "chr1", 0, 12, "chr1:1-12", 1),
+        (b">chr1\nACGT\nACGT\nACGT\n", "chr1\t12\t6\t5\t6\n", "chr1", 0, 12, "chr1:5", 1),
         # The .fai is what `samtools faidx` (samtools 1.24) wrote before the header of chr1
         # was lengthened by four bytes, ">chr1 first contig" to ">chr1 the first contig".
         (
@@ -354,7 +354,7 @@ def make_not_bases_message(path: Path, region: str, fai_line_number: int) -> str
             "chr2",
             0,
             3,
-            "chr2:1-3",
+            "chr2:3",
             2,
         ),
         (
@@ -363,13 +363,13 @@ def make_not_bases_message(path: Path, region: str, fai_line_number: int) -> str
             "chr1",
             0,
             12,
-            "chr1:1-12",
+            "chr1:4",
             1,
         ),
         # Windows line ends, with a .fai that says one byte of line end.
-        (b">c1\r\nACG\r\nTTA\r\nG\r\n", "c1\t4\t5\t4\t5\n", "c1", 0, 4, "c1:1-4", 1),
-        (b">chr1\nAC T\n", "chr1\t4\t6\t4\t5\n", "chr1", 0, 4, "chr1:1-4", 1),
-        (">chr1\nACÑT\n".encode(), "chr1\t5\t6\t5\t6\n", "chr1", 0, 5, "chr1:1-5", 1),
+        (b">c1\r\nACG\r\nTTA\r\nG\r\n", "c1\t4\t5\t4\t5\n", "c1", 0, 4, "c1:4", 1),
+        (b">chr1\nAC T\n", "chr1\t4\t6\t4\t5\n", "chr1", 0, 4, "chr1:3", 1),
+        (">chr1\nACÑT\n".encode(), "chr1\t5\t6\t5\t6\n", "chr1", 0, 5, "chr1:3", 1),
     ],
     ids=[
         "shorter_lines",
@@ -387,11 +387,11 @@ def test_bytes_that_are_not_bases_where_the_fai_says_are_named(
     contig: str,
     start: int,
     end: int,
-    region: str,
+    position: str,
     fai_line_number: int,
 ) -> None:
     path = write_fasta(tmp_path, "ref.fa", fasta, fai)
-    expected = make_not_bases_message(path, region, fai_line_number)
+    expected = make_not_bases_message(path, position, fai_line_number)
     with (
         IndexedFasta(path) as indexed_fasta,
         pytest.raises(PvcEvalInputError, match=f"^{re.escape(expected)}$"),
@@ -401,7 +401,10 @@ def test_bytes_that_are_not_bases_where_the_fai_says_are_named(
 
 def test_a_fasta_cut_short_after_opening_is_named(tmp_path: Path) -> None:
     path = write_fasta(tmp_path, "one.fa", ONE_FA, ONE_FAI)
-    expected = make_not_bases_message(path, "chr3:1-7", 3)
+    expected = (
+        f"{path} ends before chr3:1-7, where its .fai, line 3, puts bases: it was cut short"
+        " after it was opened. Run again once nothing is writing to it."
+    )
     with IndexedFasta(path) as indexed_fasta:
         os.truncate(path, len(ONE_FA) - 2)
         with pytest.raises(PvcEvalInputError, match=f"^{re.escape(expected)}$"):
@@ -558,6 +561,16 @@ def test_a_block_of_less_than_one_base_is_a_value_error(window_fa: Path, block_b
         ),
     ):
         FastaWindow(indexed_fasta, block_bases=block_bases)
+
+
+def test_a_window_stops_on_a_byte_it_reads_ahead(tmp_path: Path) -> None:
+    path = write_fasta(tmp_path, "ref.fa", b">chr1\nACGTA*GTCA\n", "chr1\t10\t6\t10\t11\n")
+    expected = make_not_bases_message(path, "chr1:6", 1)
+    with IndexedFasta(path) as indexed_fasta:
+        assert indexed_fasta.get_bases("chr1", 0, 2) == "AC"
+        window = FastaWindow(indexed_fasta, block_bases=8)
+        with pytest.raises(PvcEvalInputError, match=f"^{re.escape(expected)}$"):
+            window.get_bases("chr1", 0, 2)
 
 
 def test_an_empty_request_reads_nothing(window_fa: Path) -> None:

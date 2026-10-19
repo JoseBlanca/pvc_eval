@@ -98,20 +98,21 @@ class IndexedFasta:
         first_byte = fai_line.find_byte(start)
         num_bytes = fai_line.find_byte(end - 1) + 1 - first_byte
         fasta_bytes = os.pread(self._fd, num_bytes, first_byte)
-        # fasta_bytes is shorter only when the FASTA was cut short after it was opened,
-        # and then the region stays empty, which isalpha takes as not letters.
-        region = bytearray()
-        if len(fasta_bytes) == num_bytes:
-            region = _drop_line_ends(
-                fasta_bytes, start % fai_line.line_bases, end - start, fai_line
+        if len(fasta_bytes) != num_bytes:
+            raise PvcEvalInputError(
+                f"{self.path} ends before {contig}:{start + 1}-{end}, where its .fai, line"
+                f" {fai_line.line_number}, puts bases: it was cut short after it was opened."
+                " Run again once nothing is writing to it."
             )
+        region = _drop_line_ends(fasta_bytes, start % fai_line.line_bases, end - start, fai_line)
         del fasta_bytes  # so that at most two copies of the region are held at once
         # A byte that is not a letter, or a line end where the .fai puts a base: the .fai
         # was made for another FASTA. isalpha is true only for ASCII letters.
         if not region.isalpha():
+            first_bad = next(i for i, byte in enumerate(region) if not bytes([byte]).isalpha())
             raise PvcEvalInputError(
-                f"{self.path}: the bytes of {contig}:{start + 1}-{end} that its .fai, line"
-                f" {fai_line.line_number}, gives are not all letters. Make the .fai again with"
+                f"{self.path}: {contig}:{start + first_bad + 1} is not a letter where its .fai,"
+                f" line {fai_line.line_number}, puts a base. Make the .fai again with"
                 f" `samtools faidx {self.path}`, check that the FASTA holds only letters"
                 " between its header lines, and run again."
             )
@@ -269,6 +270,10 @@ class FastaWindow:
     asks next for the bases beyond. The gap is measured from the requests and not from
     the buffer, so that the bases read beyond them, which nobody asked for, do not let
     requests a block apart extend the buffer over the whole contig, as pvc's rule avoids.
+
+    A byte that is not a letter stops a request even when it is only in the bases read
+    ahead of it, since a FASTA with a byte that is not a base is a fault of the input
+    wherever the byte is; the message names the byte's position.
 
     A window belongs to one thread: it changes its buffer on every request, without a
     lock. Threads share the IndexedFasta, each with its own window.
