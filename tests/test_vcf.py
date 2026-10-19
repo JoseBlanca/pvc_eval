@@ -5,6 +5,7 @@ import random
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from pathlib import Path
+from typing import TypedDict
 
 import pytest
 
@@ -12,9 +13,9 @@ from pvc_eval import vcf
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import BLOCK_BASES, FastaWindow, IndexedFasta
 from pvc_eval.vcf import (
-    HAPLOID_GT,
     MALFORMED_GT,
     MISSING,
+    OTHER_PLOIDY_GT,
     VcfGenotype,
     VcfRecord,
     _parse_genotype,
@@ -31,6 +32,12 @@ HEADER = (
 )
 
 type MakeReference = Callable[[str, str], IndexedFasta]
+
+
+class SpanLimitArgument(TypedDict, total=False):
+    """The span_limit a test passes to parse_vcf, or nothing for the default."""
+
+    span_limit: int | None
 
 
 @pytest.fixture
@@ -137,10 +144,10 @@ def write_vcf(tmp_path: Path, body: str, *, gzipped: bool = False) -> Path:
             VcfGenotype(alleles=(MISSING, MISSING), phased=False, phase_set=None, quality=None),
         ),
         (".", VcfGenotype(alleles=(MISSING, MISSING), phased=False, phase_set=None, quality=None)),
-        ("1", HAPLOID_GT),
-        ("0", HAPLOID_GT),
+        ("1", OTHER_PLOIDY_GT),
+        ("0", OTHER_PLOIDY_GT),
         ("3", MALFORMED_GT),
-        ("0/1/1", MALFORMED_GT),
+        ("0/1/1", OTHER_PLOIDY_GT),
         ("./././", MALFORMED_GT),
         ("0/3", MALFORMED_GT),
         ("A/1", MALFORMED_GT),
@@ -163,9 +170,9 @@ def write_vcf(tmp_path: Path, body: str, *, gzipped: bool = False) -> Path:
     ],
 )
 def test_gt_gives_its_alleles_or_its_case(
-    gt: str, expected: VcfGenotype | MALFORMED_GT | HAPLOID_GT
+    gt: str, expected: VcfGenotype | MALFORMED_GT | OTHER_PLOIDY_GT
 ) -> None:
-    assert _parse_genotype(gt, num_alleles=3, phase_set=None, quality=None) == expected
+    assert _parse_genotype(gt, num_alleles=3, ploidy=2, phase_set=None, quality=None) == expected
 
 
 @pytest.mark.parametrize("gzipped", [False, True], ids=["plain", "bgzipped"])
@@ -629,7 +636,7 @@ def test_record_comes_out_once_no_later_record_can_start_before_it(
 def test_record_is_held_while_a_later_record_could_start_before_it(
     tmp_path: Path,
     make_reference: MakeReference,
-    limit: dict[str, int | None],
+    limit: SpanLimitArgument,
     second_pos_1based: int,
 ) -> None:
     # A record at 0-based 10098 could span from 98, before the SNP's 99; with a limit of
@@ -647,7 +654,7 @@ def test_record_is_held_while_a_later_record_could_start_before_it(
 
 @pytest.mark.parametrize("limit", [{}, {"span_limit": None}], ids=["default_10_kb", "no_limit"])
 def test_records_held_come_out_at_the_next_contig(
-    tmp_path: Path, make_reference: MakeReference, limit: dict[str, None]
+    tmp_path: Path, make_reference: MakeReference, limit: SpanLimitArgument
 ) -> None:
     path = write_vcf(tmp_path, make_snp_line("chr1", 100) + make_snp_line("chr2", 1) + NOT_A_RECORD)
 
@@ -757,7 +764,7 @@ UNCUT_PLACEMENTS = [
 
 @pytest.mark.parametrize("limit", [{}, {"span_limit": None}], ids=["default_10_kb", "no_limit"])
 def test_spans_within_the_limit_are_not_cut(
-    tmp_path: Path, make_reference: MakeReference, limit: dict[str, None]
+    tmp_path: Path, make_reference: MakeReference, limit: SpanLimitArgument
 ) -> None:
     path = write_vcf(tmp_path, LIMIT_LINES)
 
@@ -836,7 +843,7 @@ LONG_SLIDE_LINE = "chr1\t2\t.\tAA\tA\t.\t.\t.\tGT\t0/1\t0/1\n"
 
 @pytest.mark.parametrize("limit", [{}, {"span_limit": None}], ids=["default_10_kb", "no_limit"])
 def test_deletion_that_slides_far_right_spans_its_whole_slide(
-    tmp_path: Path, make_reference: MakeReference, limit: dict[str, None]
+    tmp_path: Path, make_reference: MakeReference, limit: SpanLimitArgument
 ) -> None:
     path = write_vcf(tmp_path, LONG_SLIDE_LINE)
 
@@ -1003,4 +1010,90 @@ def test_gt_with_an_index_the_record_lacks_or_one_allele_is_kept_as_its_case(
 
     (record,) = parse_vcf(path, reference)
 
-    assert record.genotypes == (MALFORMED_GT, HAPLOID_GT)
+    assert record.genotypes == (MALFORMED_GT, OTHER_PLOIDY_GT)
+
+
+def test_one_allele_read_with_ploidy_2_is_other_ploidy(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t1\t0/1\n")
+
+    (record,) = parse_vcf(path, reference, ploidy=2)
+
+    assert record.genotypes == (
+        OTHER_PLOIDY_GT,
+        VcfGenotype(alleles=(0, 1), phased=False, phase_set=None, quality=None),
+    )
+
+
+def test_one_allele_read_with_ploidy_1_is_a_genotype(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t1\t0\n")
+
+    (record,) = parse_vcf(path, reference, ploidy=1)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(1,), phased=False, phase_set=None, quality=None),
+        VcfGenotype(alleles=(0,), phased=False, phase_set=None, quality=None),
+    )
+
+
+def test_two_alleles_read_with_ploidy_1_are_other_ploidy(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t1/1\t1\n")
+
+    (record,) = parse_vcf(path, reference, ploidy=1)
+
+    assert record.genotypes == (
+        OTHER_PLOIDY_GT,
+        VcfGenotype(alleles=(1,), phased=False, phase_set=None, quality=None),
+    )
+
+
+def test_two_dots_read_with_ploidy_1_are_missing(tmp_path: Path, reference: IndexedFasta) -> None:
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t./.\t.\n")
+
+    (record,) = parse_vcf(path, reference, ploidy=1)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(MISSING,), phased=False, phase_set=None, quality=None),
+        VcfGenotype(alleles=(MISSING,), phased=False, phase_set=None, quality=None),
+    )
+
+
+def test_one_dot_read_with_ploidy_2_is_missing_on_both_haplotypes(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t.\t./.\n")
+
+    (record,) = parse_vcf(path, reference, ploidy=2)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(MISSING, MISSING), phased=False, phase_set=None, quality=None),
+        VcfGenotype(alleles=(MISSING, MISSING), phased=False, phase_set=None, quality=None),
+    )
+
+
+def test_index_beyond_two_alts_is_malformed(tmp_path: Path, reference: IndexedFasta) -> None:
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT,C\t.\t.\t.\tGT\t3/1\t2/1\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    assert record.genotypes == (
+        MALFORMED_GT,
+        VcfGenotype(alleles=(2, 1), phased=False, phase_set=None, quality=None),
+    )
+
+
+@pytest.mark.parametrize("ploidy", [0, -1, 1.5, True], ids=["zero", "negative", "fraction", "bool"])
+def test_a_ploidy_that_is_not_a_whole_number_of_1_or_more_is_a_value_error(
+    tmp_path: Path, reference: IndexedFasta, ploidy: object
+) -> None:
+    path = write_vcf(tmp_path, make_snp_line("chr1", 1))
+
+    with pytest.raises(
+        ValueError, match=rf"^ploidy must be a whole number of 1 or more, not {ploidy!r}$"
+    ):
+        list(parse_vcf(path, reference, ploidy=ploidy))  # ty: ignore[invalid-argument-type]  # a wrong type on purpose
