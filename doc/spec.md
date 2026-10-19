@@ -433,9 +433,9 @@ Both files give `CTA`, in one locus because A's insertion spans the base after i
 **Building a locus.** Starting from the leftmost VCF record not yet in a locus, of either file:
 
 1. The locus is that record's span (§5.2).
-2. Add every VCF record not yet in a locus, of either file, whose span overlaps the locus or has
-   at most the chain distance of reference positions between it and the locus (default 10, so
-   spans that touch always chain), and widen the locus to cover its span. Repeat until no record is added. Chaining
+2. Add every VCF record, of either file, whose span overlaps the locus or has at most the chain
+   distance of reference positions between it and the locus (default 10, so spans that touch
+   always chain), and widen the locus to cover its span. Repeat until no record is added. Chaining
    is transitive: if A chains with B and B with C, all three are in the locus, whichever files they
    come from.
 3. Widen the locus to cover every STR region a VCF record in it **touches** — overlaps or lies
@@ -444,10 +444,14 @@ Both files give `CTA`, in one locus because A's insertion spans the base after i
 
 A locus is a run of reference positions, written 1-based and inclusive, as in VCF.
 
-A record is in one locus only, so an STR region that widens a locus to the left can leave it
-closer than the chain distance to the locus before it, and the two stay apart (decided by the
-owner on 19 October 2026, over merging them, which would make the look-ahead hold a locus across
-a satellite). The loci's own spec, `doc/specs/loci.md`, gives the rules in full, with their cases.
+Step 2 can reach records already in a locus. When an STR region widens a locus to the left, to
+within the chain distance of the locus before it, step 2 takes in that locus's records and the two
+are one locus. With a SNP at 100, a satellite at 105–3000 that it does not touch, and a record at
+2990 inside the satellite, the locus is 100–3000 (decided by the owner on 19 October 2026, over
+keeping 100 and 105–3000 apart, which would lose the chain distance next to STR regions; the
+look-ahead then holds a locus until the reading has passed every STR region that starts within
+the chain distance after it). The loci's own spec, `doc/specs/loci.md`, gives the rules in full,
+with their cases.
 
 **Why a chain distance** (decided by the owner on 19 October 2026). Two events can be traded
 between spellings: one file deletes a base and changes the next one, the other changes the first
