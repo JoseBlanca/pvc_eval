@@ -9,15 +9,19 @@ converted here, and nowhere else.
 Public: parse_vcf, which gives the VCF records; parse_vcf_samples, which gives the sample
 names; VcfRecord and VcfGenotype; Span, the type of VcfRecord.span; the sentinels a
 genotype is compared with, MISSING, MALFORMED_GT and OTHER_PLOIDY_GT; and the constants
-DEFAULT_PLOIDY and DEFAULT_SPAN_LIMIT.
+DEFAULT_PLOIDY, DEFAULT_SPAN_LIMIT and DEFAULT_NUM_THREADS.
 """
 
+import functools
 import gzip
 import heapq
 import logging
 import math
 import re
-from collections.abc import Generator, Iterable, Iterator, Sequence
+import sys
+import threading
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,6 +58,22 @@ _NUM_FIXED_COLUMNS = 9  # CHROM to FORMAT
 # further than the limit beyond its REF, on either side, is cut to the REF, which bounds
 # how long the reader holds a record and how many bases it holds of the reference.
 DEFAULT_SPAN_LIMIT = 10_000
+# The threads that parse the sample columns when the caller sets no number: the owner's
+# choice of 19 October 2026, where the speed stopped growing. On the 64 Mb, 200-sample
+# benchmark input at the default span limit, parse_vcf took 13.1 s with 1 thread, 3.9 s
+# with 4 and 4.4 s with 8, the rest being the calling thread's own work; at 8 threads the
+# peak memory was 64 MB against 37 MB, the same as on a 5 Mb input, so it does not grow
+# with the file. The 4 was measured on one stream. Two streams read together from one
+# thread, as the loci stage will merge files A and B, read their lines one after the other:
+# on the 5 Mb GATK-like input against itself, one stream took 0.35 s, two zipped 0.75 s
+# with 4 threads each and 0.76 s with 2 each, and each stream in a thread of its own
+# 0.57 s. How two streams share the cores is for the loci or the command-line milestone.
+DEFAULT_NUM_THREADS = 4
+# The most threads parse_vcf takes. Past 4 the measured time stopped falling, and each
+# thread adds its own batches and genotypes to the memory. 256 is far above the cores of
+# the machines pvc_eval is meant for; a larger number is a mistake, which 2**62 showed by
+# reaching the pool as itertools.islice's own ValueError.
+_MAX_NUM_THREADS = 256
 # How many bases on each side of a REF its span is first looked for in. A slide that runs
 # into the end of them looks again in twice as many, up to one more than the span limit, so
 # the bases a record asks the window for are a few times its slide, whatever the limit,
@@ -124,7 +144,8 @@ class VcfRecord:
 def parse_vcf_samples(path: Path) -> tuple[str, ...]:
     """The sample names of a VCF file, in the order of its columns.
 
-    Raises PvcEvalInputError when the file has no #CHROM line after its ## lines.
+    Raises PvcEvalInputError for a path that does not exist, is a directory or cannot be
+    read, when the file has no #CHROM line after its ## lines, and for an empty sample name.
     """
     with closing(_read_numbered_lines(path)) as numbered_lines:
         return _parse_samples(numbered_lines, path)
@@ -135,6 +156,7 @@ def parse_vcf(
     reference: IndexedFasta,
     *,
     span_limit: int | None = DEFAULT_SPAN_LIMIT,
+    num_threads: int = DEFAULT_NUM_THREADS,
     ploidy: int = DEFAULT_PLOIDY,
 ) -> Iterator[VcfRecord]:
     """The VCF records of a file, plain or bgzipped, normalised and given their spans
@@ -147,6 +169,11 @@ def parse_vcf(
     span_limit: the most bases a span may reach beyond its REF on either side, a whole
         number of 1 or more, or None for no limit (§5.2). A record whose span would reach further is given its REF as
         its span, and the number of those is logged as a warning at the end.
+    num_threads: how many threads parse the sample columns, a whole number from 1 to 256.
+        The calling thread reads the lines, checks them and gives them their spans. With 1
+        it parses the sample columns too, and no pool is made: the run is serial, as a
+        test or a profile may want. The records are the same
+        whatever the number.
     ploidy: how many haplotypes each sample has, a whole number of 1 or more
         (doc/specs/reconciliation.md §2). A GT with another number of alleles is
         OTHER_PLOIDY_GT, and one of only `.` is MISSING on every haplotype.
@@ -166,27 +193,37 @@ def parse_vcf(
 
     Raises PvcEvalInputError, when the stream reaches it, for a VCF record on a contig
     the reference lacks or whose REF reaches past the end of its contig, for records out
-    of the `.fai`'s contig order or out of position order, for a file with no #CHROM line
-    after its ## lines, for a line that does not hold a VCF record, and for one whose
+    of the `.fai`'s contig order or out of position order, for a path that does not exist,
+    is a directory or cannot be read, for a file with no #CHROM line after its ## lines, for
+    an empty sample name in it, for a line that does not hold a VCF record, and for one whose
     number of sample columns differs from the number of samples the #CHROM line names. A
     blank line is skipped. A record with a symbolic allele is skipped, and the number
     skipped is logged as a warning at the end (§9). A QUAL or GQ that is not a number is
     taken as absent, and those are counted in a warning at the end too. Raises
     ValueError, when the stream starts, for a span_limit
-    that is neither None nor a whole number of 1 or more, and for a ploidy that is not a
-    whole number of 1 or more.
+    that is neither None nor a whole number of 1 or more, for a num_threads that is not
+    a whole number from 1 to 256, and for a ploidy that is not a whole number of 1 or more.
     """
     # §5.2: a limit of 0 would cut every insertion, whose span holds the base after it.
-    is_whole = isinstance(span_limit, int) and not isinstance(span_limit, bool)
-    if span_limit is not None and not (is_whole and span_limit >= 1):
+    if span_limit is not None and not _is_whole_number_from_1(span_limit):
         raise ValueError(
             f"span_limit must be a whole number of 1 or more, or None, not {span_limit!r}"
         )
-    if not (isinstance(ploidy, int) and not isinstance(ploidy, bool) and ploidy >= 1):
+    if not (_is_whole_number_from_1(num_threads) and num_threads <= _MAX_NUM_THREADS):
+        raise ValueError(
+            f"num_threads must be a whole number from 1 to {_MAX_NUM_THREADS}, not {num_threads!r}"
+        )
+    if not _is_whole_number_from_1(ploidy):
         raise ValueError(f"ploidy must be a whole number of 1 or more, not {ploidy!r}")
-    records_in_file_order = _parse_records_in_file_order(path, reference, span_limit, ploidy)
+    records_in_file_order = _parse_records_in_file_order(
+        path, reference, span_limit, num_threads, ploidy
+    )
     with closing(records_in_file_order) as records:
         yield from _sort_by_span_start(records, span_limit)
+
+
+def _is_whole_number_from_1(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
 
 
 def _sort_by_span_start(
@@ -218,11 +255,115 @@ def _sort_by_span_start(
         yield heapq.heappop(held)[2]
 
 
+# The sample columns of this many lines are parsed together, by one thread. With 8 threads
+# on the 5 Mb, 200-sample GATK-like benchmark input, batches of 64 lines took 0.45 s and
+# 64 MB, and of 256 lines 0.46 s and 108 MB.
+_BATCH_SIZE = 64
+
+
 def _parse_records_in_file_order(
-    path: Path, reference: IndexedFasta, span_limit: int | None, ploidy: int
+    path: Path, reference: IndexedFasta, span_limit: int | None, num_threads: int, ploidy: int
 ) -> Generator[tuple[int, VcfRecord]]:
     """The records of parse_vcf in the file's order, each with the 0-based
-    position of its POS."""
+    position of its POS; ploidy is how many haplotypes each sample has.
+
+    This thread reads the lines, checks them and gives them their spans; the sample columns
+    of each batch of lines are parsed by one of num_threads threads, or by this one when
+    num_threads is 1, and the batches are taken back in the file's order.
+    """
+    status = _ReadStatus()
+    with (
+        closing(_parse_lines_without_samples(path, reference, span_limit, status)) as placed_lines,
+        closing(
+            # Each thread keeps what it has parsed in seen_by_thread, for this file alone.
+            _map_in_order(
+                functools.partial(_parse_batch, ploidy=ploidy, seen_by_thread=threading.local()),
+                _batch_lines(placed_lines, status),
+                num_threads,
+            )
+        ) as parsed_batches,
+    ):
+        for records, num_gq_not_numbers in parsed_batches:
+            # The batches are taken back in this thread, so only this thread changes status.
+            status.num_not_numbers += num_gq_not_numbers
+            yield from records
+    if status.error is not None:
+        raise status.error
+    _log_warnings(path, span_limit, status)
+
+
+def _batch_lines(
+    placed_lines: Iterator[_PlacedLine], status: _ReadStatus
+) -> Generator[list[_PlacedLine]]:
+    """The placed lines in batches of _BATCH_SIZE, the last one perhaps shorter.
+
+    An input error ends the batches with the lines before it, and is kept in status, so
+    that it is raised after their records, as it would be with no batches.
+    """
+    batch: list[_PlacedLine] = []
+    try:
+        for placed_line in placed_lines:
+            batch.append(placed_line)
+            if len(batch) == _BATCH_SIZE:
+                yield batch
+                batch = []
+    except PvcEvalInputError as err:
+        status.error = err
+    if batch:
+        yield batch
+
+
+def _map_in_order[T, R](
+    function: Callable[[T], R], items: Iterable[T], num_threads: int
+) -> Generator[R]:
+    """function over items, its results in the order of the items: in this thread when
+    num_threads is 1, or else on a pool of num_threads threads, which take at most two items
+    each ahead of the result given. items is read in this thread."""
+    if num_threads == 1:
+        yield from map(function, items)
+        return
+    with ThreadPoolExecutor(max_workers=num_threads) as pool:
+        yield from pool.map(function, items, buffersize=2 * num_threads)
+
+
+@dataclass(slots=True)
+class _ReadStatus:
+    """What the reader of a file warns about at its end, and the input error that stopped
+    it; changed only by the thread that reads the lines."""
+
+    num_symbolic: int = 0
+    num_not_numbers: int = 0
+    num_beyond_reach: int = 0
+    first_beyond_reach_line: int = 0
+    error: PvcEvalInputError | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _PlacedLine:
+    """A VCF line read, checked, normalised and given its span, whose sample columns are
+    left to parse.
+
+    pos: the 0-based position of POS. fields: the columns of the line. The others are the
+    VcfRecord's.
+    """
+
+    pos: int
+    contig: str
+    start: int
+    alleles: tuple[str, ...]
+    qual: float | None
+    line_number: int
+    ref_mismatch: bool
+    span: Span
+    fields: list[str]
+
+
+def _parse_lines_without_samples(
+    path: Path, reference: IndexedFasta, span_limit: int | None, status: _ReadStatus
+) -> Generator[_PlacedLine]:
+    """The lines of a VCF file that hold a record, in the file's order, checked, normalised
+    and given their spans, their sample columns left to parse; what is skipped and what is
+    taken as absent is added to status."""
     contig_rank = {contig: rank for rank, contig in enumerate(reference.contigs)}
     # A window of the stream's own, so that two streams over one reference do not drop
     # each other's buffer.
@@ -231,10 +372,6 @@ def _parse_records_in_file_order(
     # and where that record is, for the message.
     previous_order: tuple[int, int] | None = None
     previous_where = ""
-    num_symbolic = 0
-    num_not_numbers = 0
-    num_beyond_reach = 0
-    first_beyond_reach_line = 0
     with closing(_read_numbered_lines(path)) as numbered_lines:
         num_samples = len(_parse_samples(numbered_lines, path))
         for line_number, line in numbered_lines:
@@ -259,7 +396,7 @@ def _parse_records_in_file_order(
             previous_order, previous_where = order, where
             alts = _parse_alts(fields, path, line_number)
             if any(_is_symbolic(alt) for alt in alts):
-                num_symbolic += 1
+                status.num_symbolic += 1
                 continue
             if pos_1based == 0:
                 raise _make_pos_error(fields[1], path, line_number)
@@ -283,67 +420,97 @@ def _parse_records_in_file_order(
             # contig makes the window drop the buffer.
             evict_distance = BLOCK_BASES if span_limit is None else span_limit + 1
             reference_window.evict_before(pos - evict_distance)
-            record, num_record_not_numbers, is_beyond_reach = _parse_record(
-                fields,
-                contig,
-                pos,
-                alts,
-                line_number,
-                reference_window,
-                contig_length,
-                span_limit,
-                ploidy,
+            placed_line, is_qual_absent, is_beyond_reach = _parse_line_without_samples(
+                fields, contig, pos, alts, line_number, reference_window, contig_length, span_limit
             )
-            num_not_numbers += num_record_not_numbers
+            status.num_not_numbers += is_qual_absent
             if is_beyond_reach:
-                num_beyond_reach += 1
-                first_beyond_reach_line = first_beyond_reach_line or line_number
-            yield pos, record
-    if num_symbolic:
+                status.num_beyond_reach += 1
+                status.first_beyond_reach_line = status.first_beyond_reach_line or line_number
+            yield placed_line
+
+
+def _log_warnings(path: Path, span_limit: int | None, status: _ReadStatus) -> None:
+    """The warnings of the end of a file, for what its reader skipped, took as absent or
+    cut."""
+    if status.num_symbolic:
         _logger.warning(
             "%s: skipped %s with symbolic alleles (<DEL>, breakends); pvc_eval does not"
             " compare structural variants.",
             path,
-            format_count(num_symbolic, "VCF record"),
+            format_count(status.num_symbolic, "VCF record"),
         )
-    if num_not_numbers:
+    if status.num_not_numbers:
         _logger.warning(
             "%s: took %s that could not be read as a number as absent, as `.` is, in the"
             " quality of the table.",
             path,
-            format_count(num_not_numbers, "QUAL or GQ value"),
+            format_count(status.num_not_numbers, "QUAL or GQ value"),
         )
-    if num_beyond_reach:
+    if status.num_beyond_reach:
         assert span_limit is not None, "only a limit cuts a span"
-        if num_beyond_reach == 1:
-            which, given = f"at line {first_beyond_reach_line}", "was given"
+        if status.num_beyond_reach == 1:
+            which, given = f"at line {status.first_beyond_reach_line}", "was given"
         else:
-            which, given = f"the first at line {first_beyond_reach_line}", "each was given"
+            which, given = f"the first at line {status.first_beyond_reach_line}", "each was given"
         _logger.warning(
             "%s: %s, %s, could slide more than %s along the reference and %s only"
             " its REF as its span; another spelling of the same event further along may"
             " fall into another locus and be compared apart.",
             path,
-            format_count(num_beyond_reach, "VCF record"),
+            format_count(status.num_beyond_reach, "VCF record"),
             which,
             f"{span_limit:,} {'base' if span_limit == 1 else 'bases'}",
             given,
         )
 
 
+type _ParsedGt = tuple[tuple[int | MISSING, ...], bool]
+"""A GT's alleles, and whether it was written with `|`."""
+
+type _Genotype = VcfGenotype | MALFORMED_GT | OTHER_PLOIDY_GT
+"""What a sample's GT parses to."""
+
+type _GenotypesSeen = dict[tuple[str, int, int, str | None, int | None], _Genotype]
+"""The genotypes parsed, by GT, number of alleles, ploidy, PS and GQ."""
+
+type _GtsSeen = dict[tuple[str, int, int], _ParsedGt | MALFORMED_GT | OTHER_PLOIDY_GT]
+"""What _parse_gt gave, by GT, number of alleles and ploidy."""
+
+
 def _parse_genotype(
-    gt: str, num_alleles: int, ploidy: int, phase_set: str | None, quality: int | None
-) -> VcfGenotype | MALFORMED_GT | OTHER_PLOIDY_GT:
+    gt: str,
+    num_alleles: int,
+    ploidy: int,
+    phase_set: str | None,
+    quality: int | None,
+    gts_seen: _GtsSeen,
+) -> _Genotype:
     """A GT field as a VcfGenotype; MALFORMED_GT when an allele is neither `.` nor an
     index of one of the record's VCF alleles; or OTHER_PLOIDY_GT when its number of
     alleles is not the ploidy (doc/specs/reconciliation.md §2).
 
-    A GT of only `.`, such as `.` or `./.`, says nothing about any haplotype, and is
-    MISSING on every one of them, whatever its number of alleles.
-
     num_alleles: how many VCF alleles the record has, REF included.
     ploidy: how many haplotypes the sample has.
     phase_set, quality: the sample's PS and GQ, kept in the VcfGenotype.
+    gts_seen: the GTs parsed so far, which this adds to.
+    """
+    gt_key = (gt, num_alleles, ploidy)
+    parsed_gt = gts_seen.get(gt_key)
+    if parsed_gt is None:
+        parsed_gt = gts_seen[gt_key] = _parse_gt(gt, num_alleles, ploidy)
+    if parsed_gt is MALFORMED_GT or parsed_gt is OTHER_PLOIDY_GT:
+        return parsed_gt
+    alleles, phased = parsed_gt
+    return VcfGenotype(alleles=alleles, phased=phased, phase_set=phase_set, quality=quality)
+
+
+def _parse_gt(gt: str, num_alleles: int, ploidy: int) -> _ParsedGt | MALFORMED_GT | OTHER_PLOIDY_GT:
+    """What a GT field says whatever the sample's PS and GQ: its alleles and whether it is
+    phased, MALFORMED_GT or OTHER_PLOIDY_GT (doc/specs/reconciliation.md §2).
+
+    A GT of only `.`, such as `.` or `./.`, says nothing about any haplotype, and is
+    MISSING on every one of them, whatever its number of alleles.
     """
     parts = gt.replace("|", "/").split("/")
     alleles: list[int | MISSING] = []
@@ -358,13 +525,33 @@ def _parse_genotype(
         alleles = [MISSING] * ploidy
     elif len(alleles) != ploidy:
         return OTHER_PLOIDY_GT
-    return VcfGenotype(
-        alleles=tuple(alleles), phased="|" in gt, phase_set=phase_set, quality=quality
-    )
+    return tuple(alleles), "|" in gt
 
 
 def _is_allele_index(part: str, num_alleles: int) -> bool:
-    return part.isascii() and part.isdecimal() and int(part) < num_alleles
+    index = _parse_decimal(part)
+    return index is not None and index < num_alleles
+
+
+# int() reads from text every number of fewer digits than this, whatever
+# sys.set_int_max_str_digits sets, so only longer text is checked against its limit.
+_DIGITS_ALWAYS_READ = sys.int_info.str_digits_check_threshold
+
+
+def _parse_decimal(text: str) -> int | None:
+    """The whole number text writes in ASCII decimal digits, or None when it is not one or
+    has more digits than int() reads from text (4,300 by default)."""
+    if not (text.isascii() and text.isdecimal()):
+        return None
+    if len(text) >= _DIGITS_ALWAYS_READ and _has_too_many_digits(text):
+        return None
+    return int(text)
+
+
+def _has_too_many_digits(text: str) -> bool:
+    """text has more digits than int() reads (sys.get_int_max_str_digits(), 0 for none)."""
+    max_digits = sys.get_int_max_str_digits()
+    return max_digits != 0 and len(text) > max_digits
 
 
 def _read_numbered_lines(path: Path) -> Generator[tuple[int, str]]:
@@ -395,8 +582,21 @@ def _read_numbered_lines(path: Path) -> Generator[tuple[int, str]]:
 
 
 def _open_text(path: Path) -> TextIO:
-    with path.open("rb") as raw:
-        is_gzipped = raw.read(len(_GZIP_MAGIC)) == _GZIP_MAGIC
+    """Raises PvcEvalInputError for a path that does not exist, is a directory or cannot
+    be read."""
+    try:
+        with path.open("rb") as raw:
+            is_gzipped = raw.read(len(_GZIP_MAGIC)) == _GZIP_MAGIC
+    except FileNotFoundError:
+        raise PvcEvalInputError(f"{path} does not exist. Check its path and run again.") from None
+    except IsADirectoryError:
+        raise PvcEvalInputError(
+            f"{path} is a directory, not a VCF file. Check its path and run again."
+        ) from None
+    except PermissionError:
+        raise PvcEvalInputError(
+            f"{path} cannot be read: permission denied. Allow reading it and run again."
+        ) from None
     if is_gzipped:
         return gzip.open(path, "rt", encoding="utf-8")
     return path.open(encoding="utf-8")
@@ -408,7 +608,7 @@ def _parse_samples(numbered_lines: Iterator[tuple[int, str]], path: Path) -> tup
         if line.startswith("##") or not line.strip():
             continue
         if line.startswith("#CHROM"):
-            return tuple(line.rstrip("\n").split("\t")[_NUM_FIXED_COLUMNS:])
+            return _parse_sample_names(line, path, line_number)
         raise PvcEvalInputError(
             f"{path}, line {line_number}: a VCF file has a #CHROM line after its ## lines,"
             " and this line comes before any. Check that the file is a VCF with its header."
@@ -417,6 +617,20 @@ def _parse_samples(numbered_lines: Iterator[tuple[int, str]], path: Path) -> tup
         f"{path} has no #CHROM line after its ## lines. Check that the file is a VCF with"
         " its header."
     )
+
+
+def _parse_sample_names(chrom_line: str, path: Path, line_number: int) -> tuple[str, ...]:
+    """The sample names of a #CHROM line; raises PvcEvalInputError for an empty one, which
+    a trailing tab or two tabs in a row make."""
+    names = tuple(chrom_line.rstrip("\n").split("\t")[_NUM_FIXED_COLUMNS:])
+    if "" in names:
+        column = _NUM_FIXED_COLUMNS + names.index("") + 1
+        raise PvcEvalInputError(
+            f"{path}, line {line_number}: the #CHROM line has an empty sample name in column"
+            f" {column}; each sample needs a name, and the columns are separated by one tab."
+            " Correct the line and run again."
+        )
+    return names
 
 
 def _check_num_samples(fields: list[str], num_samples: int, path: Path, line_number: int) -> None:
@@ -446,7 +660,13 @@ def _parse_position(fields: list[str], path: Path, line_number: int) -> tuple[st
     # is known not to be symbolic.
     if not (pos.isascii() and pos.isdecimal()):
         raise _make_pos_error(pos, path, line_number)
-    return fields[0], int(pos)
+    pos_1based = _parse_decimal(pos)
+    if pos_1based is None:
+        raise PvcEvalInputError(
+            f"{path}, line {line_number}: POS has {len(pos):,} digits, which is past the end of"
+            " any contig. Correct the line or remove it, and run again."
+        )
+    return fields[0], pos_1based
 
 
 def _make_pos_error(pos: str, path: Path, line_number: int) -> PvcEvalInputError:
@@ -483,7 +703,7 @@ def _is_symbolic(alt: str) -> bool:
     return alt.startswith("<") or "[" in alt or "]" in alt or is_single_breakend
 
 
-def _parse_record(
+def _parse_line_without_samples(
     fields: list[str],
     contig: str,
     pos: int,
@@ -492,11 +712,10 @@ def _parse_record(
     reference_window: FastaWindow,
     contig_length: int,
     span_limit: int | None,
-    ploidy: int,
-) -> tuple[VcfRecord, int, bool]:
-    """The VCF record of a line, normalised and with its span; how many of its QUAL and
-    GQ values were taken as absent for not being numbers; and whether its span was cut
-    to its REF for reaching more than span_limit beyond it.
+) -> tuple[_PlacedLine, bool, bool]:
+    """A line normalised and with its span, its sample columns left to parse; whether its
+    QUAL was taken as absent for not being a number; and whether its span was cut to its
+    REF for reaching more than span_limit beyond it.
 
     pos: the 0-based position of POS; the REF lies within the contig.
     """
@@ -517,46 +736,127 @@ def _parse_record(
     if span is None:
         span = ref_span
     qual = _parse_qual(fields[5])
-    genotypes, num_gq_not_numbers = _parse_genotypes(fields, len(alleles), ploidy)
-    record = VcfRecord(
+    placed_line = _PlacedLine(
+        pos=pos,
         contig=contig,
         start=start,
         alleles=trimmed,
         qual=qual,
-        genotypes=genotypes,
         line_number=line_number,
         ref_mismatch=ref_mismatch,
         span=span,
+        fields=fields,
     )
-    num_not_numbers = _is_taken_as_absent(fields[5], qual) + num_gq_not_numbers
-    return record, num_not_numbers, is_beyond_reach
+    return placed_line, _is_taken_as_absent(fields[5], qual), is_beyond_reach
+
+
+# GTs and whole genotypes repeat, even with a phase set per sample, so each thread keeps
+# those it has parsed: equal genotypes then are one frozen object, and genotypes with one GT
+# share one alleles tuple. On the 5 Mb, 200-sample GATK-like benchmark input, of 3,625,400
+# genotypes one thread builds 515,559 and eight threads 604,124; a cache shared by the
+# threads, functools.lru_cache, would take a lock on every sample.
+# A thread starts them again, genotypes and GTs, when a batch starts and it holds more
+# than this many genotypes, so it holds at most this many and one batch's, 64 lines times
+# the samples of a line; a GT is kept only beside a genotype, so the GTs are bounded too.
+_MAX_GENOTYPES_SEEN = 4096
+
+
+def _parse_batch(
+    placed_lines: Iterable[_PlacedLine], ploidy: int, seen_by_thread: threading.local
+) -> tuple[list[tuple[int, VcfRecord]], int]:
+    """The VCF records of a batch of placed lines, each with the 0-based position of its
+    POS, and how many of their GQ values were taken as absent for not being numbers.
+
+    ploidy: how many haplotypes each sample has.
+
+    seen_by_thread: where the thread that runs this keeps the genotypes and the GTs it has
+        parsed, as `genotypes` and `gts`, so that no two threads share them.
+    """
+    if (
+        not hasattr(seen_by_thread, "genotypes")
+        or len(seen_by_thread.genotypes) > _MAX_GENOTYPES_SEEN
+    ):
+        seen_by_thread.genotypes = {}
+        seen_by_thread.gts = {}
+    genotypes_seen: _GenotypesSeen = seen_by_thread.genotypes
+    gts_seen: _GtsSeen = seen_by_thread.gts
+    records: list[tuple[int, VcfRecord]] = []
+    num_not_numbers = 0
+    for line in placed_lines:
+        genotypes, num_line_not_numbers = _parse_genotypes(
+            line.fields, len(line.alleles), ploidy, genotypes_seen, gts_seen
+        )
+        num_not_numbers += num_line_not_numbers
+        record = VcfRecord(
+            contig=line.contig,
+            start=line.start,
+            alleles=line.alleles,
+            qual=line.qual,
+            genotypes=genotypes,
+            line_number=line.line_number,
+            ref_mismatch=line.ref_mismatch,
+            span=line.span,
+        )
+        records.append((line.pos, record))
+    return records, num_not_numbers
+
+
+# An index past the end of every sample field, for a key that FORMAT lacks.
+_ABSENT_KEY_INDEX = sys.maxsize
 
 
 def _parse_genotypes(
-    fields: list[str], num_alleles: int, ploidy: int
-) -> tuple[tuple[VcfGenotype | MALFORMED_GT | OTHER_PLOIDY_GT, ...], int]:
+    fields: list[str],
+    num_alleles: int,
+    ploidy: int,
+    genotypes_seen: _GenotypesSeen,
+    gts_seen: _GtsSeen,
+) -> tuple[tuple[_Genotype, ...], int]:
     """The genotypes of a line's sample columns, one per sample, and how many of their GQ
     values were taken as absent for not being numbers.
 
     num_alleles: how many VCF alleles the record has, REF included.
     ploidy: how many haplotypes each sample has.
+    genotypes_seen, gts_seen: the genotypes and GTs parsed so far, which this adds to.
     """
     if len(fields) <= _NUM_FIXED_COLUMNS:
         return (), 0
-    genotypes: list[VcfGenotype | MALFORMED_GT | OTHER_PLOIDY_GT] = []
+    genotypes: list[_Genotype] = []
     num_not_numbers = 0
     keys = fields[8].split(":")
+    # The keys are found once per record and each sample read by position, rather than
+    # into a dict of its own: parse_vcf is 39% faster on the 5 Mb, 200-sample GATK-like
+    # benchmark input, and 42% on the 64 Mb one. VCF does not allow a key twice; when it
+    # is, the last copy counts, as it did when each sample was read into a dict. Unlike that
+    # dict, a sample that drops the last copy has no value for the key, even when it has one
+    # at an earlier copy; so a GQ that is not a number at that earlier copy is not counted
+    # as taken as absent.
+    key_indices = {key: index for index, key in enumerate(keys)}
+    gt_index = key_indices.get("GT", _ABSENT_KEY_INDEX)
+    gq_index = key_indices.get("GQ", _ABSENT_KEY_INDEX)
+    ps_index = key_indices.get("PS", _ABSENT_KEY_INDEX)
     for sample_field in fields[_NUM_FIXED_COLUMNS:]:
-        # VCF lets trailing sample fields be dropped, so a key may have no value.
-        values = dict(zip(keys, sample_field.split(":"), strict=False))
-        phase_set = values.get("PS")
+        # VCF lets trailing sample fields be dropped, so an index past the last value, or
+        # the index of a key FORMAT lacks, has no value; a GT with none says what `.` says,
+        # MISSING on every haplotype (doc/specs/reconciliation.md §2).
+        values = sample_field.split(":")
+        num_values = len(values)
+        gt = values[gt_index] if gt_index < num_values else "."
+        gq = values[gq_index] if gq_index < num_values else None
+        phase_set = values[ps_index] if ps_index < num_values else None
         if phase_set == ".":
             phase_set = None
-        quality = _parse_gq(values.get("GQ"))
-        num_not_numbers += _is_taken_as_absent(values.get("GQ"), quality)
-        # A sample with no GT is MISSING on every haplotype, as a GT of `.` is (§2).
-        gt = values.get("GT", ".")
-        genotypes.append(_parse_genotype(gt, num_alleles, ploidy, phase_set, quality))
+        quality = _parse_gq(gq)
+        num_not_numbers += _is_taken_as_absent(gq, quality)
+        # A genotype seen before is looked up here, and not in _parse_genotype, to save a
+        # call per sample: most samples are seen before.
+        genotype_key = (gt, num_alleles, ploidy, phase_set, quality)
+        genotype = genotypes_seen.get(genotype_key)
+        if genotype is None:
+            genotype = genotypes_seen[genotype_key] = _parse_genotype(
+                gt, num_alleles, ploidy, phase_set, quality, gts_seen
+            )
+        genotypes.append(genotype)
     return tuple(genotypes), num_not_numbers
 
 
@@ -572,7 +872,10 @@ def _parse_qual(field: str) -> float | None:
 
 
 def _parse_gq(field: str | None) -> int | None:
+    # _parse_decimal's body, written out since this runs once per sample.
     if field is None or not field.isascii() or not field.isdecimal():
+        return None
+    if len(field) >= _DIGITS_ALWAYS_READ and _has_too_many_digits(field):
         return None
     return int(field)
 

@@ -28,8 +28,9 @@ other finding is judged with these numbers.
   mean between calls by more than the spread within one.
 - **Same conditions.** The same machine, the same Python (`uv run python
   -VV`), the same input, the files warm in the page cache on both sides,
-  nothing else running. A baseline and a candidate are best timed in one
-  hyperfine call, which alternates them.
+  nothing else running. A baseline and a candidate are timed in one
+  hyperfine call and again with the order reversed, since hyperfine runs
+  one command's runs and then the other's (`profiling_environment.md`).
 - **Sampling before tracing.** Tachyon for where the time goes; cProfile
   for how many calls, never for how long a small function takes, since its
   overhead falls on every call. A finding whose time comes only from

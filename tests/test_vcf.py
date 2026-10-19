@@ -2,6 +2,7 @@ import gzip
 import itertools
 import logging
 import random
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from pathlib import Path
@@ -34,8 +35,8 @@ HEADER = (
 type MakeReference = Callable[[str, str], IndexedFasta]
 
 
-class SpanLimitArgument(TypedDict, total=False):
-    """The span_limit a test passes to parse_vcf, or nothing for the default."""
+class SpanLimit(TypedDict, total=False):
+    """The span_limit a test gives parse_vcf; with none, parse_vcf takes its default."""
 
     span_limit: int | None
 
@@ -172,7 +173,73 @@ def write_vcf(tmp_path: Path, body: str, *, gzipped: bool = False) -> Path:
 def test_gt_gives_its_alleles_or_its_case(
     gt: str, expected: VcfGenotype | MALFORMED_GT | OTHER_PLOIDY_GT
 ) -> None:
-    assert _parse_genotype(gt, num_alleles=3, ploidy=2, phase_set=None, quality=None) == expected
+    assert (
+        _parse_genotype(gt, num_alleles=3, ploidy=2, phase_set=None, quality=None, gts_seen={})
+        == expected
+    )
+
+
+def test_same_gt_with_other_number_of_alleles_is_parsed_again(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    # 0/2 is a genotype where the record has two ALTs and malformed where it has one, so a
+    # cache that left the number of alleles out of its key would give both the first.
+    path = write_vcf(
+        tmp_path,
+        "chr1\t4\t.\tA\tG,T\t.\t.\t.\tGT\t0/2\t0/2\nchr1\t6\t.\tG\tA\t.\t.\t.\tGT\t0/2\t0/2\n",
+    )
+
+    first, second = parse_vcf(path, reference)
+
+    assert (
+        first.genotypes
+        == (VcfGenotype(alleles=(0, 2), phased=False, phase_set=None, quality=None),) * 2
+    )
+    assert second.genotypes == (MALFORMED_GT, MALFORMED_GT)
+
+
+def test_samples_with_the_same_gt_share_one_alleles_tuple(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    # The same GT and GQ and another PS, so a genotype cache that left PS out of its key
+    # would give the second sample the first one's phase set.
+    path = write_vcf(tmp_path, "chr1\t4\t.\tA\tG\t.\tPASS\t.\tGT:GQ:PS\t0|1:30:4\t0|1:30:9\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    first, second = record.genotypes
+    assert first == VcfGenotype(alleles=(0, 1), phased=True, phase_set="4", quality=30)
+    assert second == VcfGenotype(alleles=(0, 1), phased=True, phase_set="9", quality=30)
+    assert isinstance(first, VcfGenotype)
+    assert isinstance(second, VcfGenotype)
+    assert first.alleles is second.alleles
+
+
+def test_samples_with_the_same_gt_and_ps_keep_their_own_gq(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    # A genotype cache that left GQ out of its key would give the second sample the first
+    # one's quality.
+    path = write_vcf(tmp_path, "chr1\t4\t.\tA\tG\t.\tPASS\t.\tGT:GQ:PS\t0|1:30:4\t0|1:20:4\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(0, 1), phased=True, phase_set="4", quality=30),
+        VcfGenotype(alleles=(0, 1), phased=True, phase_set="4", quality=20),
+    )
+
+
+def test_samples_with_the_same_genotype_share_one_genotype(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(tmp_path, "chr1\t4\t.\tA\tG\t.\tPASS\t.\tGT:GQ:PS\t0|1:30:4\t0|1:30:4\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    first, second = record.genotypes
+    assert first == VcfGenotype(alleles=(0, 1), phased=True, phase_set="4", quality=30)
+    assert first is second
 
 
 @pytest.mark.parametrize("gzipped", [False, True], ids=["plain", "bgzipped"])
@@ -371,6 +438,58 @@ def test_file_without_chrom_line_stops_the_run(
         list(parse_vcf(path, reference))
 
 
+@pytest.mark.parametrize(
+    ("kind", "message"),
+    [
+        ("missing", r"a\.vcf does not exist\. Check its path and run again\.$"),
+        ("directory", r"a\.vcf is a directory, not a VCF file\. Check its path and run again\.$"),
+        (
+            "unreadable",
+            r"a\.vcf cannot be read: permission denied\. Allow reading it and run again\.$",
+        ),
+    ],
+    ids=["missing", "directory", "unreadable"],
+)
+def test_vcf_that_cannot_be_opened_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta, kind: str, message: str
+) -> None:
+    path = tmp_path / "a.vcf"
+    if kind == "directory":
+        path.mkdir()
+    elif kind == "unreadable":
+        path.write_text(HEADER, encoding="utf-8")
+        path.chmod(0)
+
+    with pytest.raises(PvcEvalInputError, match=message):
+        parse_vcf_samples(path)
+    with pytest.raises(PvcEvalInputError, match=message):
+        list(parse_vcf(path, reference))
+
+
+@pytest.mark.parametrize(
+    ("chrom_line", "column"),
+    [
+        ("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tHG002\t\n", 11),
+        ("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t\tHG002\n", 10),
+    ],
+    ids=["trailing_tab", "two_tabs"],
+)
+def test_empty_sample_name_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta, chrom_line: str, column: int
+) -> None:
+    path = tmp_path / "a.vcf"
+    path.write_text("##fileformat=VCFv4.3\n" + chrom_line, encoding="utf-8")
+    message = (
+        rf"a\.vcf, line 2: the #CHROM line has an empty sample name in column {column}; each"
+        r" sample needs a name, and the columns are separated by one tab\."
+    )
+
+    with pytest.raises(PvcEvalInputError, match=message):
+        parse_vcf_samples(path)
+    with pytest.raises(PvcEvalInputError, match=message):
+        list(parse_vcf(path, reference))
+
+
 def test_lower_case_alleles_are_read_in_upper_case_and_normalise_alike(
     tmp_path: Path, reference: IndexedFasta
 ) -> None:
@@ -463,6 +582,56 @@ def test_phase_set_dot_is_none(tmp_path: Path, reference: IndexedFasta) -> None:
     assert record.genotypes == (
         VcfGenotype(alleles=(0, 1), phased=True, phase_set=None, quality=None),
         VcfGenotype(alleles=(1, 0), phased=True, phase_set="12", quality=None),
+    )
+
+
+def test_dropped_trailing_sample_fields_are_absent(tmp_path: Path, reference: IndexedFasta) -> None:
+    # VCF lets a sample drop trailing fields: HG002 drops PS, HG003 drops GQ and PS too.
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGT:GQ:PS\t1|0:20\t0|1\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(1, 0), phased=True, phase_set=None, quality=20),
+        VcfGenotype(alleles=(0, 1), phased=True, phase_set=None, quality=None),
+    )
+
+
+def test_dropped_gt_after_another_key_is_missing(tmp_path: Path, reference: IndexedFasta) -> None:
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGQ:GT\t30\t30:0/1\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(MISSING, MISSING), phased=False, phase_set=None, quality=30),
+        VcfGenotype(alleles=(0, 1), phased=False, phase_set=None, quality=30),
+    )
+
+
+def test_sample_values_beyond_the_format_keys_are_ignored(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0|1:30:4\t0|1\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    assert (
+        record.genotypes
+        == (VcfGenotype(alleles=(0, 1), phased=True, phase_set=None, quality=None),) * 2
+    )
+
+
+def test_key_named_twice_in_format_takes_its_last_copy(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    # HG003 drops the last copy of GQ, so it has no GQ, although it has a value at the first.
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGQ:GT:GQ\t10:0/1:20\t10:1/1\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(0, 1), phased=False, phase_set=None, quality=20),
+        VcfGenotype(alleles=(1, 1), phased=False, phase_set=None, quality=None),
     )
 
 
@@ -614,7 +783,7 @@ LONG_REFERENCE = make_fasta({"chr1": "C" * 20000, "chr2": "C" * 10})
     ids=["default_10_kb", "limit_5"],
 )
 def test_record_comes_out_once_no_later_record_can_start_before_it(
-    tmp_path: Path, make_reference: MakeReference, limit: dict[str, int], second_pos_1based: int
+    tmp_path: Path, make_reference: MakeReference, limit: SpanLimit, second_pos_1based: int
 ) -> None:
     # The SNP spans 99. A record at 0-based 10099 or after cannot span from before 99,
     # since a span reaches at most 10 kb left of its REF; with a limit of 5, one at 104.
@@ -636,7 +805,7 @@ def test_record_comes_out_once_no_later_record_can_start_before_it(
 def test_record_is_held_while_a_later_record_could_start_before_it(
     tmp_path: Path,
     make_reference: MakeReference,
-    limit: SpanLimitArgument,
+    limit: SpanLimit,
     second_pos_1based: int,
 ) -> None:
     # A record at 0-based 10098 could span from 98, before the SNP's 99; with a limit of
@@ -654,7 +823,7 @@ def test_record_is_held_while_a_later_record_could_start_before_it(
 
 @pytest.mark.parametrize("limit", [{}, {"span_limit": None}], ids=["default_10_kb", "no_limit"])
 def test_records_held_come_out_at_the_next_contig(
-    tmp_path: Path, make_reference: MakeReference, limit: SpanLimitArgument
+    tmp_path: Path, make_reference: MakeReference, limit: SpanLimit
 ) -> None:
     path = write_vcf(tmp_path, make_snp_line("chr1", 100) + make_snp_line("chr2", 1) + NOT_A_RECORD)
 
@@ -764,7 +933,7 @@ UNCUT_PLACEMENTS = [
 
 @pytest.mark.parametrize("limit", [{}, {"span_limit": None}], ids=["default_10_kb", "no_limit"])
 def test_spans_within_the_limit_are_not_cut(
-    tmp_path: Path, make_reference: MakeReference, limit: SpanLimitArgument
+    tmp_path: Path, make_reference: MakeReference, limit: SpanLimit
 ) -> None:
     path = write_vcf(tmp_path, LIMIT_LINES)
 
@@ -843,7 +1012,7 @@ LONG_SLIDE_LINE = "chr1\t2\t.\tAA\tA\t.\t.\t.\tGT\t0/1\t0/1\n"
 
 @pytest.mark.parametrize("limit", [{}, {"span_limit": None}], ids=["default_10_kb", "no_limit"])
 def test_deletion_that_slides_far_right_spans_its_whole_slide(
-    tmp_path: Path, make_reference: MakeReference, limit: SpanLimitArgument
+    tmp_path: Path, make_reference: MakeReference, limit: SpanLimit
 ) -> None:
     path = write_vcf(tmp_path, LONG_SLIDE_LINE)
 
@@ -1125,3 +1294,250 @@ def test_a_ploidy_that_is_not_a_whole_number_of_1_or_more_is_a_value_error(
         ValueError, match=rf"^ploidy must be a whole number of 1 or more, not {ploidy!r}$"
     ):
         next(records)
+
+
+# More lines than 4 threads take in their first batches (2 each of vcf._BATCH_SIZE), so
+# that the pool has several batches for every thread.
+NUM_THREADED_LINES = 3000
+
+
+def make_threaded_input(rng: random.Random) -> tuple[tuple[str, str], str]:
+    """A reference of random bases, and VCF lines on it, one every 10 bases: SNPs,
+    insertions, deletions and records of two ALTs, a symbolic record every 97 lines, and
+    GTs of each kind of §5.4 with a GQ, sometimes not a number, and a PS."""
+    sequence = "".join(rng.choice("ACGT") for _ in range(NUM_THREADED_LINES * 10 + 20))
+    gts = ["0/0", "0/1", "1|0", "1/1", "./.", ".", "0/2", "1", "0/1/1"]
+    lines = ""
+    for index in range(NUM_THREADED_LINES):
+        pos_1based = 11 + index * 10
+        ref = sequence[pos_1based - 1]
+        other = "T" if ref != "T" else "G"
+        alt = [other, ref + "A", f"{other},{ref}C"][index % 3]
+        if index % 7 == 0:
+            ref, alt = sequence[pos_1based - 1 : pos_1based + 1], ref
+        if index % 97 == 0:
+            alt = "<DEL>"
+        samples = "\t".join(
+            f"{rng.choice(gts)}:{rng.choice([str(rng.randrange(100)), 'x', '.'])}:"
+            f"{rng.randrange(5)}"
+            for _ in range(2)
+        )
+        lines += f"chr1\t{pos_1based}\t.\t{ref}\t{alt}\t30\t.\t.\tGT:GQ:PS\t{samples}\n"
+    return make_fasta({"chr1": sequence}), lines
+
+
+def test_records_and_warnings_are_the_same_with_one_thread_or_several(
+    tmp_path: Path,
+    make_reference: MakeReference,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fasta, lines = make_threaded_input(random.Random(20261019))
+    path = write_vcf(tmp_path, lines)
+    reference = make_reference(*fasta)
+    # The thread that parsed each batch, by the number of threads.
+    batch_threads: dict[int, list[threading.Thread]] = {1: [], 4: []}
+    parse_batch = vcf._parse_batch
+
+    def record_thread(
+        placed_lines: list[vcf._PlacedLine], ploidy: int, seen_by_thread: threading.local
+    ) -> tuple[list[tuple[int, VcfRecord]], int]:
+        batch_threads[num_threads].append(threading.current_thread())
+        return parse_batch(placed_lines, ploidy, seen_by_thread)
+
+    monkeypatch.setattr(vcf, "_parse_batch", record_thread)
+    records: dict[int, list[VcfRecord]] = {}
+    warnings: dict[int, list[str]] = {}
+    for num_threads in (1, 4):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            records[num_threads] = list(parse_vcf(path, reference, num_threads=num_threads))
+        warnings[num_threads] = caplog.messages
+
+    assert records[4] == records[1]
+    assert warnings[4] == warnings[1]
+    assert len(records[1]) == NUM_THREADED_LINES - len(range(0, NUM_THREADED_LINES, 97))
+    assert len(warnings[1]) == 2
+    # One thread parses every batch itself; four leave every batch to the pool.
+    assert set(batch_threads[1]) == {threading.current_thread()}
+    assert threading.current_thread() not in batch_threads[4]
+    assert len(batch_threads[4]) > 4 * 4
+
+
+# More lines than 4 threads take in their first batches, as NUM_THREADED_LINES is.
+NUM_PLOIDY_LINES = 1000
+
+
+@pytest.mark.parametrize("num_threads", [1, 4])
+def test_two_streams_of_other_ploidies_read_together_keep_their_own_genotypes(
+    tmp_path: Path, make_reference: MakeReference, num_threads: int
+) -> None:
+    # The same GTs read with ploidy 1 and 2, the two streams taken in turns on this thread
+    # and their batches on the same pool threads, so a GT or genotype kept for one ploidy
+    # and given to the other would show here.
+    lines = "".join(
+        f"chr1\t{pos_1based}\t.\tC\tT\t.\t.\t.\tGT\t1\t0/1\n"
+        if pos_1based % 2
+        else f"chr1\t{pos_1based}\t.\tC\tT\t.\t.\t.\tGT\t.\t./.\n"
+        for pos_1based in range(1, NUM_PLOIDY_LINES + 1)
+    )
+    path = write_vcf(tmp_path, lines)
+    reference = make_reference(*make_fasta({"chr1": "C" * NUM_PLOIDY_LINES}))
+
+    pairs = list(
+        zip(
+            parse_vcf(path, reference, num_threads=num_threads, ploidy=1),
+            parse_vcf(path, reference, num_threads=num_threads, ploidy=2),
+            strict=True,
+        )
+    )
+
+    haploid = VcfGenotype(alleles=(1,), phased=False, phase_set=None, quality=None)
+    diploid = VcfGenotype(alleles=(0, 1), phased=False, phase_set=None, quality=None)
+    missing_1 = VcfGenotype(alleles=(MISSING,), phased=False, phase_set=None, quality=None)
+    missing_2 = VcfGenotype(alleles=(MISSING, MISSING), phased=False, phase_set=None, quality=None)
+    assert len(pairs) == NUM_PLOIDY_LINES
+    for record_1, record_2 in pairs:
+        if record_1.start % 2 == 0:
+            assert record_1.genotypes == (haploid, OTHER_PLOIDY_GT)
+            assert record_2.genotypes == (OTHER_PLOIDY_GT, diploid)
+        else:
+            assert record_1.genotypes == (missing_1, missing_1)
+            assert record_2.genotypes == (missing_2, missing_2)
+
+
+@pytest.mark.parametrize("num_threads", [1, 4])
+def test_with_threads_an_error_comes_after_the_records_before_it(
+    tmp_path: Path, make_reference: MakeReference, num_threads: int
+) -> None:
+    fasta, lines = make_threaded_input(random.Random(1))
+    path = write_vcf(tmp_path, lines + NOT_A_RECORD)
+    records = parse_vcf(path, make_reference(*fasta), span_limit=5, num_threads=num_threads)
+    given: list[VcfRecord] = []
+
+    with pytest.raises(PvcEvalInputError, match="POS is 'five'"):
+        given.extend(records)
+
+    # Every record but the last comes out before the error: the next record, 10 bases on,
+    # shows that no later record can start before it with a limit of 5. 31 lines are
+    # symbolic.
+    assert len(given) == NUM_THREADED_LINES - 31 - 1
+    assert given[-1].line_number == NUM_THREADED_LINES + 1
+
+
+@pytest.mark.parametrize(
+    "num_threads",
+    [0, -1, 257, 2**62, 1.5, "4", True],
+    ids=["zero", "negative", "above_256", "huge", "fraction", "text", "bool"],
+)
+def test_a_num_threads_that_is_not_a_whole_number_from_1_to_256_is_a_value_error(
+    tmp_path: Path, reference: IndexedFasta, num_threads: object
+) -> None:
+    path = write_vcf(tmp_path, make_snp_line("chr1", 1))
+
+    with pytest.raises(
+        ValueError,
+        match=rf"^num_threads must be a whole number from 1 to 256, not {num_threads!r}$",
+    ):
+        list(parse_vcf(path, reference, num_threads=num_threads))  # ty: ignore[invalid-argument-type]  # a wrong type on purpose
+
+
+def test_a_pool_of_4_threads_runs_4_items_at_once_and_gives_them_in_order() -> None:
+    # Each item waits until 4 are running, so a pool of fewer threads breaks the barrier.
+    barrier = threading.Barrier(4, timeout=5)
+
+    def wait_for_4(item: int) -> int:
+        barrier.wait()
+        return item
+
+    assert list(vcf._map_in_order(wait_for_4, range(8), 4)) == list(range(8))
+
+
+def make_placed_line(gt: str, gq: int) -> vcf._PlacedLine:
+    """A SNP at the first base of chr1 with one sample, of this GT and GQ."""
+    fields = ["chr1", "1", ".", "A", "C", "30", ".", ".", "GT:GQ", f"{gt}:{gq}"]
+    return vcf._PlacedLine(
+        pos=0,
+        contig="chr1",
+        start=0,
+        alleles=("A", "C"),
+        qual=30.0,
+        line_number=gq,
+        ref_mismatch=False,
+        span=(0, 1),
+        fields=fields,
+    )
+
+
+def test_genotypes_and_gts_a_thread_keeps_are_bounded() -> None:
+    # Every genotype has a GQ of its own, so none is seen twice, and the thread passes its
+    # bound of 4,096 twice in 10,000 lines. The bound is checked when a batch starts, so a
+    # thread holds at most one batch more. The first batch's GT, 1/1, is not seen again.
+    seen_by_thread = threading.local()
+    batch_size = 64
+    vcf._parse_batch([make_placed_line("1/1", gq) for gq in range(batch_size)], 2, seen_by_thread)
+    most_held = 0
+    for start in range(batch_size, 10_000, batch_size):
+        lines = [make_placed_line("0/1", gq) for gq in range(start, start + batch_size)]
+        vcf._parse_batch(lines, 2, seen_by_thread)
+        most_held = max(most_held, len(seen_by_thread.genotypes))
+
+    assert most_held == 4096 + batch_size
+    assert len(seen_by_thread.genotypes) < 4096
+    assert set(seen_by_thread.gts) == {("0/1", 2, 2)}
+
+
+def test_genotypes_a_thread_keeps_for_one_ploidy_are_not_given_for_another() -> None:
+    # One thread's store, given batches of one GT with ploidy 1 and then 2: a key without
+    # the ploidy would give the second batch the first one's genotype.
+    seen_by_thread = threading.local()
+
+    (_, haploid_record), *_ = vcf._parse_batch([make_placed_line("1", 30)], 1, seen_by_thread)[0]
+    (_, diploid_record), *_ = vcf._parse_batch([make_placed_line("1", 30)], 2, seen_by_thread)[0]
+
+    assert haploid_record.genotypes == (
+        VcfGenotype(alleles=(1,), phased=False, phase_set=None, quality=30),
+    )
+    assert diploid_record.genotypes == (OTHER_PLOIDY_GT,)
+
+
+# More digits than Python's int() reads from text by default (4,300).
+TOO_MANY_DIGITS = "1" * 5000
+
+
+def test_pos_of_more_digits_than_python_reads_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(tmp_path, f"chr1\t{TOO_MANY_DIGITS}\t.\tA\tG\t.\t.\t.\tGT\t0/1\t0/1\n")
+
+    with pytest.raises(
+        PvcEvalInputError, match=r"a\.vcf, line 3: POS has 5,000 digits, which is past the end"
+    ):
+        list(parse_vcf(path, reference))
+
+
+def test_allele_index_of_more_digits_than_python_reads_is_malformed(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(
+        tmp_path, f"chr1\t4\t.\tA\tG\t.\t.\t.\tGT\t0/{TOO_MANY_DIGITS}\t{TOO_MANY_DIGITS}\n"
+    )
+
+    (record,) = parse_vcf(path, reference)
+
+    assert record.genotypes == (MALFORMED_GT, MALFORMED_GT)
+
+
+def test_gq_of_more_digits_than_python_reads_is_absent_and_counted(
+    tmp_path: Path, reference: IndexedFasta, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = write_vcf(tmp_path, f"chr1\t4\t.\tA\tG\t.\t.\t.\tGT:GQ\t0/1:{TOO_MANY_DIGITS}\t0/1:20\n")
+
+    with caplog.at_level(logging.WARNING):
+        (record,) = parse_vcf(path, reference)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(0, 1), phased=False, phase_set=None, quality=None),
+        VcfGenotype(alleles=(0, 1), phased=False, phase_set=None, quality=20),
+    )
+    assert "took 1 QUAL or GQ value that could not be read as a number as absent" in caplog.text

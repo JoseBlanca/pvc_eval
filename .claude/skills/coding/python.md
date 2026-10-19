@@ -243,6 +243,9 @@ that pays for it.
   | format | turn a value into text for a person |
   | is | answer a yes-or-no question about a value, returning a bool |
   | open | open a file and return it, to be read or written |
+  | batch | group the items of a stream into lists of a fixed length, the last perhaps shorter |
+  | map | apply a function to each item of a stream, giving the results in the order of the items |
+  | log | send a message to the logger, for the user |
   | reconcile | build a locus's locus alleles and its samples' sample results (`doc/specs/reconciliation.md` §4) |
   | evaluate | give the outcome of a sample pair (`doc/specs/reconciliation.md` §5) |
 

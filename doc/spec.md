@@ -203,15 +203,17 @@ class Locus:
     str_regions: tuple[GenomeSegment, ...]  # the STR regions the locus contains
 
 def build_loci(records_a: Iterator[VcfRecord], records_b: Iterator[VcfRecord],
-               segments: Iterator[GenomeSegment], *,
+               segments: Iterator[GenomeSegment], contigs: Sequence[str], *,
                chain_distance: int = 10) -> Iterator[Locus]: ...
 ```
 
-`build_loci` is in `pvc_eval.loci`, and the loci's own spec gives it in full. A `Locus` covers the
-spans of all its records with an ALT and every STR region it holds (§5.3), so `start` and `end`
-hold their REFs. Each file's records are in the order `parse_vcf` yields them, by span start.
-Records with no ALT are among them: one is in every locus its REF overlaps, and its REF may reach
-beyond the locus (§5.2). `str_regions` holds no `GENERIC` segment, in position order. Loci come
+`build_loci` is in `pvc_eval.loci`, and the loci's own spec, `doc/specs/loci.md`, gives it in
+full. `contigs` is the reference's contig names in the `.fai`'s order (`IndexedFasta.contigs`),
+which orders the two files' contigs and the segments' between them. A `Locus` covers the spans of
+all its records with an ALT and every STR region it holds (§5.3), so `start` and `end` hold their
+REFs. Each file's records are in the order `parse_vcf` yields them, by span start. Records with no
+ALT are among them: one is in every locus its REF overlaps, and its REF may reach beyond the locus
+(§5.2). `str_regions` holds no `GENERIC` segment, in position order. Loci come
 contig by contig in the `.fai`'s order and by start, and do not overlap. The locus knows nothing
 of samples: each record's genotypes are in the order of its file's header (`parse_vcf_samples`),
 and the reference bases over the locus are read from the reference.
@@ -398,8 +400,15 @@ begins.
 
 A REF-mismatch record's span is its trimmed REF.
 
+**Threads.** The reader parses the sample columns of batches of VCF records on a pool of threads,
+4 by default, and 1 parses them in the calling thread with no pool; whatever the number, it gives
+the same records, in the same order, with the same errors and warnings (decided by the owner on
+19 October 2026, for a measured gain of about three times on 200 samples). The number is set in
+the Python API; whether the command line sets it too, and how two files read together share the
+cores, is not decided yet.
+
 **Three cases.** The first is valid, and would be made invalid by moving its deletion; the other
-two are one haplotype written twice, which only the span puts in one locus.
+two are one haplotype written twice, whose spellings overlap only through the span.
 
 ```
 reference 21–26  CAGAGT                    the AG at 22–23 repeats at 24–25
@@ -418,8 +427,10 @@ file A   26  T    C   1/1
 file B   24  AGT  C   1/1                  span 24–26
 ```
 
-Both files give `GCAGCC`. Without the span, A's deletion (21–23) and B's record (24–26) would fall
-into different loci, giving *only in A* at one and *different* at the other.
+Both files give `GCAGCC`. By overlap alone, without the span, A's deletion (21–23) and B's record
+(24–26) would fall into different loci, giving *only in A* at one and *different* at the other.
+They touch, so the chain distance (§5.3) joins them too; `doc/specs/loci.md` has a case that only
+the span joins.
 
 ```
 reference 10–11  CG
@@ -435,16 +446,28 @@ Both files give `CTA`, in one locus because A's insertion spans the base after i
 **Building a locus.** Starting from the leftmost VCF record not yet in a locus, of either file:
 
 1. The locus is that record's span (§5.2).
-2. Add every VCF record, of either file, whose span overlaps the locus or has at most the chain
-   distance of reference positions between it and the locus (default 10, so spans that touch
-   always chain), and widen the locus to cover its span. Repeat until no record is added. Chaining
-   is transitive: if A chains with B and B with C, all three are in the locus, whichever files they
-   come from.
+2. Add every VCF record not yet in a locus, of either file, whose span overlaps the locus or has
+   at most the chain distance of reference positions between it and the locus (default 10, so
+   spans that touch always chain), and widen the locus to cover its span. Repeat until no record
+   is added. Chaining is transitive: if A chains with B and B with C, all three are in the locus,
+   whichever files they come from.
 3. Widen the locus to cover every STR region a VCF record in it **touches** — overlaps or lies
    immediately next to. Go back to step 2, since the wider locus may now overlap more records. Stop
    when neither step adds anything.
+4. If the locus has at most the chain distance of reference positions between it and the locus
+   before it on the contig, the two are one locus, covering both. This can happen only when an STR
+   region has widened the locus to the left.
 
 A locus is a run of reference positions, written 1-based and inclusive, as in VCF.
+
+With a SNP at 100, a satellite at 105–3000 that it does not touch, and a record at 2990 inside the
+satellite, the record makes a locus 105–3000, and step 4 joins it to the locus at 100: one locus
+100–3000. The distance is measured between the loci, not to their records: if the SNP at 100
+touches a satellite at 101–200, its locus is 100–200, which the locus 205–3000 joins although the
+SNP itself is 104 positions away (decided by the owner on 19 October 2026, over keeping such loci
+apart, which would lose the chain distance next to STR regions; the look-ahead then holds a locus
+until the reading has passed every STR region that starts within the chain distance after it). The
+loci's own spec, `doc/specs/loci.md`, gives the rules in full, with their cases.
 
 **Why a chain distance** (decided by the owner on 19 October 2026). Two events can be traded
 between spellings: one file deletes a base and changes the next one, the other changes the first
