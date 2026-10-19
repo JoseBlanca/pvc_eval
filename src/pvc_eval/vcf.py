@@ -248,7 +248,7 @@ def _parse_records_in_file_order(
     """
     status = _ReadStatus()
     with (
-        closing(_place_lines(path, reference, span_limit, status)) as placed_lines,
+        closing(_parse_lines_without_samples(path, reference, span_limit, status)) as placed_lines,
         closing(
             # Each thread keeps what it has parsed in seen_by_thread, for this file alone.
             _map_in_order(
@@ -333,7 +333,7 @@ class _PlacedLine:
     fields: list[str]
 
 
-def _place_lines(
+def _parse_lines_without_samples(
     path: Path, reference: IndexedFasta, span_limit: int | None, status: _ReadStatus
 ) -> Generator[_PlacedLine]:
     """The lines of a VCF file that hold a record, in the file's order, checked, normalised
@@ -395,7 +395,7 @@ def _place_lines(
             # contig makes the window drop the buffer.
             evict_distance = BLOCK_BASES if span_limit is None else span_limit + 1
             reference_window.evict_before(pos - evict_distance)
-            placed_line, is_qual_absent, is_beyond_reach = _place_line(
+            placed_line, is_qual_absent, is_beyond_reach = _parse_line_without_samples(
                 fields, contig, pos, alts, line_number, reference_window, contig_length, span_limit
             )
             status.num_not_numbers += is_qual_absent
@@ -652,7 +652,7 @@ def _is_symbolic(alt: str) -> bool:
     return alt.startswith("<") or "[" in alt or "]" in alt or is_single_breakend
 
 
-def _place_line(
+def _parse_line_without_samples(
     fields: list[str],
     contig: str,
     pos: int,
