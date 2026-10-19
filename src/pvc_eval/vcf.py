@@ -79,14 +79,12 @@ class VcfRecord:
 
 
 def read_samples(path: Path) -> tuple[str, ...]:
-    """The sample names of a VCF file, in the order of its columns."""
+    """The sample names of a VCF file, in the order of its columns.
+
+    Raises PvcEvalInputError when the file has no #CHROM line after its ## lines.
+    """
     with _open_text(path) as lines:
-        for line in lines:
-            if line.startswith("#CHROM"):
-                return tuple(line.rstrip("\n").split("\t")[NUM_FIXED_COLUMNS:])
-            if not line.startswith("##"):
-                break
-    raise PvcEvalInputError(f"{path} has no #CHROM header line; is it a VCF file?")
+        return _read_header(enumerate(lines, start=1), path)
 
 
 def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
@@ -96,7 +94,9 @@ def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
 
     Raises PvcEvalInputError, when the stream reaches it, for a VCF record on a contig
     the reference lacks, for records out of the `.fai`'s contig order or out of position
-    order, and for a line that does not hold a VCF record. A record with a symbolic
+    order, for a file with no #CHROM line after its ## lines, for a line that does not
+    hold a VCF record, and for one whose number of sample columns differs from the
+    number of samples the #CHROM line names. A blank line is skipped. A record with a symbolic
     allele is skipped, and the number skipped is logged as a warning at the end (§9).
     """
     contig_rank = {contig: rank for rank, contig in enumerate(contigs)}
@@ -106,11 +106,14 @@ def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
     previous_where = ""
     num_symbolic = 0
     with _open_text(path) as lines:
-        for line_number, line in enumerate(lines, start=1):
-            if line.startswith("#"):
+        numbered_lines = enumerate(lines, start=1)
+        num_samples = len(_read_header(numbered_lines, path))
+        for line_number, line in numbered_lines:
+            if line.startswith("#") or not line.strip():
                 continue
             fields = line.rstrip("\n").split("\t")
             contig, pos_1based = _read_position(fields, path, line_number)
+            _check_num_samples(fields, num_samples, path, line_number)
             if contig not in contig_rank:
                 raise PvcEvalInputError(
                     f"{path}, line {line_number}: contig {contig} is not in the reference."
@@ -169,6 +172,35 @@ def _open_text(path: Path) -> TextIO:
     if is_gzipped:
         return gzip.open(path, "rt", encoding="utf-8")
     return path.open(encoding="utf-8")
+
+
+def _read_header(numbered_lines: Iterator[tuple[int, str]], path: Path) -> tuple[str, ...]:
+    """The sample names of the #CHROM line, read up to it and no further."""
+    for line_number, line in numbered_lines:
+        if line.startswith("##") or not line.strip():
+            continue
+        if line.startswith("#CHROM"):
+            return tuple(line.rstrip("\n").split("\t")[NUM_FIXED_COLUMNS:])
+        raise PvcEvalInputError(
+            f"{path}, line {line_number}: a VCF file has a #CHROM line after its ## lines,"
+            " and this line comes before any. Check that the file is a VCF with its header."
+        )
+    raise PvcEvalInputError(
+        f"{path} has no #CHROM line after its ## lines. Check that the file is a VCF with"
+        " its header."
+    )
+
+
+def _check_num_samples(fields: list[str], num_samples: int, path: Path, line_number: int) -> None:
+    """Later stages find a sample's genotype by its column, so every line has one per
+    sample of the #CHROM line, after FORMAT. A sites-only file has neither."""
+    num_found = max(len(fields) - NUM_FIXED_COLUMNS, 0)
+    if num_found != num_samples:
+        raise PvcEvalInputError(
+            f"{path}, line {line_number}: the line has {num_found} sample columns, and the"
+            f" #CHROM line names {num_samples} samples. A VCF record has a FORMAT column and"
+            " then one column per sample; correct the line or remove it, and run again."
+        )
 
 
 # A line that is not a VCF record stops the run (a provisional choice: doc/spec.md §3 does

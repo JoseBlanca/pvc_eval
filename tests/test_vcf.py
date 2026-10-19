@@ -175,3 +175,66 @@ def test_line_that_is_not_a_vcf_record_stops_the_run(
 
     with pytest.raises(PvcEvalInputError, match=message):
         list(read_vcf_records(path, CONTIGS))
+
+
+@pytest.mark.parametrize(
+    ("line", "found"),
+    [
+        ("chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\n", 1),
+        ("chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\t1/1\n", 3),
+        ("chr1\t5\t.\tA\tT\t.\t.\t.\n", 0),
+    ],
+    ids=["one_sample_fewer", "one_sample_more", "no_format_column"],
+)
+def test_line_with_other_samples_than_the_header_stops_the_run(
+    tmp_path: Path, line: str, found: int
+) -> None:
+    path = write_vcf(tmp_path, line)
+
+    with pytest.raises(
+        PvcEvalInputError, match=rf"a.vcf, line 3: the line has {found} sample columns.* names 2"
+    ):
+        list(read_vcf_records(path, CONTIGS))
+
+
+def test_sites_only_file_gives_records_without_genotypes(tmp_path: Path) -> None:
+    path = tmp_path / "a.vcf"
+    path.write_text(
+        "##fileformat=VCFv4.3\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+        "chr1\t5\t.\tA\tT\t.\t.\t.\n",
+        encoding="utf-8",
+    )
+
+    (record,) = read_vcf_records(path, CONTIGS)
+
+    assert (record.start, record.alleles, record.genotypes) == (4, ("A", "T"), ())
+
+
+def test_blank_lines_are_skipped(tmp_path: Path) -> None:
+    path = write_vcf(
+        tmp_path,
+        "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n"
+        "\n"
+        " \t \n"
+        "chr1\t7\t.\tA\tG\t.\t.\t.\tGT\t0/1\t0/1\n",
+    )
+
+    assert [record.start for record in read_vcf_records(path, CONTIGS)] == [4, 6]
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("##fileformat=VCFv4.3\nchr1\t5\t.\tA\tT\t.\t.\t.\n", r"a.vcf, line 2: .*#CHROM"),
+        ("##fileformat=VCFv4.3\n", r"a.vcf has no #CHROM"),
+    ],
+    ids=["record_before_chrom_line", "only_meta_lines"],
+)
+def test_file_without_chrom_line_stops_the_run(tmp_path: Path, text: str, message: str) -> None:
+    path = tmp_path / "a.vcf"
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(PvcEvalInputError, match=message):
+        read_samples(path)
+    with pytest.raises(PvcEvalInputError, match=message):
+        list(read_vcf_records(path, CONTIGS))
