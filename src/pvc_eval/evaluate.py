@@ -117,8 +117,8 @@ def _get_missing_outcome(
 ) -> Outcome | None:
     """The missing outcome of two samples' possible genotypes, or None when neither sample
     is missing: a sample is when every one of its genotypes has a MISSING."""
-    is_missing_a = all(_has_missing(genotype) for genotype in possible_a)
-    is_missing_b = all(_has_missing(genotype) for genotype in possible_b)
+    is_missing_a = all(_is_partly_missing(genotype) for genotype in possible_a)
+    is_missing_b = all(_is_partly_missing(genotype) for genotype in possible_b)
     if is_missing_a and is_missing_b:
         return Outcome.MISSING_IN_BOTH
     if is_missing_a:
@@ -142,7 +142,7 @@ def _find_first_pair(
     return None
 
 
-def _has_missing(genotype: LocusGenotype) -> bool:
+def _is_partly_missing(genotype: LocusGenotype) -> bool:
     return any(allele is MISSING for allele in genotype)
 
 
