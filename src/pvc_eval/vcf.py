@@ -1,7 +1,6 @@
 """The VCF records of one file: stage 2 of doc/spec.md §4, read with the checks of §5.2,
 normalised, given their spans and put in order of span start. Normalising trims the bases
-a record's alleles share and marks a REF that differs from the reference; a VCF record is
-never moved, split or decomposed.
+a record's alleles share; a VCF record is never moved, split or decomposed.
 
 Positions are 0-based and half-open inside pvc_eval. The 1-based POS of a VCF line is
 converted here, and nowhere else.
@@ -112,7 +111,6 @@ class VcfRecord:
     genotypes: one per sample, in the order of the header; a MALFORMED_GT or OTHER_PLOIDY_GT
         keeps no GQ.
     line_number: the 1-based line of the file, for messages.
-    ref_mismatch: REF, as written, differs from the reference (§5.2).
     span: the record's span (§5.2), 0-based and half-open; it always contains the REF.
     """
 
@@ -122,7 +120,7 @@ class VcfRecord:
     qual: float | None
     genotypes: tuple[VcfGenotype | MALFORMED_GT | OTHER_PLOIDY_GT, ...]
     line_number: int
-    ref_mismatch: bool
+    ref_mismatch: bool = False
     span: Span
 
     def __post_init__(self) -> None:
@@ -165,7 +163,7 @@ def parse_vcf(
 
     reference: the reference. The contigs, their order and their lengths are those of its
         `.fai`. The reader reads it through a FastaWindow of its own, which gives the bases
-        in upper case, so a soft-masked reference gives no REF mismatch (§5.2).
+        in upper case, so a soft-masked reference differs from no REF (§5.2).
     span_limit: the most bases a span may reach beyond its REF on either side, a whole
         number of 1 or more, or None for no limit (§5.2). A record whose span would reach further is given its REF as
         its span, and the number of those is logged as a warning at the end.
@@ -187,12 +185,9 @@ def parse_vcf(
     no limit from BLOCK_BASES before it, to a block after the furthest base read, and
     once a slide reaches further back, up to a block more behind.
 
-    A record whose REF differs from the reference is marked ref_mismatch and given its
-    trimmed REF as its span: such a record makes its locus invalid for every sample of
-    its file (§5.4), so its slide is not looked for.
-
     Raises PvcEvalInputError, when the stream reaches it, for a VCF record on a contig
-    the reference lacks or whose REF reaches past the end of its contig, for records out
+    the reference lacks, whose REF reaches past the end of its contig or whose REF differs
+    from the reference's bases there, compared without regard to case, for records out
     of the `.fai`'s contig order or out of position order, for a path that does not exist,
     is a directory or cannot be read, for a file with no #CHROM line after its ## lines, for
     an empty sample name in it, for a line that does not hold a VCF record, and for one whose
@@ -353,7 +348,6 @@ class _PlacedLine:
     alleles: tuple[str, ...]
     qual: float | None
     line_number: int
-    ref_mismatch: bool
     span: Span
     fields: list[str]
 
@@ -420,6 +414,7 @@ def _parse_lines_without_samples(
             # contig makes the window drop the buffer.
             evict_distance = BLOCK_BASES if span_limit is None else span_limit + 1
             reference_window.evict_before(pos - evict_distance)
+            _check_ref(fields[3], contig, pos, reference_window, path, line_number)
             placed_line, is_qual_absent, is_beyond_reach = _parse_line_without_samples(
                 fields, contig, pos, alts, line_number, reference_window, contig_length, span_limit
             )
@@ -428,6 +423,24 @@ def _parse_lines_without_samples(
                 status.num_beyond_reach += 1
                 status.first_beyond_reach_line = status.first_beyond_reach_line or line_number
             yield placed_line
+
+
+def _check_ref(
+    ref: str, contig: str, pos: int, reference_window: FastaWindow, path: Path, line_number: int
+) -> None:
+    """§5.2: a REF that differs from the reference means the VCF was made on another
+    reference, or is damaged; VCF bases are case-insensitive, and the window gives the
+    reference in upper case.
+
+    pos: the 0-based position of POS; the REF lies within the contig.
+    """
+    ref_bases = reference_window.get_bases(contig, pos, pos + len(ref))
+    if ref.upper() != ref_bases:
+        raise PvcEvalInputError(
+            f"{path}, line {line_number}: the REF of {contig}:{pos + 1} is {ref}, and the"
+            f" reference has {ref_bases} there, so the VCF looks made on another reference,"
+            " or damaged. Compare against the reference the VCF was called on."
+        )
 
 
 def _log_warnings(path: Path, span_limit: int | None, status: _ReadStatus) -> None:
@@ -717,24 +730,16 @@ def _parse_line_without_samples(
     QUAL was taken as absent for not being a number; and whether its span was cut to its
     REF for reaching more than span_limit beyond it.
 
-    pos: the 0-based position of POS; the REF lies within the contig.
+    pos: the 0-based position of POS; the REF lies within the contig and agrees with the
+    reference.
     """
-    # VCF bases are case-insensitive, and the window gives the reference in upper case.
+    # VCF bases are case-insensitive.
     alleles = (fields[3].upper(), *(alt.upper() for alt in alts))
-    ref_bases = reference_window.get_bases(contig, pos, pos + len(alleles[0]))
-    ref_mismatch = ref_bases != alleles[0]
     start, trimmed = _trim(pos, alleles)
-    ref_span = (start, start + len(trimmed[0]))
-    span = (
-        ref_span
-        if ref_mismatch
-        else _find_span_in_window(
-            start, trimmed, reference_window, contig, contig_length, span_limit
-        )
-    )
+    span = _find_span_in_window(start, trimmed, reference_window, contig, contig_length, span_limit)
     is_beyond_reach = span is None
     if span is None:
-        span = ref_span
+        span = (start, start + len(trimmed[0]))
     qual = _parse_qual(fields[5])
     placed_line = _PlacedLine(
         pos=pos,
@@ -743,7 +748,6 @@ def _parse_line_without_samples(
         alleles=trimmed,
         qual=qual,
         line_number=line_number,
-        ref_mismatch=ref_mismatch,
         span=span,
         fields=fields,
     )
@@ -794,7 +798,6 @@ def _parse_batch(
             qual=line.qual,
             genotypes=genotypes,
             line_number=line.line_number,
-            ref_mismatch=line.ref_mismatch,
             span=line.span,
         )
         records.append((line.pos, record))
