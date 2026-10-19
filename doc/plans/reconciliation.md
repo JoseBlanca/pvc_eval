@@ -138,8 +138,10 @@ Milestones 1 and 2 touch different files and can run side by side. The others ru
 - [ ] **5. A file against its decomposition**
 
   What it gives: the property of §9: for generated loci, file B made from file A by decomposing
-  each record into records of one replaced base or one indel, phased in a phase set of their own,
-  gives only *same genotype*, *reference in both*, *missing in both*, *invalid in both* or *too
+  each record that no edit of another record of a haplotype carrying it touches into records of
+  one replaced base or one indel, phased in a phase set of their own, the other records kept
+  whole (amended on 19 October 2026, after the property found touching records whose outcome
+  follows the spelling, §9 of the spec), gives only *same genotype*, *reference in both*, *missing in both*, *invalid in both* or *too
   complex*. Each of the last three comes only from its own cause in A: *missing in both* where A
   has a missing haplotype, *invalid in both* where A's sample is invalid, *too complex* where it is
   over the cap.

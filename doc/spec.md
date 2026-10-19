@@ -709,7 +709,11 @@ Nothing about pvc_eval is trusted until these pass.
    indels shifted right within their repeats, where no other edit of the same haplotype lies in
    the stretch they cross; GATK-style `*` records added — every row in the set allowed for
    the file against itself. Records decomposed from one record are written phased, in one phase
-   set, so the re-spelling adds no blocks (§5.4). The re-spelling program is part of the tests.
+   set, so the re-spelling adds no blocks (§5.4). Each re-spelling rewrites only records that no
+   edit of another record, on a haplotype that carries them, touches: collisions are judged on
+   edits as written (§5.4), so where the edits of one haplotype touch, the outcome can follow the
+   spelling (decided by the owner on 19 October 2026, over collision rules that do not depend on
+   it). The re-spelling program is part of the tests.
    `bcftools norm` is not one of the re-spellings, since it can change a haplotype (§5.2).
 5. **The hard cases from pvc's STR work:** the VCF records behind the cases recorded in pvc's
    reports (GIAB's split indel-plus-SNP truth records against pvc's single repeat record; GATK's

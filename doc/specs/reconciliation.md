@@ -570,7 +570,13 @@ a literal.
 - **A property**, with hypothesis, at `reconcile` and `make_outcome_rows`: file B is file A
   re-spelled, each record decomposed into records of one replaced base or one indel, phased,
   with a phase set of its own for each record of A so that no block is added (`doc/spec.md`
-  §7.4). The records of both are read by `parse_vcf` over a generated reference, and the `Locus`
+  §7.4). A record is decomposed only where no edit of another record, on a haplotype that
+  carries it, touches it, as `doc/spec.md` §7.4 says: two records of one haplotype that touch
+  can give a file and its decomposition different outcomes under the collision rules of §4.2,
+  which judge edits as written. Reference `TAAC` with `3 AC G,AA 0/1` and `3 A G,AA 1/2` is
+  invalid, and decomposed is not; reference `GTTT` with `2 TT GCTA 1/1` and `3 T G,TC 2/2` is
+  valid, and decomposed is invalid (decided by the owner on 19 October 2026). Records that touch
+  are kept whole in B. The records of both are read by `parse_vcf` over a generated reference, and the `Locus`
   is built in the test over the spans of both. Every row is then *same genotype*, *reference in
   both*, *missing in both*, *invalid in both* or *too complex*, the last three only where A
   itself has a missing haplotype, an invalid sample or a sample over the cap (`doc/spec.md`
