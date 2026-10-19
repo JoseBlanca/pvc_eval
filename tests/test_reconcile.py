@@ -446,6 +446,61 @@ def test_reconcile_gives_the_locus_alleles_and_possible_genotypes_of_each_case(
     )
 
 
+# doc/specs/reconciliation.md §9: two records of one haplotype whose edits touch give a file
+# and its decomposition different outcomes, since §4.2 judges collisions on edits as written;
+# so the property keeps such records whole. File B is file A decomposed, each record of A in
+# a phase set of its own.
+SPELLING_CASES = {
+    # A's second haplotype carries the replacement of 3-4 by G and the insertion of an A after
+    # 3, between the two positions it replaces, or, swapped, the replacement and the SNP at 3:
+    # both collide. Decomposed, the replacement is a SNP at 3 and a deletion of 4, and the
+    # insertion lies between them: TAGC and TAGA.
+    "insertion-inside-a-replacement-invalid-only-as-written": Case(
+        ref_start=1,
+        bases="TAAC",
+        locus=(1, 4),
+        lines_a=["3 AC G,AA 0/1", "3 A G,AA 1/2"],
+        lines_b=["3 A G 1|0:1", "3 A AA 0|1:1", "3 A G 0|1:2", "3 AC A 0|1:2", "4 C A 0|0:2"],
+        alleles=("TAAC", "TAGC", "TAGA"),
+        result_a=CONTRADICTING,
+        result_b=((1, 2),),
+    ),
+    # A replaces 2-3 by GCTA and inserts a C after 3, at the end of the stretch: GCTACT.
+    # Decomposed, the TA left over is an insertion after 3 too, and two insertions at one
+    # point collide.
+    "insertion-at-the-end-of-a-replacement-invalid-only-decomposed": Case(
+        ref_start=1,
+        bases="GTTT",
+        locus=(2, 5),
+        lines_a=["2 TT GCTA 1/1", "3 T G,TC 2/2"],
+        lines_b=["2 T G 1|1:1", "3 T C 1|1:1", "3 T TTA 1|1:1", "3 T G 0|0:2", "3 T TC 1|1:2"],
+        alleles=("TTTN", "GCTACTN"),
+        result_a=((1, 1),),
+        result_b=CONTRADICTING,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", SPELLING_CASES.values(), ids=SPELLING_CASES.keys())
+def test_reconcile_gives_touching_records_and_their_decomposition_different_results(
+    case_files: CaseFiles, case: Case
+) -> None:
+    # doc/specs/reconciliation.md §9: the spelling dependence that the property leaves out.
+    reference = case_files.write_reference(case.ref_start, case.bases)
+    records_a = case_files.write_and_parse_records(reference, case.lines_a)
+    records_b = case_files.write_and_parse_records(reference, case.lines_b)
+    locus = make_locus(case.locus, records_a, records_b)
+
+    reconciled = reconcile(locus, get_locus_bases(reference, locus), pair_samples(1))
+
+    assert reconciled == ReconciledLocus(
+        locus=locus,
+        alleles=case.alleles,
+        results_a={0: case.result_a},
+        results_b={0: case.result_b},
+    )
+
+
 # R9: 14 SNPs of the 15 positions 30-44, each to another base.
 R9_BASES = "ACGTACGTACGTACG"
 R9_ALTS = "CATGCATGCATGCAT"
