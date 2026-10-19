@@ -146,7 +146,6 @@ def _find_like_pvc(bases: str, min_period: int, max_period: int) -> list[_Candid
         scan_min_period=min_period,
         scan_max_period=max_period,
         copy_floors=_ZERO_FLOORS,
-        contig_end_flank=0,
     )
     return _find_candidates(bases, parameters)
 
@@ -370,7 +369,7 @@ def test_a_candidate_under_its_copy_floor_still_drops_a_longer_period() -> None:
     alone = _find_like_pvc(_PERIOD_SIX_OVER_AN_A_RUN, 6, 6)
     assert alone == [_Candidate(start=0, end=30, period=6, score=39)]
     floors = (100, 0, 0, 0, 0, 0)
-    parameters = StrFinderParameters(copy_floors=floors, contig_end_flank=0)
+    parameters = StrFinderParameters(copy_floors=floors)
     assert _find_candidates(_PERIOD_SIX_OVER_AN_A_RUN, parameters) == []
 
 
@@ -557,7 +556,7 @@ def test_a_candidate_under_its_copy_floor_is_not_returned() -> None:
     # Four A's then five, apart: a period-1 floor of 5 keeps only the five.
     bases = "GCTAGAAAACTGTCAGTCCGTAGTAAAAACTGTCAG"
     floors = (5, 0, 0, 0, 0, 0)
-    parameters = StrFinderParameters(scan_max_period=1, copy_floors=floors, contig_end_flank=0)
+    parameters = StrFinderParameters(scan_max_period=1, copy_floors=floors)
     assert _find_candidates(bases, parameters) == [_Candidate(start=24, end=29, period=1, score=8)]
 
 
@@ -575,15 +574,13 @@ def _make_random_bases(seed: int, length: int, alphabet: str) -> str:
 def test_the_copy_floors_and_the_blocks_change_nothing_but_what_is_under_the_floor(
     bases: str, floors: tuple[int, int, int, int, int, int], block_bases: int
 ) -> None:
-    every = _find_candidates(
-        bases, StrFinderParameters(copy_floors=_ZERO_FLOORS, contig_end_flank=0)
-    )
+    every = _find_candidates(bases, StrFinderParameters(copy_floors=_ZERO_FLOORS))
     over_floors = [
         candidate
         for candidate in every
         if (candidate.end - candidate.start) // candidate.period >= floors[candidate.period - 1]
     ]
-    parameters = StrFinderParameters(copy_floors=floors, contig_end_flank=0)
+    parameters = StrFinderParameters(copy_floors=floors)
     assert _find_candidates(bases, parameters, block_bases=block_bases) == over_floors
 
 
