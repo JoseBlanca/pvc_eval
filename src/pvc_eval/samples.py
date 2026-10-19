@@ -122,7 +122,10 @@ def _make_pairs_from_map(
             )
         line_of_pair[sample_pair] = line_number
     if not line_of_pair:
-        raise PvcEvalInputError(f"{sample_map} holds no pair.")
+        raise PvcEvalInputError(
+            f"{sample_map} holds no pair. Add a line for each pair, a sample of {path_a} and a"
+            f" sample of {path_b} separated by a tab, and run again."
+        )
     return tuple(line_of_pair)
 
 

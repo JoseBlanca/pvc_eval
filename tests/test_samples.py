@@ -326,7 +326,10 @@ def test_map_of_only_blank_lines_stops_the_run(tmp_path: Path) -> None:
     with pytest.raises(PvcEvalInputError) as error:
         make_sample_pairs(path_a, path_b, sample_map=sample_map)
 
-    assert str(error.value) == f"{sample_map} holds no pair."
+    assert str(error.value) == (
+        f"{sample_map} holds no pair. Add a line for each pair, a sample of {path_a} and a"
+        f" sample of {path_b} separated by a tab, and run again."
+    )
 
 
 def test_unpaired_samples_are_warned_of_once_per_file(
