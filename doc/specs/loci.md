@@ -210,8 +210,13 @@ the program that called it, such as a filter between the stages that reorders re
 
 - a record or a segment on a contig that `contigs` lacks;
 - a record of one file that comes before the one read before it, by contig rank or by span start;
-- an STR region that comes before the one read before it, by contig rank or by start, or that
-  overlaps it. GENERIC segments are not checked, since they are not used.
+- a segment, GENERIC or not, that comes before the one read before it, by contig rank or by start.
+  GENERIC segments are checked too: the reading of segments stops at the first one past a record,
+  of any type, so a GENERIC segment out of order would stop it before an STR region the record
+  touches, and the locus would come out too narrow with no error;
+- an STR region that overlaps the STR region read before it. A GENERIC segment may overlap an STR
+  region, since a `--str-regions` BED has none and the finder's are not used;
+- a contig named twice in `contigs`, when the stream starts.
 
 A chain distance that is not a whole number of 0 or more raises `ValueError` when the stream starts,
 that is, at the first `next()`, as `parse_vcf` does for its span limit. `True` and `False` are not
@@ -339,7 +344,11 @@ with adjacent SNPs and with a gap of 1; the four rows of the STR table; the STR 
 six rows of the table of a locus that reaches back; the four rows of the table of records with no
 ALT; a record with no ALT in the gap between two chained SNPs (SNP at 10, `12 A .`, SNP at 15: one
 locus 10–15 holding it); a `*`-only record starting a locus; two cases across contigs, 0-based with
-a chain distance of 10: a SNP at (29, 30) on chr1, then on chr2 an STR region at (0, 20) and a SNP at (4, 5), which give a chr2 locus (0, 20) holding the
+a chain distance of 10: a satellite at (110, 3000) with SNPs at (99, 100) and (2989, 2990), one
+locus (99, 3000), the satellite starting exactly at the chain distance; a SNP at (9, 10) and one at
+(399, 400) on chr1 with a satellite at (0, 500) on chr2 and no segment on chr1, two loci on chr1
+and the satellite in neither; a record with no ALT over an STR region that no record touches yet,
+kept until a later record pulls the region in; a SNP at (29, 30) on chr1, then on chr2 an STR region at (0, 20) and a SNP at (4, 5), which give a chr2 locus (0, 20) holding the
 region; and a SNP at (9, 10) with a region at (4999, 5010) on chr1, then on chr2 a region at
 (89, 99) and a SNP at (99, 100), which give a chr2 locus (89, 100) holding it; SNPs at the last
 position of chr1 and the first of chr2 with a chain distance of
@@ -361,7 +370,10 @@ A. The segment iterator raises if it is read past the first segment that comes a
 the end of the span of the last record handled, by contig rank and then position. Records with no ALT are not kept once passed: with 10,000 and with
 100,000 of them one position apart, made by a generator as each is read, followed by one SNP, the peak that tracemalloc traces while
 `build_loci` runs differs by less than 10%, and the SNP's locus holds only the one that overlaps
-it. With no records it is never read.
+it. STR regions are not kept once passed either: with 10,000 and with 100,000 SNPs 100 positions
+apart, each followed by an STR region it does not touch, the peak differs by less than 10%. Each
+memory test runs `build_loci` once on a small input before it measures, so that what the first
+call allocates is not counted. With no records the segment iterator is never read.
 
 **A property, at `build_loci`, with hypothesis.** A slow version of `doc/spec.md` §5.3, written in
 the test from the rules alone, holds every record and STR region in lists and applies the rules
