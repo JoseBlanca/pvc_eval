@@ -51,10 +51,12 @@ def make_sample_pairs(
     """
     samples_a = parse_vcf_samples(path_a)
     samples_b = parse_vcf_samples(path_b)
+    columns_a = _get_columns_by_name(samples_a)
+    columns_b = _get_columns_by_name(samples_b)
     if sample_map is None:
-        sample_pairs = _make_pairs_by_name(path_a, samples_a, path_b, samples_b)
+        sample_pairs = _make_pairs_by_name(path_a, columns_a, path_b, columns_b)
     else:
-        sample_pairs = _make_pairs_from_map(sample_map, path_a, samples_a, path_b, samples_b)
+        sample_pairs = _make_pairs_from_map(sample_map, path_a, columns_a, path_b, columns_b)
     for path, sample_names, paired_indexes in (
         (path_a, samples_a, {pair.index_a for pair in sample_pairs}),
         (path_b, samples_b, {pair.index_b for pair in sample_pairs}),
@@ -66,10 +68,11 @@ def make_sample_pairs(
 
 
 def _make_pairs_by_name(
-    path_a: Path, samples_a: Sequence[str], path_b: Path, samples_b: Sequence[str]
+    path_a: Path,
+    columns_a: Mapping[str, Sequence[int]],
+    path_b: Path,
+    columns_b: Mapping[str, Sequence[int]],
 ) -> tuple[SamplePair, ...]:
-    columns_a = _get_columns_by_name(samples_a)
-    columns_b = _get_columns_by_name(samples_b)
     sample_pairs = tuple(
         SamplePair(
             name_a=name,
@@ -91,12 +94,10 @@ def _make_pairs_by_name(
 def _make_pairs_from_map(
     sample_map: Path,
     path_a: Path,
-    samples_a: Sequence[str],
+    columns_a: Mapping[str, Sequence[int]],
     path_b: Path,
-    samples_b: Sequence[str],
+    columns_b: Mapping[str, Sequence[int]],
 ) -> tuple[SamplePair, ...]:
-    columns_a = _get_columns_by_name(samples_a)
-    columns_b = _get_columns_by_name(samples_b)
     # The line each pair was first given on, to name both lines of a pair given twice.
     line_of_pair: dict[SamplePair, int] = {}
     for line_number, line in enumerate(_read_map_lines(sample_map), start=1):
@@ -106,8 +107,10 @@ def _make_pairs_from_map(
         if len(fields) != 2 or "" in fields:
             raise _make_fields_error(sample_map, line_number, fields, path_a, path_b)
         name_a, name_b = fields
-        _check_in_file(sample_map, line_number, name_a, path_a, samples_a)
-        _check_in_file(sample_map, line_number, name_b, path_b, samples_b)
+        if name_a not in columns_a:
+            raise _make_absent_error(sample_map, line_number, name_a, path_a, columns_a)
+        if name_b not in columns_b:
+            raise _make_absent_error(sample_map, line_number, name_b, path_b, columns_b)
         sample_pair = SamplePair(
             name_a=name_a,
             index_a=_find_column(path_a, columns_a, name_a),
@@ -190,16 +193,18 @@ def _find_column(path: Path, columns_by_name: Mapping[str, Sequence[int]], name:
     )
 
 
-def _check_in_file(
-    sample_map: Path, line_number: int, name: str, path: Path, sample_names: Sequence[str]
-) -> None:
-    if name in sample_names:
-        return
-    if sample_names:
-        its_samples = f"whose samples are {_format_names(list(dict.fromkeys(sample_names)))}"
+def _make_absent_error(
+    sample_map: Path,
+    line_number: int,
+    name: str,
+    path: Path,
+    columns_by_name: Mapping[str, Sequence[int]],
+) -> PvcEvalInputError:
+    if columns_by_name:
+        its_samples = f"whose samples are {_format_names(list(columns_by_name))}"
     else:
         its_samples = "which has no samples"
-    raise PvcEvalInputError(
+    return PvcEvalInputError(
         f"{sample_map}, line {line_number}: '{name}' is not a sample of {path}, {its_samples}."
         " Correct the name and run again."
     )
