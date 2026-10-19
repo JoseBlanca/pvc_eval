@@ -53,7 +53,7 @@ def test_without_map_pairs_shared_names_in_order_of_file_a(tmp_path: Path) -> No
 
 def test_map_gives_pairs_in_order_of_its_lines(tmp_path: Path) -> None:
     path_a, path_b = _write_files(tmp_path, ["HG002", "HG003"], ["NA1", "NA2"])
-    sample_map = _write_map(tmp_path, "HG003\tNA1\nHG002\tNA2\n")
+    sample_map = _write_map(tmp_path, "HG003\tNA1\nHG002\tNA2")  # no newline at the end
 
     pairs = make_sample_pairs(path_a, path_b, sample_map=sample_map)
 
@@ -77,7 +77,7 @@ def test_map_pairs_one_sample_of_a_with_two_replicates_of_b(tmp_path: Path) -> N
 
 def test_map_skips_blank_lines(tmp_path: Path) -> None:
     path_a, path_b = _write_files(tmp_path, ["HG002", "HG003"], ["HG002", "HG003"])
-    sample_map = _write_map(tmp_path, "\nHG002\tHG003\n  \n\nHG003\tHG002\n")
+    sample_map = _write_map(tmp_path, "\nHG002\tHG003\n  \n\t\n \t \n\nHG003\tHG002\n")
 
     pairs = make_sample_pairs(path_a, path_b, sample_map=sample_map)
 
@@ -89,8 +89,13 @@ def test_map_skips_blank_lines(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("line", "how_many"),
-    [("HG002", "1 field"), ("HG002\tHG002\tHG003", "3 fields"), ("HG002\t", "an empty field")],
-    ids=["one_field", "three_fields", "empty_field"],
+    [
+        ("HG002", "1 field"),
+        ("HG002\tHG002\tHG003", "3 fields"),
+        ("HG002\t", "an empty field"),
+        ("\tHG002", "an empty field"),
+    ],
+    ids=["one_field", "three_fields", "empty_second_field", "empty_first_field"],
 )
 def test_map_line_without_two_fields_stops_the_run(
     tmp_path: Path, line: str, how_many: str
@@ -250,6 +255,28 @@ def test_warning_names_first_ten_samples_and_counts_the_rest(
         f"15 samples of {path_a} are in no sample pair and are not compared: S01, S02, S03,"
         " S04, S05, S06, S07, S08, S09, S10 and 5 more. Pair them with --sample-map to"
         " compare them."
+    ]
+
+
+@pytest.mark.parametrize(
+    ("num_unpaired", "names_text"),
+    [
+        (10, "S01, S02, S03, S04, S05, S06, S07, S08, S09, S10"),
+        (11, "S01, S02, S03, S04, S05, S06, S07, S08, S09, S10 and 1 more"),
+    ],
+    ids=["ten_named_no_count", "eleven_one_more"],
+)
+def test_warning_counts_only_samples_past_the_tenth(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, num_unpaired: int, names_text: str
+) -> None:
+    unpaired_names = [f"S{number:02}" for number in range(1, num_unpaired + 1)]
+    path_a, path_b = _write_files(tmp_path, ["HG002", *unpaired_names], ["HG002"])
+
+    make_sample_pairs(path_a, path_b)
+
+    assert _get_warnings(caplog) == [
+        f"{num_unpaired} samples of {path_a} are in no sample pair and are not compared:"
+        f" {names_text}. Pair them with --sample-map to compare them."
     ]
 
 
