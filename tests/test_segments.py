@@ -212,10 +212,26 @@ def test_period_range_rejects_zero_min(min_period: int, max_period: int) -> None
 
 
 def test_period_range_rejects_min_above_max() -> None:
-    with pytest.raises(ValueError, match=r"^scan_min_period is 3"):
+    with pytest.raises(
+        ValueError, match=r"^scan_min_period \(3\) must not exceed scan_max_period \(2\)$"
+    ):
         StrFinderParameters(scan_min_period=3, scan_max_period=2)
-    with pytest.raises(ValueError, match=r"^min_period is 3"):
+    with pytest.raises(ValueError, match=r"^min_period \(3\) must not exceed max_period \(2\)$"):
         StrFinderParameters(min_period=3, max_period=2)
+
+
+def test_a_max_period_under_the_default_min_names_both_fields() -> None:
+    with pytest.raises(
+        ValueError, match=r"^scan_min_period \(1\) must not exceed scan_max_period \(0\)$"
+    ):
+        StrFinderParameters(scan_max_period=0)
+
+
+def test_a_limit_set_by_another_field_names_it_and_its_value() -> None:
+    with pytest.raises(
+        ValueError, match=r"^max_str_len is 14; it must be bundle_distance \(15\) or more$"
+    ):
+        StrFinderParameters(max_str_len=14)
 
 
 def test_default_periods_is_one_to_six() -> None:

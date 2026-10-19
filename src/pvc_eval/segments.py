@@ -97,9 +97,9 @@ class StrFinderParameters:
         _check_period_range("scan_min_period", "scan_max_period", self)
         _check_period_range("min_period", "max_period", self)
         for name in ("match_reward", "mismatch_penalty", "scan_min_copies", "bundle_distance"):
-            _check_at_least(name, getattr(self, name), 1, "1")
+            _check_at_least(name, getattr(self, name), 1)
         for name in ("contig_end_flank", "max_bundle_len"):
-            _check_at_least(name, getattr(self, name), 0, "0")
+            _check_at_least(name, getattr(self, name), 0)
         _check_at_least("max_str_len", self.max_str_len, self.bundle_distance, "bundle_distance")
         _check_copy_floors(self.copy_floors)
         purity = self.min_purity
@@ -115,10 +115,11 @@ def _check_whole_number(name: str, value: object) -> None:
         raise ValueError(f"{name} is {value!r}; it must be a whole number")  # noqa: TRY004 -- the spec gives ValueError for every value outside its table
 
 
-def _check_at_least(name: str, value: int, limit: int, limit_name: str) -> None:
-    """Raise ValueError when a parameter is under its limit, named as limit_name."""
+def _check_at_least(name: str, value: int, limit: int, limit_name: str | None = None) -> None:
+    """Raise ValueError when a parameter is under its limit. limit_name is the field that
+    sets the limit, when one does."""
     if value < limit:
-        shown = limit_name if limit_name == str(limit) else f"{limit_name}, {limit}"
+        shown = limit if limit_name is None else f"{limit_name} ({limit})"
         raise ValueError(f"{name} is {value!r}; it must be {shown} or more")
 
 
@@ -126,13 +127,11 @@ def _check_period_range(min_name: str, max_name: str, parameters: StrFinderParam
     """Raise ValueError unless 1 <= the min period <= the max period <= 6."""
     min_period = getattr(parameters, min_name)
     max_period = getattr(parameters, max_name)
-    _check_at_least(min_name, min_period, 1, "1")
+    _check_at_least(min_name, min_period, 1)
     if max_period > _MAX_PERIOD:
         raise ValueError(f"{max_name} is {max_period!r}; it must be {_MAX_PERIOD} or less")
     if min_period > max_period:
-        raise ValueError(
-            f"{min_name} is {min_period!r}; it must be {max_name}, {max_period}, or less"
-        )
+        raise ValueError(f"{min_name} ({min_period!r}) must not exceed {max_name} ({max_period!r})")
 
 
 def _check_copy_floors(copy_floors: object) -> None:
