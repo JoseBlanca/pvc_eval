@@ -33,13 +33,13 @@ type _Edit = tuple[int, str, str]
 
 
 def make_decomposed_lines(vcf_records: Sequence[VcfRecord], reference: IndexedFasta) -> list[str]:
-    """The VCF lines of file B, `POS REF ALT GT...` as CaseFiles reads them, made from file
-    A's records by decomposing each that nothing touches into records of one replaced base
-    or one indel (doc/specs/reconciliation.md §9).
+    """The VCF lines of file B, `CHROM POS REF ALT GT...` as CaseFiles reads them, made
+    from file A's records by decomposing each that nothing touches into records of one
+    replaced base or one indel (doc/specs/reconciliation.md §9).
 
     A record is kept whole, as A wrote it, when an edit of an ALT a sample carries at it
     touches, overlaps or lies next to (doc/spec.md §2), an edit of an ALT the same sample
-    carries at another record. The records of A are unphased, so any two such ALTs may be
+    carries at another record of its contig. The records of A are unphased, so any two such ALTs may be
     on one haplotype.
 
     Each ALT's edit is found as §4.2 finds it, the bases it shares with REF removed from
@@ -51,28 +51,37 @@ def make_decomposed_lines(vcf_records: Sequence[VcfRecord], reference: IndexedFa
     others' and `.` where A has `.`, so a record of A that is `1/2` gives `1|0` at the
     pieces of ALT 1 alone. All the pieces of one record of A are phased, `GT:PS`, in a
     phase set of their own, numbered by the record's place from 1, so no block is added
-    (doc/spec.md §5.4). The lines are sorted by POS, as parse_vcf asks.
+    (doc/spec.md §5.4). The lines are sorted by contig, in the order of A's records, and by
+    POS within each, as parse_vcf asks.
     """
     edits = [
         [_find_edit(vcf_record, allele_index) for allele_index in range(1, len(vcf_record.alleles))]
         for vcf_record in vcf_records
     ]
-    numbered_lines: list[tuple[int, str]] = []
+    # Each contig's place among the records, which come in the reference's contig order.
+    contig_places = {
+        contig: place
+        for place, contig in enumerate(dict.fromkeys(record.contig for record in vcf_records))
+    }
+    placed_lines: list[tuple[int, int, str]] = []
     for place, vcf_record in enumerate(vcf_records):
+        contig = vcf_record.contig
         if _is_touched(vcf_records, edits, place):
-            numbered_lines.append((vcf_record.start + 1, _format_whole_line(vcf_record)))
+            line = f"{contig} {_format_whole_line(vcf_record)}"
+            placed_lines.append((contig_places[contig], vcf_record.start + 1, line))
             continue
         alts_of_piece: dict[tuple[int, str, str], set[int]] = {}
         for allele_index, edit in enumerate(edits[place], start=1):
-            for piece in _make_pieces(edit, reference):
+            for piece in _make_pieces(contig, edit, reference):
                 alts_of_piece.setdefault(piece, set()).add(allele_index)
         for (pos_1based, ref, alt), allele_indices in alts_of_piece.items():
             gts = [
                 _format_piece_genotype(vcf_genotype, allele_indices, place + 1)
                 for vcf_genotype in vcf_record.genotypes
             ]
-            numbered_lines.append((pos_1based, f"{pos_1based} {ref} {alt} {' '.join(gts)}"))
-    return [line for _, line in sorted(numbered_lines, key=lambda numbered: numbered[0])]
+            line = f"{contig} {pos_1based} {ref} {alt} {' '.join(gts)}"
+            placed_lines.append((contig_places[contig], pos_1based, line))
+    return [line for *_, line in sorted(placed_lines, key=lambda placed: placed[:2])]
 
 
 def _find_edit(vcf_record: VcfRecord, allele_index: int) -> _Edit:
@@ -89,11 +98,11 @@ def _is_touched(
     vcf_records: Sequence[VcfRecord], edits: Sequence[Sequence[_Edit]], place: int
 ) -> bool:
     """Whether an edit a sample carries at the record at place touches one it carries at
-    another record."""
+    another record of the same contig."""
     for sample_index in range(len(vcf_records[place].genotypes)):
         carried = _get_carried_edits(vcf_records[place], edits[place], sample_index)
         for other_place, other_record in enumerate(vcf_records):
-            if other_place == place:
+            if other_place == place or other_record.contig != vcf_records[place].contig:
                 continue
             other_carried = _get_carried_edits(other_record, edits[other_place], sample_index)
             if any(_is_touching(edit, other) for edit in carried for other in other_carried):
@@ -135,8 +144,10 @@ def _format_whole_line(vcf_record: VcfRecord) -> str:
     return f"{vcf_record.start + 1} {ref} {','.join(alts)} {' '.join(gts)}"
 
 
-def _make_pieces(edit: _Edit, reference: IndexedFasta) -> Iterator[tuple[int, str, str]]:
-    """The pieces of one edit, each as (POS, REF, ALT), POS 1-based."""
+def _make_pieces(
+    contig: str, edit: _Edit, reference: IndexedFasta
+) -> Iterator[tuple[int, str, str]]:
+    """The pieces of one edit on contig, each as (POS, REF, ALT), POS 1-based."""
     start, ref, alt = edit
     num_aligned = min(len(ref), len(alt))
     for offset in range(num_aligned):
@@ -150,10 +161,10 @@ def _make_pieces(edit: _Edit, reference: IndexedFasta) -> Iterator[tuple[int, st
     if anchor < 0:
         # At the contig's first base, VCF anchors on the base after the indel, at POS 1.
         after = len(deleted)
-        after_base = reference.get_bases(CONTIG, after, after + 1)
+        after_base = reference.get_bases(contig, after, after + 1)
         yield 1, deleted + after_base, inserted + after_base
         return
-    anchor_base = reference.get_bases(CONTIG, anchor, anchor + 1)
+    anchor_base = reference.get_bases(contig, anchor, anchor + 1)
     yield anchor + 1, anchor_base + deleted, anchor_base + inserted
 
 
@@ -186,38 +197,46 @@ def _format_piece_genotype(
         (
             "GACGTA",
             ["2 ACGT TCGAA 0/1"],
-            ["2 A T 0|1:1", "5 T A 0|1:1", "5 T TA 0|1:1"],
+            ["chr1 2 A T 0|1:1", "chr1 5 T A 0|1:1", "chr1 5 T TA 0|1:1"],
         ),
         # TCA replaces 2-4, TCG only 2 (its G is REF's): the SNP at 2 is one record, carried
         # by both haplotypes; the SNP at 4 by the first alone.
-        ("GACGT", ["2 ACG TCA,TCG 1/2"], ["2 A T 1|1:1", "4 G A 1|0:1"]),
+        ("GACGT", ["2 ACG TCA,TCG 1/2"], ["chr1 2 A T 1|1:1", "chr1 4 G A 1|0:1"]),
         # AC -> GT, with the first haplotype missing.
-        ("GACT", ["2 AC GT ./1"], ["2 A G .|1:1", "3 C T .|1:1"]),
+        ("GACT", ["2 AC GT ./1"], ["chr1 2 A G .|1:1", "chr1 3 C T .|1:1"]),
         # Each record of A has a phase set of its own, and REF where a haplotype carries it.
         (
             "GACGTA",
             ["2 A AGG 0/1", "4 GTA G 1/0"],
-            ["2 A AGG 0|1:1", "4 GTA G 1|0:2"],
+            ["chr1 2 A AGG 0|1:1", "chr1 4 GTA G 1|0:2"],
         ),
         # A replacement of 2-3 and a SNP at 5 lie apart: both are decomposed.
-        ("GACGTA", ["2 AC GT 0/1", "5 T G 0/1"], ["2 A G 0|1:1", "3 C T 0|1:1", "5 T G 0|1:2"]),
+        (
+            "GACGTA",
+            ["2 AC GT 0/1", "5 T G 0/1"],
+            ["chr1 2 A G 0|1:1", "chr1 3 C T 0|1:1", "chr1 5 T G 0|1:2"],
+        ),
         # A replacement of 2-3 and a SNP at 4 lie next to each other: both are kept whole.
-        ("GACGTA", ["2 AC GT 0/1", "4 G A 0/1"], ["2 AC GT 0/1", "4 G A 0/1"]),
+        ("GACGTA", ["2 AC GT 0/1", "4 G A 0/1"], ["chr1 2 AC GT 0/1", "chr1 4 G A 0/1"]),
         # The SNP at 4 is carried by no haplotype, so it touches nothing.
-        ("GACGTA", ["2 AC GT 0/1", "4 G A 0/0"], ["2 A G 0|1:1", "3 C T 0|1:1", "4 G A 0|0:2"]),
+        (
+            "GACGTA",
+            ["2 AC GT 0/1", "4 G A 0/0"],
+            ["chr1 2 A G 0|1:1", "chr1 3 C T 0|1:1", "chr1 4 G A 0|0:2"],
+        ),
         # Two records whose edits touch, carried by different samples, are decomposed.
         (
             "GACGTA",
             ["2 AC GT 0/1 0/0", "4 G A 0/0 1/1"],
-            ["2 A G 0|1:1 0|0:1", "3 C T 0|1:1 0|0:1", "4 G A 0|0:2 1|1:2"],
+            ["chr1 2 A G 0|1:1 0|0:1", "chr1 3 C T 0|1:1 0|0:1", "chr1 4 G A 0|0:2 1|1:2"],
         ),
         # An insertion inside the stretch a deletion-and-SNP replaces, in a homopolymer:
         # doc/specs/reconciliation.md §9's first example, kept whole.
-        ("TAAC", ["3 AC G,AA 0/1", "3 A G,AA 1/2"], ["3 A G,AA 1/2", "3 AC G,AA 0/1"]),
+        ("TAAC", ["3 AC G,AA 0/1", "3 A G,AA 1/2"], ["chr1 3 A G,AA 1/2", "chr1 3 AC G,AA 0/1"]),
         # An indel at the contig's first base has no base before it, and is written, as
         # VCF writes it at POS 1, with the base after it.
-        ("ACGT", ["1 AC C 0/1"], ["1 AC C 0|1:1"]),
-        ("ACGT", ["1 A CA 0/1"], ["1 A CA 0|1:1"]),
+        ("ACGT", ["1 AC C 0/1"], ["chr1 1 AC C 0|1:1"]),
+        ("ACGT", ["1 A CA 0/1"], ["chr1 1 A CA 0|1:1"]),
     ],
     ids=[
         "complex",
@@ -243,6 +262,21 @@ def test_make_decomposed_lines_decomposes_each_record_nothing_touches(
     num_samples = len(lines_a[0].split()) - 3
     records_a = case_files.write_and_parse_records(reference, lines_a, num_samples=num_samples)
     assert make_decomposed_lines(records_a, reference) == expected_lines_b
+
+
+def test_make_decomposed_lines_reads_and_writes_each_records_contig(
+    case_files: CaseFiles,
+) -> None:
+    # The edits at chr1:3 and chr2:2-4 touch only by their positions, and chr2's deletion is
+    # anchored on chr2's C. By POS alone chr2's line would come first.
+    reference = case_files.write_contigs({"chr1": "AAAAAAAA", "chr2": "CCGTCCCC"})
+    records_a = case_files.write_and_parse_records(
+        reference, ["chr1 3 A G 0/1", "chr2 2 CGT C 0/1"], has_chrom=True
+    )
+    assert make_decomposed_lines(records_a, reference) == [
+        "chr1 3 A G 0|1:1",
+        "chr2 2 CGT C 0|1:2",
+    ]
 
 
 def _make_allele_strategy(num_alts: int) -> st.SearchStrategy[str]:
@@ -299,7 +333,9 @@ def test_a_file_against_its_decomposition_gives_only_the_outcomes_of_itself(
         reference = case_files.write_reference(1, bases)
         records_a = case_files.write_and_parse_records(reference, lines_a, num_samples=num_samples)
         lines_b = make_decomposed_lines(records_a, reference)
-        records_b = case_files.write_and_parse_records(reference, lines_b, num_samples=num_samples)
+        records_b = case_files.write_and_parse_records(
+            reference, lines_b, num_samples=num_samples, has_chrom=True
+        )
         spans = [vcf_record.span for vcf_record in (*records_a, *records_b)]
         locus = Locus(
             CONTIG,

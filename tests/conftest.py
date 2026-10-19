@@ -3,7 +3,7 @@ VCF lines to a directory and reads them back with parse_vcf, its fixture, and th
 that build a case's sample pairs and read its locus's bases.
 """
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -33,12 +33,21 @@ class CaseFiles:
         """A FASTA of CONTIG, N but for bases from ref_start_1based on, with its .fai."""
         contig = "N" * (ref_start_1based - 1) + bases
         contig += "N" * (CONTIG_LENGTH - len(contig))
+        return self.write_contigs({CONTIG: contig})
+
+    def write_contigs(self, contigs: Mapping[str, str]) -> IndexedFasta:
+        """A FASTA of these contigs, by name, each on one line, with its .fai."""
         path = self._make_path("fa")
-        path.write_text(f">{CONTIG}\n{contig}\n", encoding="utf-8")
-        fai = (
-            f"{CONTIG}\t{CONTIG_LENGTH}\t{len(CONTIG) + 2}\t{CONTIG_LENGTH}\t{CONTIG_LENGTH + 1}\n"
-        )
-        Path(f"{path}.fai").write_text(fai, encoding="utf-8")
+        fasta_lines = []
+        fai_lines = []
+        offset = 0
+        for name, bases in contigs.items():
+            offset += len(name) + 2  # `>name` and its newline
+            fai_lines.append(f"{name}\t{len(bases)}\t{offset}\t{len(bases)}\t{len(bases) + 1}\n")
+            fasta_lines.append(f">{name}\n{bases}\n")
+            offset += len(bases) + 1
+        path.write_text("".join(fasta_lines), encoding="utf-8")
+        Path(f"{path}.fai").write_text("".join(fai_lines), encoding="utf-8")
         return self._stack.enter_context(IndexedFasta(path))
 
     def write_and_parse_records(
@@ -49,18 +58,20 @@ class CaseFiles:
         num_samples: int = 1,
         ploidy: int = 2,
         span_limit: int = DEFAULT_SPAN_LIMIT,
+        has_chrom: bool = False,
     ) -> tuple[VcfRecord, ...]:
         """The records parse_vcf reads from lines `POS REF ALT GT...`, one GT per sample,
-        each written `GT` or `GT:PS`."""
+        each written `GT` or `GT:PS`, on CONTIG; with has_chrom, the lines are
+        `CHROM POS REF ALT GT...`."""
         samples = "\t".join(f"S{index}" for index in range(num_samples))
         text = "##fileformat=VCFv4.3\n"
         text += f"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{samples}\n"
         for line in lines:
-            pos, ref, alt, *gts = line.split()
+            fields = line.split()
+            chrom = fields.pop(0) if has_chrom else CONTIG
+            pos, ref, alt, *gts = fields
             sample_fields = [gt if ":" in gt else f"{gt}:." for gt in gts]
-            text += (
-                f"{CONTIG}\t{pos}\t.\t{ref}\t{alt}\t.\t.\t.\tGT:PS\t{'\t'.join(sample_fields)}\n"
-            )
+            text += f"{chrom}\t{pos}\t.\t{ref}\t{alt}\t.\t.\t.\tGT:PS\t{'\t'.join(sample_fields)}\n"
         path = self._make_path("vcf")
         path.write_text(text, encoding="utf-8")
         return tuple(parse_vcf(path, reference, span_limit=span_limit, ploidy=ploidy))
