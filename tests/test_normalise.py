@@ -2,8 +2,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from pvc_eval.normalise import normalise, trim
-from pvc_eval.vcf import VcfRecord
+from pvc_eval.vcf import VcfRecord, normalise, trim
 
 HOMOPOLYMER = "GAAAAT"  # G at 0, A at 1 to 4, T at 5
 DINUCLEOTIDE = "GCACACAT"  # G at 0, CA repeated from 1 to 6, T at 7
