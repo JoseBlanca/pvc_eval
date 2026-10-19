@@ -424,22 +424,57 @@ def _parse_lines_without_samples(
             yield placed_line
 
 
+# §5.2: the bases each IUPAC code stands for. U, uracil, stands for T, as IUPAC has it. A
+# letter missing here is no code and stands for no base, so it agrees with nothing.
+_IUPAC_BASES = {
+    "A": "A",
+    "C": "C",
+    "G": "G",
+    "T": "T",
+    "U": "T",
+    "R": "AG",
+    "Y": "CT",
+    "S": "CG",
+    "W": "AT",
+    "K": "GT",
+    "M": "AC",
+    "B": "CGT",
+    "D": "AGT",
+    "H": "ACT",
+    "V": "ACG",
+    "N": "ACGT",
+}
+_IUPAC_CODES = frozenset(_IUPAC_BASES)
+# The pairs of codes, in upper case, that stand for at least one base in common.
+_AGREEING_CODES = frozenset(
+    (code, other_code)
+    for code, bases in _IUPAC_BASES.items()
+    for other_code, other_bases in _IUPAC_BASES.items()
+    if set(bases) & set(other_bases)
+)
+
+
 def _check_ref(
     ref: str, contig: str, pos: int, reference_window: FastaWindow, path: Path, line_number: int
 ) -> None:
     """§5.2: a REF that differs from the reference means the VCF was made on another
-    reference, or is damaged; VCF bases are case-insensitive, and the window gives the
-    reference in upper case.
+    reference, or is damaged. Two bases agree, whatever their case, when the bases their
+    IUPAC codes stand for overlap; the window gives the reference in upper case.
 
     pos: the 0-based position of POS; the REF lies within the contig.
     """
     ref_bases = reference_window.get_bases(contig, pos, pos + len(ref))
-    if ref.upper() != ref_bases:
-        raise PvcEvalInputError(
-            f"{path}, line {line_number}: the REF of {contig}:{pos + 1} is {ref}, and the"
-            f" reference has {ref_bases} there, so the VCF looks made on another reference,"
-            " or damaged. Compare against the reference the VCF was called on."
-        )
+    ref_upper = ref.upper()
+    # Equal codes agree, so only a letter that is no code needs the pairs then.
+    if ref_upper == ref_bases and _IUPAC_CODES.issuperset(ref_upper):
+        return
+    if all(pair in _AGREEING_CODES for pair in zip(ref_upper, ref_bases, strict=True)):
+        return
+    raise PvcEvalInputError(
+        f"{path}, line {line_number}: the REF of {contig}:{pos + 1} is {ref}, and the"
+        f" reference has {ref_bases} there, so the VCF looks made on another reference,"
+        " or damaged. Compare against the reference the VCF was called on."
+    )
 
 
 def _log_warnings(path: Path, span_limit: int | None, status: _ReadStatus) -> None:

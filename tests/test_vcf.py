@@ -741,6 +741,56 @@ def test_ref_that_differs_from_the_reference_stops_the_run(
     assert given == []
 
 
+@pytest.mark.parametrize(
+    ("reference_base", "ref"),
+    [
+        ("R", "A"),
+        ("R", "g"),
+        ("M", "C"),
+        ("n", "T"),
+        ("A", "N"),
+        ("G", "r"),
+        ("T", "U"),
+        ("K", "B"),
+    ],
+    ids=[
+        "reference_r_against_a",
+        "reference_r_against_lower_case_g",
+        "reference_m_against_c",
+        "reference_lower_case_n_against_t",
+        "ref_n_against_a",
+        "ref_lower_case_r_against_g",
+        "ref_u_against_t",
+        "two_codes_that_share_a_base",
+    ],
+)
+def test_iupac_codes_that_share_a_base_agree(
+    tmp_path: Path, make_reference: MakeReference, reference_base: str, ref: str
+) -> None:
+    path = write_vcf(tmp_path, f"chr1\t3\t.\t{ref}\t.\t.\t.\t.\tGT\t0/0\t0/0\n")
+    reference = make_reference(*make_fasta({"chr1": f"GG{reference_base}GG"}))
+
+    (record,) = parse_vcf(path, reference)
+
+    assert record.alleles == (ref.upper(),)
+
+
+@pytest.mark.parametrize(
+    ("reference_base", "ref"),
+    [("A", "C"), ("R", "C"), ("N", "X"), ("X", "X")],
+    ids=["a_against_c", "reference_r_against_c", "no_code_against_n", "no_code_against_itself"],
+)
+def test_iupac_codes_that_share_no_base_differ(
+    tmp_path: Path, make_reference: MakeReference, reference_base: str, ref: str
+) -> None:
+    # A letter that is no IUPAC code stands for no base, so it agrees with nothing.
+    path = write_vcf(tmp_path, f"chr1\t3\t.\t{ref}\t.\t.\t.\t.\tGT\t0/0\t0/0\n")
+    reference = make_reference(*make_fasta({"chr1": f"GG{reference_base}GG"}))
+
+    with pytest.raises(PvcEvalInputError, match=r"line 3: the REF of chr1:3 "):
+        list(parse_vcf(path, reference))
+
+
 def test_records_are_trimmed_and_never_moved(tmp_path: Path, reference: IndexedFasta) -> None:
     # chr1 is GGGAAGAGG...: the deletion of the A at 4, written with shared bases on both
     # sides, is trimmed to AA -> A at 3 and not slid to its left-aligned place.
