@@ -148,17 +148,17 @@ def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
             yield record
     if num_symbolic:
         logger.warning(
-            "%s: %d VCF records with symbolic alleles (<DEL>, breakends) were skipped;"
-            " pvc_eval does not compare structural variants.",
+            "%s: skipped %s with symbolic alleles (<DEL>, breakends); pvc_eval does not"
+            " compare structural variants.",
             path,
-            num_symbolic,
+            _count(num_symbolic, "VCF record"),
         )
     if num_not_numbers:
         logger.warning(
-            "%s: %d QUAL or GQ values are not numbers and were taken as absent, as `.` is;"
-            " the quality of the rows they would give is `.`.",
+            "%s: took %s that could not be read as a number as absent, as `.` is, in the"
+            " quality of the table.",
             path,
-            num_not_numbers,
+            _count(num_not_numbers, "QUAL or GQ value"),
         )
 
 
@@ -244,8 +244,8 @@ def _check_num_samples(fields: list[str], num_samples: int, path: Path, line_num
     num_found = max(len(fields) - NUM_FIXED_COLUMNS, 0)
     if num_found != num_samples:
         raise PvcEvalInputError(
-            f"{path}, line {line_number}: the line has {num_found} sample columns, and the"
-            f" #CHROM line names {num_samples} samples. A VCF record has a FORMAT column and"
+            f"{path}, line {line_number}: the line has {_count(num_found, 'sample column')},"
+            f" and the #CHROM line names {_count(num_samples, 'sample')}. A VCF record has a FORMAT column and"
             " then one column per sample; correct the line or remove it, and run again."
         )
 
@@ -255,7 +255,8 @@ def _check_num_samples(fields: list[str], num_samples: int, path: Path, line_num
 def _read_position(fields: list[str], path: Path, line_number: int) -> tuple[str, int]:
     if len(fields) < NUM_FIXED_COLUMNS - 1:
         raise PvcEvalInputError(
-            f"{path}, line {line_number}: the line has {len(fields)} tab-separated columns,"
+            f"{path}, line {line_number}: the line has"
+            f" {_count(len(fields), 'tab-separated column')},"
             " and a VCF record has at least 8, CHROM to INFO. Check that its columns are"
             " separated by tabs, correct the line or remove it, and run again."
         )
@@ -265,6 +266,11 @@ def _read_position(fields: list[str], path: Path, line_number: int) -> tuple[str
     if not (pos.isascii() and pos.isdecimal()):
         raise _pos_error(pos, path, line_number)
     return fields[0], int(pos)
+
+
+def _count(number: int, noun: str) -> str:
+    """A number and its noun, in the singular for 1: "1 sample", "3 samples"."""
+    return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
 
 
 def _pos_error(pos: str, path: Path, line_number: int) -> PvcEvalInputError:

@@ -147,13 +147,14 @@ def test_symbolic_alleles_are_skipped_and_counted(
         records = list(read_vcf_records(path, CONTIGS))
 
     assert [(record.start, record.alleles) for record in records] == [(6, ("A", "T"))]
-    assert "1 VCF records with symbolic alleles" in caplog.text
+    assert "skipped 1 VCF record with symbolic alleles" in caplog.text
 
 
 @pytest.mark.parametrize(
     ("line", "message"),
     [
         ("chr1\t5\t.\tA\tT\t.\t.\n", r"a.vcf, line 3: .*7 tab-separated columns"),
+        ("chr1\n", r"a.vcf, line 3: the line has 1 tab-separated column,"),
         ("chr1\tfive\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n", r"a.vcf, line 3: POS is 'five'"),
         ("chr1\t0\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n", r"a.vcf, line 3: POS is '0'"),
         ("chr1\t5\t.\t\tT\t.\t.\t.\tGT\t0/1\t0/1\n", r"a.vcf, line 3: REF is empty"),
@@ -162,6 +163,7 @@ def test_symbolic_alleles_are_skipped_and_counted(
     ],
     ids=[
         "seven_columns",
+        "one_column",
         "pos_not_a_number",
         "pos_0",
         "ref_empty",
@@ -181,19 +183,19 @@ def test_line_that_is_not_a_vcf_record_stops_the_run(
 @pytest.mark.parametrize(
     ("line", "found"),
     [
-        ("chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\n", 1),
-        ("chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\t1/1\n", 3),
-        ("chr1\t5\t.\tA\tT\t.\t.\t.\n", 0),
+        ("chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\n", "1 sample column,"),
+        ("chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\t1/1\n", "3 sample columns,"),
+        ("chr1\t5\t.\tA\tT\t.\t.\t.\n", "0 sample columns,"),
     ],
     ids=["one_sample_fewer", "one_sample_more", "no_format_column"],
 )
 def test_line_with_other_samples_than_the_header_stops_the_run(
-    tmp_path: Path, line: str, found: int
+    tmp_path: Path, line: str, found: str
 ) -> None:
     path = write_vcf(tmp_path, line)
 
     with pytest.raises(
-        PvcEvalInputError, match=rf"a.vcf, line 3: the line has {found} sample columns.* names 2"
+        PvcEvalInputError, match=rf"a.vcf, line 3: the line has {found} .* names 2 samples\."
     ):
         list(read_vcf_records(path, CONTIGS))
 
@@ -284,12 +286,12 @@ def test_truncated_gzip_file_stops_the_run(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("qual", "gq", "expected", "warning"),
     [
-        ("abc", "30", (None, 30), "1 QUAL or GQ values"),
-        ("nan", "30", (None, 30), "1 QUAL or GQ values"),
-        ("inf", "30", (None, 30), "1 QUAL or GQ values"),
-        ("1_000", "30", (None, 30), "1 QUAL or GQ values"),
-        ("50", "3.5", (50.0, None), "1 QUAL or GQ values"),
-        ("nan", "3.5", (None, None), "2 QUAL or GQ values"),
+        ("abc", "30", (None, 30), "took 1 QUAL or GQ value that"),
+        ("nan", "30", (None, 30), "took 1 QUAL or GQ value that"),
+        ("inf", "30", (None, 30), "took 1 QUAL or GQ value that"),
+        ("1_000", "30", (None, 30), "took 1 QUAL or GQ value that"),
+        ("50", "3.5", (50.0, None), "took 1 QUAL or GQ value that"),
+        ("nan", "3.5", (None, None), "took 2 QUAL or GQ values that"),
         (".", ".", (None, None), ""),
     ],
     ids=["qual_word", "qual_nan", "qual_inf", "qual_underscore", "gq_fraction", "both", "dots"],
@@ -391,7 +393,7 @@ def test_telomeric_breakend_at_pos_0_is_skipped_and_counted(
         records = list(read_vcf_records(path, CONTIGS))
 
     assert [(record.start, record.alleles) for record in records] == [(6, ("A", "T"))]
-    assert "1 VCF records with symbolic alleles" in caplog.text
+    assert "skipped 1 VCF record with symbolic alleles" in caplog.text
 
 
 def test_message_names_the_file_by_the_path_given(tmp_path: Path) -> None:
@@ -402,3 +404,17 @@ def test_message_names_the_file_by_the_path_given(tmp_path: Path) -> None:
         list(read_vcf_records(path, CONTIGS))
 
     assert str(raised.value).startswith(f"{path}, line 3:")
+
+
+def test_header_of_one_sample_is_named_in_the_singular(tmp_path: Path) -> None:
+    path = tmp_path / "a.vcf"
+    path.write_text(
+        "##fileformat=VCFv4.3\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tHG002\n"
+        "chr1\t5\t.\tA\tT\t.\t.\t.\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        PvcEvalInputError, match=r"0 sample columns, and the #CHROM line names 1 sample\."
+    ):
+        list(read_vcf_records(path, CONTIGS))
