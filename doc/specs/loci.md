@@ -324,12 +324,10 @@ not wait for the STR finder. Each case's loci are compared with a literal list o
 
 **At `build_loci`, the cases of this spec:** the chain distance at a gap of 10 and of 11, and at 0
 with adjacent SNPs and with a gap of 1; the four rows of the STR table; the STR region in a gap; the
-the four rows of the table of a locus that reaches back; the four rows of the table of records
-with no ALT; a record with no
-ALT in the gap between two chained SNPs (SNP at 10, `12 A .`, SNP at 15: one locus 10–15 holding
-it); a `*`-only record
-starting a locus; two cases across contigs, 0-based with a chain distance of 10: a SNP at (29, 30) on chr1, then on
-chr2 an STR region at (0, 20) and a SNP at (4, 5), which give a chr2 locus (0, 20) holding the
+four rows of the table of a locus that reaches back; the four rows of the table of records with no
+ALT; a record with no ALT in the gap between two chained SNPs (SNP at 10, `12 A .`, SNP at 15: one
+locus 10–15 holding it); a `*`-only record starting a locus; two cases across contigs, 0-based with
+a chain distance of 10: a SNP at (29, 30) on chr1, then on chr2 an STR region at (0, 20) and a SNP at (4, 5), which give a chr2 locus (0, 20) holding the
 region; and a SNP at (9, 10) with a region at (4999, 5010) on chr1, then on chr2 a region at
 (89, 99) and a SNP at (99, 100), which give a chr2 locus (89, 100) holding it; SNPs at the last
 position of chr1 and the first of chr2 with a chain distance of
