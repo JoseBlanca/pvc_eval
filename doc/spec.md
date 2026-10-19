@@ -181,9 +181,35 @@ Coordinates are 0-based and half-open, as `VcfRecord.start` and `VcfRecord.span`
 from 0 to the contig's length. `read_str_regions` reads a `--str-regions` BED (§5.1) and yields its
 STR regions only, sorted by contig in the reference's `.fai` order and by start. A BED whose
 regions overlap, or name a contig the reference lacks, stops the run with an error naming the
-line. The loci (§5.3) take an
-iterator of either: they ignore `GENERIC` segments and never rely on the segments covering a
-contig. `StrFinderParameters` holds the parameters of §5.1, and the finder's own spec gives it.
+line. The loci (§5.3) take an iterator of either: they ignore `GENERIC` segments and never rely
+on the segments covering a contig. `StrFinderParameters` holds the parameters of §5.1, and the finder's own spec gives it.
+
+**What stage 3 yields.** The loci and the reconciliation are built apart too, so the type that
+passes between them is fixed here, in `pvc_eval.locus`, a module that holds only this type, and
+changed only in this spec:
+
+```python
+@dataclass(frozen=True, slots=True)
+class Locus:
+    contig: str
+    start: int                              # 0-based
+    end: int                                # one past the last position
+    records_a: tuple[VcfRecord, ...]        # file A's records in the locus
+    records_b: tuple[VcfRecord, ...]        # file B's
+    str_regions: tuple[GenomeSegment, ...]  # the STR regions the locus contains
+
+def build_loci(records_a: Iterator[VcfRecord], records_b: Iterator[VcfRecord],
+               segments: Iterator[GenomeSegment], *,
+               chain_distance: int = 10) -> Iterator[Locus]: ...
+```
+
+`build_loci` is in `pvc_eval.loci`, and the loci's own spec gives it in full. A `Locus` covers the
+spans of all its records and every STR region it holds (§5.3), so `start` and `end` hold every
+REF. Each file's records are in the order `parse_vcf` yields them, by span start; records with no
+ALT are among them. `str_regions` holds no `GENERIC` segment, in position order. Loci come
+contig by contig in the `.fai`'s order and by start, and do not overlap. The locus knows nothing
+of samples: each record's genotypes are in the order of its file's header (`parse_vcf_samples`),
+and the reference bases over the locus are read from the reference.
 
 Stages 1 to 3 are the same for every evaluator, so every evaluator reports on the same loci and
 their tables line up row by row. With another evaluator, stages 4 and 5 are replaced by its wrapper
