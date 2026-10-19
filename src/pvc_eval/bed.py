@@ -11,7 +11,9 @@ from pathlib import Path
 
 from pvc_eval.errors import PvcEvalInputError
 
-_SKIPPED_PREFIXES = ("#", "track", "browser")  # as read_str_regions skips them
+# The first word of the header lines of a BED that is not a comment; the STR finder's spec
+# has read_str_regions skip the same lines.
+_HEADER_WORDS = ("track", "browser")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -31,7 +33,8 @@ class BedLine:
 
 def parse_bed(path: Path, contigs: Sequence[str]) -> Iterator[BedLine]:
     """The intervals of a BED, in the order of its lines, from its first three columns and
-    its fourth. Blank lines and lines that start with `#`, `track` or `browser` are skipped.
+    its fourth. Blank lines, lines that start with `#`, and lines whose first word is
+    `track` or `browser` are skipped.
 
     contigs: the reference's contig names.
 
@@ -45,7 +48,7 @@ def parse_bed(path: Path, contigs: Sequence[str]) -> Iterator[BedLine]:
     try:
         with path.open(encoding="utf-8") as bed:
             for line_number, line in enumerate(bed, start=1):
-                if not line.strip() or line.startswith(_SKIPPED_PREFIXES):
+                if _is_skipped(line):
                     continue
                 yield _parse_bed_line(line, path, line_number, reference_contigs)
     except FileNotFoundError:
@@ -65,6 +68,12 @@ def parse_bed(path: Path, contigs: Sequence[str]) -> Iterator[BedLine]:
             " and give file.bed instead; if it is text in another encoding, convert it to"
             " UTF-8; and run again."
         ) from err
+
+
+def _is_skipped(line: str) -> bool:
+    """Whether a line of a BED is blank, a comment or a header line."""
+    words = line.split(maxsplit=1)
+    return not words or line.startswith("#") or words[0] in _HEADER_WORDS
 
 
 def _parse_bed_line(

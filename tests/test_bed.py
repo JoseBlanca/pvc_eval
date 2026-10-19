@@ -197,3 +197,14 @@ def test_parse_bed_quotes_a_contig_so_that_a_byte_order_mark_shows(tmp_path: Pat
     assert str(raised.value).startswith(
         f"{path}, line 1: the contig '\\ufeffchr1' is not in the reference."
     )
+
+
+def test_parse_bed_reads_a_contig_whose_name_starts_with_track_or_browser(
+    tmp_path: Path,
+) -> None:
+    lines = ["track name=x", "browser hide all", "tracks_1\t0\t10", "browser2\t5\t15"]
+
+    assert list(parse_bed(write_bed(tmp_path, lines), ("tracks_1", "browser2"))) == [
+        BedLine(contig="tracks_1", start=0, end=10, name=None, line_number=3),
+        BedLine(contig="browser2", start=5, end=15, name=None, line_number=4),
+    ]
