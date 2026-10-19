@@ -279,3 +279,39 @@ def test_truncated_gzip_file_stops_the_run(tmp_path: Path) -> None:
 
     with pytest.raises(PvcEvalInputError, match=r"cut.vcf.gz .*gzip"):
         list(read_vcf_records(path, CONTIGS))
+
+
+@pytest.mark.parametrize(
+    ("qual", "gq", "expected", "warning"),
+    [
+        ("abc", "30", (None, 30), "1 QUAL or GQ values"),
+        ("nan", "30", (None, 30), "1 QUAL or GQ values"),
+        ("inf", "30", (None, 30), "1 QUAL or GQ values"),
+        ("1_000", "30", (None, 30), "1 QUAL or GQ values"),
+        ("50", "3.5", (50.0, None), "1 QUAL or GQ values"),
+        ("nan", "3.5", (None, None), "2 QUAL or GQ values"),
+        (".", ".", (None, None), ""),
+    ],
+    ids=["qual_word", "qual_nan", "qual_inf", "qual_underscore", "gq_fraction", "both", "dots"],
+)
+def test_qual_or_gq_that_is_not_a_number_is_absent_and_counted(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    qual: str,
+    gq: str,
+    expected: tuple[float | None, int | None],
+    warning: str,
+) -> None:
+    # The second sample drops its GQ, which VCF allows and which is not counted.
+    path = write_vcf(tmp_path, f"chr1\t5\t.\tA\tT\t{qual}\t.\t.\tGT:GQ\t0/1:{gq}\t0/1\n")
+
+    with caplog.at_level(logging.WARNING):
+        (record,) = read_vcf_records(path, CONTIGS)
+
+    genotype = record.genotypes[0]
+    assert isinstance(genotype, VcfGenotype)
+    assert (record.qual, genotype.quality) == expected
+    if warning:
+        assert warning in caplog.text
+    else:
+        assert "QUAL or GQ" not in caplog.text

@@ -7,6 +7,8 @@ converted here, and nowhere else.
 
 import gzip
 import logging
+import math
+import re
 from collections.abc import Generator, Iterator, Sequence
 from contextlib import closing
 from dataclasses import dataclass, replace
@@ -28,6 +30,7 @@ record lacks: the sample is invalid at the locus, and the run goes on (§5.4).""
 
 SPANNING_DELETION = "*"
 GZIP_MAGIC = b"\x1f\x8b"
+DECIMAL_NUMBER = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?")
 NUM_FIXED_COLUMNS = 9  # CHROM to FORMAT
 
 
@@ -99,7 +102,9 @@ def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
     order, for a file with no #CHROM line after its ## lines, for a line that does not
     hold a VCF record, and for one whose number of sample columns differs from the
     number of samples the #CHROM line names. A blank line is skipped. A record with a symbolic
-    allele is skipped, and the number skipped is logged as a warning at the end (§9).
+    allele is skipped, and the number skipped is logged as a warning at the end (§9). A
+    QUAL or GQ that is not a number is taken as absent, and those are counted in a
+    warning at the end too.
     """
     contig_rank = {contig: rank for rank, contig in enumerate(contigs)}
     # The (contig rank, POS) of the previous record, which this one must not come before,
@@ -107,6 +112,7 @@ def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
     previous_order: tuple[int, int] | None = None
     previous_where = ""
     num_symbolic = 0
+    num_not_numbers = 0
     with closing(_numbered_lines(path)) as numbered_lines:
         num_samples = len(_read_header(numbered_lines, path))
         for line_number, line in numbered_lines:
@@ -133,13 +139,24 @@ def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
             if any(_is_symbolic(alt) for alt in alts):
                 num_symbolic += 1
                 continue
-            yield _parse_record(fields, contig, pos_1based - 1, alts, line_number)
+            record, num_record_not_numbers = _parse_record(
+                fields, contig, pos_1based - 1, alts, line_number
+            )
+            num_not_numbers += num_record_not_numbers
+            yield record
     if num_symbolic:
         logger.warning(
             "%s: %d VCF records with symbolic alleles (<DEL>, breakends) were skipped;"
             " pvc_eval does not compare structural variants.",
             path,
             num_symbolic,
+        )
+    if num_not_numbers:
+        logger.warning(
+            "%s: %d QUAL or GQ values are not numbers and were taken as absent, as `.` is;"
+            " the quality of the rows they would give is `.`.",
+            path,
+            num_not_numbers,
         )
 
 
@@ -278,10 +295,14 @@ def _is_symbolic(alt: str) -> bool:
 
 def _parse_record(
     fields: list[str], contig: str, start: int, alts: tuple[str, ...], line_number: int
-) -> VcfRecord:
+) -> tuple[VcfRecord, int]:
+    """The VCF record of a line, and how many of its QUAL and GQ values were taken as
+    absent for not being numbers."""
     # VCF bases are case-insensitive, and the reference is compared in upper case.
     alleles = (fields[3].upper(), *(alt.upper() for alt in alts))
     genotypes: list[VcfGenotype | MALFORMED_GT] = []
+    qual = _read_qual(fields[5])
+    num_not_numbers = _is_not_a_number(fields[5], qual)
     if len(fields) > NUM_FIXED_COLUMNS:
         keys = fields[8].split(":")
         for sample_field in fields[NUM_FIXED_COLUMNS:]:
@@ -290,7 +311,8 @@ def _parse_record(
             phase_set = values.get("PS")
             if phase_set == ".":
                 phase_set = None
-            quality = _int_or_none(values.get("GQ"))
+            quality = _read_gq(values.get("GQ"))
+            num_not_numbers += _is_not_a_number(values.get("GQ"), quality)
             if "GT" not in values:
                 genotypes.append(
                     VcfGenotype(
@@ -302,29 +324,37 @@ def _parse_record(
                 )
                 continue
             genotypes.append(parse_genotype(values["GT"], len(alleles), phase_set, quality))
-    return VcfRecord(
+    record = VcfRecord(
         contig=contig,
         start=start,
         alleles=alleles,
-        qual=_float_or_none(fields[5]),
+        qual=qual,
         genotypes=tuple(genotypes),
         line_number=line_number,
     )
+    return record, num_not_numbers
 
 
 # QUAL and GQ only annotate a row of the table (§6), where an absent value is written `.`;
-# a value that is not a number is taken as absent rather than stopping the run.
-def _float_or_none(value: str) -> float | None:
-    try:
-        return float(value)
-    except ValueError:
+# a value that is not a number is taken as absent and counted, rather than stopping the
+# run (a provisional choice). Only decimal numbers count, not Python's "nan", "inf" or
+# "1_000", and a QUAL must be finite.
+def _read_qual(field: str) -> float | None:
+    if not DECIMAL_NUMBER.fullmatch(field):
         return None
+    qual = float(field)
+    return qual if math.isfinite(qual) else None
 
 
-def _int_or_none(value: str | None) -> int | None:
-    if value is None or not value.isascii() or not value.isdecimal():
+def _read_gq(field: str | None) -> int | None:
+    if field is None or not field.isascii() or not field.isdecimal():
         return None
-    return int(value)
+    return int(field)
+
+
+def _is_not_a_number(field: str | None, number: float | None) -> bool:
+    """A QUAL or GQ was written, and not as `.`, but taken as absent."""
+    return number is None and field not in (None, ".")
 
 
 def normalise(record: VcfRecord, contig_sequence: str) -> VcfRecord:
