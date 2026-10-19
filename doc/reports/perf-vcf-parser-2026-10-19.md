@@ -165,6 +165,36 @@ keeps the last value and an index the first, which the change must decide. The c
 little more complicated (dropped trailing fields need handling), so it is kept only for a
 gain above the noise, measured after P1.
 
+*What P3 gave* (commit d9175d6, measured 19 October 2026 from 16:02 to 16:12, against P2 at
+037a454). The code adds 35 lines and removes 7: `_find_key_index` finds GT, GQ and PS in the
+record's FORMAT once, and each sample is split and read by position, a position past its last
+value meaning a dropped field. The loop reads three lines longer, with one rule for a dropped
+field and a key FORMAT lacks. A key named twice takes its last copy, as the dict did; the one
+difference is a sample that drops that last copy, which now has no value for the key where the
+dict kept an earlier copy's. VCF does not allow a key twice. Two tests check a dropped
+trailing field and a key named twice. The four digests equal the README's. On the GATK-like
+input, cProfile counts 490 calls of `dict.get` instead of 10,876,690, and 28.6 million calls
+in all instead of 35.7 million. Each input was timed in one hyperfine call that alternated P2
+and P3, 10 runs (5 for the 64 Mb input), mean ± sd:
+
+| input | span limit | P2 | P3 | change |
+|---|---|---|---|---|
+| 5 Mb, GATK-like | 10 kb | 2.434 ± 0.020 s | 1.481 ± 0.013 s | −39.1% |
+| 5 Mb, GATK-like | none | 2.591 ± 0.042 s | 1.613 ± 0.014 s | −37.8% |
+| 5 Mb, GT:GQ:PS | 10 kb | 1.777 ± 0.014 s | 1.062 ± 0.013 s | −40.3% |
+| 5 Mb, GT:GQ:PS | none | 1.822 ± 0.012 s | 1.107 ± 0.013 s | −39.2% |
+| one sample | 10 kb | 743.0 ± 5.2 ms | 743.6 ± 4.9 ms | +0.1% |
+| one sample | none | 834.9 ± 10.3 ms | 829.9 ± 8.3 ms | −0.6% |
+| 64 Mb | 10 kb | 22.674 ± 0.474 s | 13.235 ± 0.197 s | −41.6% |
+
+The one-sample input, timed again at the default limit, gave −1.1%: no gain, as expected where
+a record has one sample. Peak memory on the GATK-like input with no limit, the median of 3
+maximum resident set sizes, is unchanged: 140.6 MB and 140.5 MB. The gain is far above the
+20% the Deciding table asks of a more complicated change, and the code carries a comment
+with its numbers. The one-minute load average was 2.04 to 3.33. During part of the small
+inputs, test runs of other sessions held one or two of the 18 cores; the alternation shares
+their effect between the two sides.
+
 **P4. Threads over batches of records** (`vcf.py:501`, the owner's decision). Genotypes
 depend only on their record's fields, so a pool of threads can parse batches of records while
 the main thread keeps the window, the spans and the order. A prototype by the parallelism
