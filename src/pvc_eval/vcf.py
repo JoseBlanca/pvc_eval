@@ -28,6 +28,10 @@ MALFORMED_GT = sentinel("MALFORMED_GT")
 """A GT with a number of alleles other than the ploidy, or an allele index the VCF
 record lacks: the sample is invalid at the locus, and the run goes on (§5.4)."""
 
+HAPLOID_GT = sentinel("HAPLOID_GT")
+"""A GT of one allele index, such as `1` on chrX of a male sample: the sample is invalid
+at the locus with its own reason, `haploid GT` (§5.4, §6, Open 1)."""
+
 SPANNING_DELETION = "*"
 GZIP_MAGIC = b"\x1f\x8b"
 DECIMAL_NUMBER = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?")
@@ -59,7 +63,8 @@ class VcfRecord:
     alleles: REF first, then the ALTs, as written but in upper case; `*` is a spanning
         deletion.
     qual: QUAL, or None for `.`.
-    genotypes: one per sample, in the order of the header; a MALFORMED_GT keeps no GQ.
+    genotypes: one per sample, in the order of the header; a MALFORMED_GT or HAPLOID_GT
+        keeps no GQ.
     line_number: the 1-based line of the file, for messages.
     ref_mismatch: REF differs from the reference (§5.2), set by normalising.
     """
@@ -68,7 +73,7 @@ class VcfRecord:
     start: int
     alleles: tuple[str, ...]
     qual: float | None
-    genotypes: tuple[VcfGenotype | MALFORMED_GT, ...]
+    genotypes: tuple[VcfGenotype | MALFORMED_GT | HAPLOID_GT, ...]
     line_number: int
     ref_mismatch: bool = False
 
@@ -164,26 +169,39 @@ def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
 
 def parse_genotype(
     gt: str, num_alleles: int, phase_set: str | None, quality: int | None
-) -> VcfGenotype | MALFORMED_GT:
-    """A GT field as a VcfGenotype, or MALFORMED_GT when it cannot be one (§5.4).
+) -> VcfGenotype | MALFORMED_GT | HAPLOID_GT:
+    """A GT field as a VcfGenotype; HAPLOID_GT for one allele index, such as `1`; or
+    MALFORMED_GT when it cannot be either (§5.4).
+
+    A single `.` says nothing about either haplotype, and is both MISSING.
 
     num_alleles: how many VCF alleles the record has, REF included.
     phase_set, quality: the sample's PS and GQ, kept in the VcfGenotype.
     """
+    if gt == ".":
+        return VcfGenotype(
+            alleles=(MISSING,) * PLOIDY, phased=False, phase_set=phase_set, quality=quality
+        )
     parts = gt.replace("|", "/").split("/")
+    if len(parts) == 1 and _is_allele_index(gt, num_alleles):
+        return HAPLOID_GT
     if len(parts) != PLOIDY:
         return MALFORMED_GT
     alleles: list[int | MISSING] = []
     for part in parts:
         if part == ".":
             alleles.append(MISSING)
-        elif part.isascii() and part.isdecimal() and int(part) < num_alleles:
+        elif _is_allele_index(part, num_alleles):
             alleles.append(int(part))
         else:
             return MALFORMED_GT
     return VcfGenotype(
         alleles=tuple(alleles), phased="|" in gt, phase_set=phase_set, quality=quality
     )
+
+
+def _is_allele_index(part: str, num_alleles: int) -> bool:
+    return part.isascii() and part.isdecimal() and int(part) < num_alleles
 
 
 def _numbered_lines(path: Path) -> Generator[tuple[int, str]]:
@@ -314,7 +332,7 @@ def _parse_record(
     absent for not being numbers."""
     # VCF bases are case-insensitive, and the reference is compared in upper case.
     alleles = (fields[3].upper(), *(alt.upper() for alt in alts))
-    genotypes: list[VcfGenotype | MALFORMED_GT] = []
+    genotypes: list[VcfGenotype | MALFORMED_GT | HAPLOID_GT] = []
     qual = _read_qual(fields[5])
     num_not_numbers = _is_not_a_number(fields[5], qual)
     if len(fields) > NUM_FIXED_COLUMNS:

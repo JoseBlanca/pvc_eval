@@ -6,6 +6,7 @@ import pytest
 
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.vcf import (
+    HAPLOID_GT,
     MALFORMED_GT,
     MISSING,
     VcfGenotype,
@@ -43,23 +44,33 @@ def write_vcf(tmp_path: Path, body: str, *, gzipped: bool = False) -> Path:
             "./.",
             VcfGenotype(alleles=(MISSING, MISSING), phased=False, phase_set=None, quality=None),
         ),
-        (".", MALFORMED_GT),
+        (".", VcfGenotype(alleles=(MISSING, MISSING), phased=False, phase_set=None, quality=None)),
+        ("1", HAPLOID_GT),
+        ("0", HAPLOID_GT),
+        ("3", MALFORMED_GT),
         ("0/1/1", MALFORMED_GT),
+        ("./././", MALFORMED_GT),
         ("0/3", MALFORMED_GT),
         ("A/1", MALFORMED_GT),
+        ("A", MALFORMED_GT),
     ],
     ids=[
         "unphased",
         "phased",
         "one_missing",
         "both_missing",
-        "one_allele",
+        "single_dot_is_both_missing",
+        "haploid_alt",
+        "haploid_ref",
+        "haploid_index_beyond_alts",
         "three_alleles",
+        "four_missing",
         "index_beyond_alts",
         "not_a_number",
+        "haploid_not_a_number",
     ],
 )
-def test_parse_genotype(gt: str, expected: VcfGenotype | MALFORMED_GT) -> None:
+def test_parse_genotype(gt: str, expected: VcfGenotype | MALFORMED_GT | HAPLOID_GT) -> None:
     assert parse_genotype(gt, num_alleles=3, phase_set=None, quality=None) == expected
 
 
