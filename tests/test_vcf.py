@@ -1118,8 +1118,10 @@ def test_a_ploidy_that_is_not_a_whole_number_of_1_or_more_is_a_value_error(
     tmp_path: Path, reference: IndexedFasta, ploidy: object
 ) -> None:
     path = write_vcf(tmp_path, make_snp_line("chr1", 1))
+    # The call gives the stream without checking; the check is made when it starts.
+    records = parse_vcf(path, reference, ploidy=ploidy)  # ty: ignore[invalid-argument-type]  # a wrong type on purpose
 
     with pytest.raises(
         ValueError, match=rf"^ploidy must be a whole number of 1 or more, not {ploidy!r}$"
     ):
-        list(parse_vcf(path, reference, ploidy=ploidy))  # ty: ignore[invalid-argument-type]  # a wrong type on purpose
+        next(records)
