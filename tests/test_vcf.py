@@ -533,3 +533,20 @@ def test_span_beyond_10_kb_is_the_ref_and_counted(
     assert placed(beyond) == (10001, ("AA", "A"), (10001, 10003), False)
     assert placed(within) == (10000, ("AA", "A"), (0, 10002), False)
     assert "1 VCF record could slide more than 10 kb" in caplog.text
+
+
+def test_soft_masked_reference_gives_no_mismatch_and_the_same_spans(tmp_path: Path) -> None:
+    # A FASTA reader may give soft-masked bases in lower case; §5.2 compares REF without
+    # regard to case.
+    path = write_vcf(
+        tmp_path,
+        "chr1\t4\t.\tAA\tA\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+    )
+    soft_masked = {"chr1": "GGGaagAGGCAGGGGG", "chr2": "GGGGGGGG"}
+
+    records = read_vcf_records(path, CONTIGS, soft_masked.__getitem__)
+
+    assert [placed(record) for record in records] == [
+        (3, ("AA", "A"), (2, 5), False),
+        (4, ("A", "T"), (4, 5), False),
+    ]

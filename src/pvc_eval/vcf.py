@@ -123,8 +123,9 @@ def read_vcf_records(
     position.
 
     contigs: the contig names of the reference, in the order of its `.fai`.
-    contig_sequence: the sequence of a contig of the reference, by name, in upper case.
-        It is called once for each contig that has a VCF record.
+    contig_sequence: the sequence of a contig of the reference, by name, in upper or
+        lower case; it is compared in upper case, so a soft-masked reference gives no
+        REF mismatch (§5.2). It is called once for each contig that has a VCF record.
 
     A record is held only until no later record of its contig can have a span that
     starts before its own: a span starts at most MAX_SPAN_REACH bases before its REF,
@@ -215,7 +216,7 @@ def _records_in_file_order(
             if pos_1based == 0:
                 raise _pos_error(fields[1], path, line_number)
             if contig != sequence_contig:
-                sequence_contig, sequence = contig, contig_sequence(contig)
+                sequence_contig, sequence = contig, contig_sequence(contig).upper()
             record, num_record_not_numbers, is_beyond_reach = _parse_record(
                 fields, contig, pos_1based - 1, alts, line_number, sequence
             )
