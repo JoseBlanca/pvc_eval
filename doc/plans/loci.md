@@ -1,6 +1,6 @@
 # Plan: the loci
 
-*Status: approved by the owner on 19 October 2026; under way. It builds `doc/specs/loci.md`,
+*Status: approved by the owner on 19 October 2026; done on 19 October 2026. It builds `doc/specs/loci.md`,
 approved by the owner on 19 October 2026, on the branch `loci` in `.claude/worktrees/loci`; the
 owner's handoff named the branch `loci`, so it is not `plan/loci`. The work report will be
 `doc/reports/loci.md`.*
@@ -116,7 +116,7 @@ owner's handoff forbids changing `vcf.py` without them. The session commits the 
 leaves the failing case out of the commit with its output in the report, and asks the owner as the
 coding skill's "When to stop and ask" says; milestone 3 can go on meanwhile.
 
-- [ ] 3. Kind, stratum and regions
+- [x] 3. Kind, stratum and regions
 
 **What it gives.** The kind and the stratum of a locus, and the selection of `--regions`, which
 the table of §6 and `compare` will read.
@@ -145,6 +145,9 @@ with their interfaces; `doc/spec.md` §5.6 and §5.7.
   lines, and each refusal of `read_regions`, the contig the reference lacks among them, with its
   message. Check: `uv run pytest tests/test_regions.py -q` ends with at least 9 passed, the cases this
   deliverable lists, each refusal counted once.
+- `tests/test_bed.py`, added by the review: the refusals `read_regions` and `read_strata` share,
+  tested once there rather than in both files, so test_strata.py keeps only the class refusals.
+  Check: `uv run pytest tests/test_bed.py -q` ends with at least 17 passed.
 - The four checks of `python.md` pass.
 
 **What it stands on.** `pvc_eval.locus` from milestone 1, or from the reconciliation session;

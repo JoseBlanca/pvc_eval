@@ -1,7 +1,30 @@
 # Report: the loci
 
-*Under way, 19 October 2026. The work of `doc/plans/loci.md`, which builds `doc/specs/loci.md`, on
-the branch `loci`.*
+*Done, 19 October 2026. The work of `doc/plans/loci.md`, which builds `doc/specs/loci.md`, on the
+branch `loci`.*
+
+The plan is done. pvc_eval now builds its loci: `build_loci` turns the VCF records of file A and
+file B and the STR regions into loci as it reads them, and the kind, the stratum and the
+`--regions` selection of a locus are read from it. The checks give 346 passed and 1 skipped; the
+skipped test runs `build_loci` on the STR finder's `segment_contig`, and passed against a copy of
+it from the `str-finder` branch. `build_loci` agreed with a brute force of `doc/spec.md` §5.3 on
+60,000 random cases.
+
+What is asked of the owner:
+
+- The merge of `loci` into `main`, which also carries the spec commits `baf1be3`, `84d6357` and
+  `c0fcb6a` to `doc/spec.md` that the other sessions read their contracts from, and the shared
+  modules cherry-picked from the `str-finder` and `reconciliation` branches.
+- Three points, each found during the work:
+  1. Should `--regions` and `--strata` read gzipped BEDs, as `parse_vcf` reads gzipped VCFs?
+     GIAB's stratification BEDs come gzipped; today they are refused with a hint to gunzip.
+  2. Should an empty `--regions` or `--strata` BED stop the run? Today it skips every locus, or
+     gives `.` for every stratum, without a word.
+  3. `doc/spec.md` §5.2 says its second case would fall into two loci without the span; with the
+     chain distance, touching spans always chain, so the sentence no longer holds.
+
+What is left open: the shared trim of an ALT (milestone 3), and the test on `segment_contig`,
+skipped until the STR finder is merged.
 
 ## Before the first milestone
 
@@ -90,3 +113,66 @@ correction is the owner's: this session changes doc/spec.md only with the owner'
 
 **Tokens**: implementation 88,000; review 92,000 (spec and tests 40,000, correctness and design
 52,000); fixes 22,000.
+
+## Milestone 3: kind, stratum and regions
+
+Done: the work of `ba5b9f9..dcb6286` on a branch of its own, `loci-m3`, run beside milestone 2, then
+cherry-picked onto `loci` (`3d6c366..c26bec1`) and fixed there (`3abdd98..858b7a7`).
+
+**Deliverables.** `locus_kind` beside the shared `Kind` (cherry-picked from the reconciliation
+session's `4df38de`), `pvc_eval.regions` and `pvc_eval.strata`, and `pvc_eval.bed`, the BED reader
+both share. `uv run pytest` gave "12 passed" for test_kind, "20 passed" for test_strata, "9 passed"
+for test_regions and "17 passed" for test_bed. The four checks on `858b7a7`: "23 files already
+formatted", "All checks passed!" twice, "346 passed, 1 skipped".
+
+**Changed in the plan.** `tests/test_bed.py` was added, holding once the refusals both readers
+share, which had been tested twice.
+
+**What the review found and is fixed.**
+
+- A blocker: no test saw the classes of a stratum sorted and given once across intervals; a
+  stratum written `zeta,alpha,zeta` passed all 17 tests. A test now catches every such mutant,
+  confirmed by a second look.
+- A `--strata` BED of 1,000,000 lines (32 MB) retained 451 MB, one set of classes per piece.
+  `Strata` now holds one merged `Regions` per class, as a reviewer showed gives the same answers on
+  60,000 queries: 90 MB retained, peak 184 MB, 1.0 s to read instead of 1.6 s.
+- What the BED readers refuse, now in the spec (`15d0b39`): a directory or an unreadable file,
+  which gave a traceback; a space-separated BED, which was told it had 1 column; a class with
+  spaces at its ends, which counted as another class, an empty class, and one holding `,`.
+- The message for a contig the reference lacks gave an `awk` command that, for a BED naming `1`
+  against `chr1`, kept no line, after which every locus would be skipped. It now says to rename.
+- Six more missing tests (a nested region, a contig with no BED line, file B changing the kind, a
+  record with no ALT reaching past the locus, and two orders of `pvc_stratum`), and nits.
+
+**Not taken.** The spec's names `locus_kind`, `pvc_stratum` and `overlaps`, which a reviewer found
+to be nouns, are the approved interface's. A shared trim of an ALT for the kind and for
+reconciliation, which hold one copy each, crosses sessions and waits for the branches to meet. The
+non-UTF-8 message names the line its decoder's chunk began at, which is true as it stands.
+
+**Tokens**: implementation 115,000; review 256,000 (spec 57,000, tests 58,000, correctness 36,000,
+errors 40,000, design 65,000); fixes 55,000; second look 23,000.
+
+## The check of the whole plan
+
+`build_loci` over `chr20_5mb_200s.vcf.gz` (18,310 records, 200 samples) against itself, with no STR
+regions, read through `parse_vcf` over GRCh38, by a script in the session's scratchpad: 17,641
+loci; file A's and file B's records with an ALT summed over the loci, 18,310 each, equal to the
+file's; 0 loci with different records in A and B; 47.1 s with tracemalloc on, both files parsed;
+traced peak 5.8 MB.
+
+## For whoever next revises the skills
+
+You can stop here if you are the owner deciding the merge.
+
+- The coding skill's worktree for side-by-side milestones is not said: milestone 3 ran on a branch
+  `loci-m3` in a worktree of its own, cherry-picked afterwards, so that two subagents never
+  committed to one branch. The skill could say so.
+- Cleaning up reviewers' worktrees by a glob removed other sessions' worktrees (see milestone 1).
+  The coding skill's "When the plan is done" says to remove "the worktrees of the reviewers"; it
+  could say by the exact path the Agent tool returns, never by a pattern, since sessions share
+  `.claude/worktrees/`.
+- In all three milestones the tests reviewer found rules no test guarded, by mutating the code: 5
+  in milestone 1, 1 in milestone 2, 5 in milestone 3. It found the only blockers. Its cost, 58,000
+  to 107,000 tokens, was the best spent of the review.
+- Milestone 1, at about two days of work, cost 134,000 tokens to implement and 347,000 to review,
+  and fitted one subagent; milestone 2, at half a day, cost 88,000 and 92,000.
