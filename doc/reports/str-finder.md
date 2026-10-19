@@ -5,7 +5,7 @@
 
 **pvc_eval has an STR finder, ported from pvc at bbcc9f4, and it gives pvc's STR regions.** On 600
 generated contigs and three 1 Mb slices of GRCh38, at pvc's defaults and with periods 2 to 5, its STR
-regions are identical, row for row, to those of `pvc dev type-regions`: 4,407 STR regions compared,
+regions are identical, row for row, to those of `pvc dev type-regions`: 4,287 STR regions compared,
 no difference (milestone 5).
 
 What exists now that did not:
