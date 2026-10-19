@@ -1040,19 +1040,25 @@ _SYNTHETIC_REF = Path(__file__).parent / "data" / "tandem_repeat" / "synthetic_r
 
 def test_differential_vs_production_build_loci_on_scanner_output() -> None:
     # pvc compares each contig's STR segments with its former production code
-    # (assert_agrees), which is not ported; what is left checks that segments are found.
-    contigs = 0
-    str_segments = 0
+    # (assert_agrees), which is not ported. What is left counts the STR segments and the
+    # bundle members of each contig, against pvc's: the port's step 1, then a transcription
+    # of pvc's prefilter and classify, run as
+    # uv run python /private/tmp/claude-501/-Users-jose-devel-pvc-eval/2dab6280-84d0-4e89-88dc-7955494ebca9/scratchpad/m2_fix_t4.py \
+    #     /private/tmp/claude-501/-Users-jose-devel-pvc-eval/2dab6280-84d0-4e89-88dc-7955494ebca9/scratchpad/review_m2_spec \
+    #     tests/data/tandem_repeat/synthetic_ref.fa
+    counts = {}
     with IndexedFasta(_SYNTHETIC_REF) as reference:
         for contig in reference.contigs:
             bases = reference.get_bases(contig, 0, reference.get_length(contig))
             # pvc's find_tandem_repeats over periods 1 to 6, then its prefilter.
             scanned = StrFinderParameters(copy_floors=_ZERO_FLOORS)
             candidates = _drop_under_copy_floor(_find_candidates(bases, scanned), _PARAMS)
-            str_segments += len(_find_whole_contig(list(candidates), bases, _PARAMS))
-            contigs += 1
-    assert contigs > 0
-    assert str_segments > 0
+            classification = _find_str_segments(candidates, bases, _PARAMS)
+            counts[contig] = (
+                len(classification.str_segments),
+                len(classification.bundle_members),
+            )
+    assert counts == {"ctg1": (15, 0), "ctg2": (2, 0)}
 
 
 # ---- Step 2, ported from pvc's repeat_catalog/row.rs at bbcc9f4 -----------------------------
