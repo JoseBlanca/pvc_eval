@@ -365,6 +365,9 @@ def _parse_lines_without_samples(
     # and where that record is, for the message.
     previous_order: tuple[int, int] | None = None
     previous_where = ""
+    # The records with no symbolic allele whose REF agreed with the reference, which tells
+    # a VCF made on another reference from a damaged line (§5.2).
+    num_agreeing = 0
     with closing(_read_numbered_lines(path)) as numbered_lines:
         num_samples = len(_parse_samples(numbered_lines, path))
         for line_number, line in numbered_lines:
@@ -413,7 +416,8 @@ def _parse_lines_without_samples(
             # contig makes the window drop the buffer.
             evict_distance = BLOCK_BASES if span_limit is None else span_limit + 1
             reference_window.evict_before(pos - evict_distance)
-            _check_ref(fields[3], contig, pos, reference_window, path, line_number)
+            _check_ref(fields[3], contig, pos, reference_window, path, line_number, num_agreeing)
+            num_agreeing += 1
             placed_line, is_qual_absent, is_beyond_reach = _parse_line_without_samples(
                 fields, contig, pos, alts, line_number, reference_window, contig_length, span_limit
             )
@@ -455,13 +459,21 @@ _AGREEING_CODES = frozenset(
 
 
 def _check_ref(
-    ref: str, contig: str, pos: int, reference_window: FastaWindow, path: Path, line_number: int
+    ref: str,
+    contig: str,
+    pos: int,
+    reference_window: FastaWindow,
+    path: Path,
+    line_number: int,
+    num_agreeing: int,
 ) -> None:
     """§5.2: a REF that differs from the reference means the VCF was made on another
     reference, or is damaged. Two bases agree, whatever their case, when the bases their
     IUPAC codes stand for overlap; the window gives the reference in upper case.
 
     pos: the 0-based position of POS; the REF lies within the contig.
+    num_agreeing: the records of the file with no symbolic allele before this one, all of
+        which agreed with the reference.
     """
     ref_bases = reference_window.get_bases(contig, pos, pos + len(ref))
     ref_upper = ref.upper()
@@ -470,10 +482,25 @@ def _check_ref(
         return
     if all(pair in _AGREEING_CODES for pair in zip(ref_upper, ref_bases, strict=True)):
         return
+    if num_agreeing == 0:
+        remedy = (
+            "It is the file's first record with no symbolic allele, so the VCF looks made on"
+            " another reference: compare against the reference it was called on, and run"
+            " again."
+        )
+    else:
+        records_agree = (
+            "1 record before it with no symbolic allele agrees"
+            if num_agreeing == 1
+            else f"{num_agreeing:,} records before it with no symbolic allele agree"
+        )
+        remedy = (
+            f"The {records_agree} with the reference, so this line looks damaged: correct it"
+            " or remove it, and run again."
+        )
     raise PvcEvalInputError(
         f"{path}, line {line_number}: the REF of {contig}:{pos + 1} is {ref}, and the"
-        f" reference has {ref_bases} there, so the VCF looks made on another reference,"
-        " or damaged. Compare against the reference the VCF was called on."
+        f" reference has {ref_bases} there. {remedy}"
     )
 
 

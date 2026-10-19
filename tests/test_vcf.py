@@ -734,9 +734,9 @@ def test_ref_that_differs_from_the_reference_stops_the_run(
         given.extend(records)
 
     assert str(raised.value) == (
-        f"{path}, line 3: the REF of chr1:5 is Ca, and the reference has AG there, so the"
-        " VCF looks made on another reference, or damaged. Compare against the reference"
-        " the VCF was called on."
+        f"{path}, line 3: the REF of chr1:5 is Ca, and the reference has AG there. It is"
+        " the file's first record with no symbolic allele, so the VCF looks made on another"
+        " reference: compare against the reference it was called on, and run again."
     )
     assert given == []
 
@@ -1503,9 +1503,10 @@ def make_snps_with_one_ref_wrong(index_wrong: int) -> tuple[tuple[str, str], str
 @pytest.mark.parametrize("num_threads", [1, 4])
 @pytest.mark.parametrize(
     "index_wrong",
-    [0, 100, vcf._BATCH_SIZE - 1, vcf._BATCH_SIZE, 5 * vcf._BATCH_SIZE],
+    [0, 1, 100, vcf._BATCH_SIZE - 1, vcf._BATCH_SIZE, 5 * vcf._BATCH_SIZE],
     ids=[
         "first_record",
+        "second_record",
         "middle_of_a_batch",
         "last_of_a_batch",
         "first_of_a_batch",
@@ -1528,10 +1529,25 @@ def test_ref_that_differs_comes_after_the_records_before_it(
     # can start before it with a limit of 5, as for every other input error.
     line_number = index_wrong + 3
     pos_1based = 11 + index_wrong * 10
+    if index_wrong == 0:
+        remedy = (
+            "It is the file's first record with no symbolic allele, so the VCF looks made on"
+            " another reference: compare against the reference it was called on, and run"
+            " again."
+        )
+    elif index_wrong == 1:
+        remedy = (
+            "The 1 record before it with no symbolic allele agrees with the reference, so"
+            " this line looks damaged: correct it or remove it, and run again."
+        )
+    else:
+        remedy = (
+            f"The {index_wrong} records before it with no symbolic allele agree with the"
+            " reference, so this line looks damaged: correct it or remove it, and run again."
+        )
     assert str(raised.value) == (
         f"{path}, line {line_number}: the REF of chr1:{pos_1based} is T, and the reference"
-        " has A there, so the VCF looks made on another reference, or damaged. Compare"
-        " against the reference the VCF was called on."
+        f" has A there. {remedy}"
     )
     assert [record.line_number for record in given] == list(range(3, line_number - 1))
     assert [record.start for record in given] == [10 + 10 * index for index in range(len(given))]
