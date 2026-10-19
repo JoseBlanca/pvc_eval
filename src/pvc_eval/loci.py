@@ -97,7 +97,10 @@ def build_loci(
     ranked_segments = _rank_segments(segments, ranks)
     last_segment_position: _Position | None = None
     held_regions: list[_RankedRegion] = []
-    held_no_alt: list[_RankedRecord] = []
+    # The records with no ALT that the reading has not passed, by end, and those it has
+    # passed that the open locus or an STR region still holds.
+    no_alt_ahead: list[tuple[_Position, int, int, _RankedRecord]] = []
+    no_alt_passed: list[_RankedRecord] = []
     locus: _OpenLocus | None = None
 
     ranked_record = next(ranked_records, None)
@@ -107,30 +110,55 @@ def build_loci(
         )
         # The reach is found anew for each record, after its segments are read: an STR
         # region that starts within the chain distance of the locus may be read only now.
+        is_yielded = False
         if locus is not None and not _is_joining(
             ranked_record, locus, held_regions, chain_distance
         ):
-            yield _make_locus(locus, held_regions, held_no_alt)
+            yield _make_locus(locus, held_regions, _get_no_alt(no_alt_ahead, no_alt_passed))
             locus = None
+            is_yielded = True
         if _has_alt(ranked_record.vcf_record):
             locus = _add_to_locus(locus, ranked_record, held_regions)
         else:
-            held_no_alt.append(ranked_record)
+            entry = (
+                ranked_record.end_position,
+                ranked_record.file_index,
+                ranked_record.index_in_file,
+                ranked_record,
+            )
+            heapq.heappush(no_alt_ahead, entry)
 
         ranked_record = next(ranked_records, None)
         next_start = None if ranked_record is None else ranked_record.start_position
+        region_count = len(held_regions)
         held_regions = [
             ranked_region
             for ranked_region in held_regions
             if _is_region_held(ranked_region, locus, next_start)
         ]
-        held_no_alt = [
-            no_alt
-            for no_alt in held_no_alt
-            if _is_no_alt_held(no_alt, locus, next_start, held_regions)
-        ]
+        # A record with no ALT the reading has passed is held only by the open locus or by
+        # an STR region, so it is checked again only when one of them goes: checking every
+        # one at each record took time in the square of the records over a satellite.
+        if is_yielded or len(held_regions) < region_count:
+            no_alt_passed = [
+                no_alt
+                for no_alt in no_alt_passed
+                if _is_no_alt_held(no_alt, locus, next_start, held_regions)
+            ]
+        while no_alt_ahead and (next_start is None or no_alt_ahead[0][0] <= next_start):
+            no_alt = heapq.heappop(no_alt_ahead)[-1]
+            if _is_no_alt_held(no_alt, locus, next_start, held_regions):
+                no_alt_passed.append(no_alt)
     if locus is not None:
-        yield _make_locus(locus, held_regions, held_no_alt)
+        yield _make_locus(locus, held_regions, no_alt_passed)
+
+
+def _get_no_alt(
+    no_alt_ahead: Iterable[tuple[_Position, int, int, _RankedRecord]],
+    no_alt_passed: Iterable[_RankedRecord],
+) -> list[_RankedRecord]:
+    """The records with no ALT held, ahead of the reading and passed by it."""
+    return [*no_alt_passed, *(entry[-1] for entry in no_alt_ahead)]
 
 
 def _check_chain_distance(chain_distance: int) -> None:

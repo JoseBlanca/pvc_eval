@@ -5,6 +5,8 @@ The cases are those of doc/specs/loci.md, "How it is verified". The spec writes 
 span (99, 100) and its "11-20" is (10, 20).
 """
 
+import itertools
+import time
 import tracemalloc
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from itertools import pairwise
@@ -731,6 +733,30 @@ def test_str_regions_are_not_kept_once_passed() -> None:
     peak_100_000 = find_peak_memory(make_loci_over_snps_and_str_regions, 100_000)
 
     assert abs(peak_100_000 - peak_10_000) < 0.1 * peak_10_000, (peak_10_000, peak_100_000)
+
+
+def make_records_with_no_alt_in_time(count: int, seconds: float) -> Iterator[VcfRecord]:
+    """count records with no ALT one position apart from 1,000, raising when they are read
+    for longer than seconds, so that a run that takes too long fails without running on."""
+    began = time.perf_counter()
+    for position in range(1000, 1000 + count):
+        if time.perf_counter() - began > seconds:
+            raise AssertionError(f"{position - 1000} records read in {seconds} s")
+        yield make_no_alt(position, 1, line_number=position)
+
+
+@pytest.mark.slow
+def test_records_with_no_alt_over_a_satellite_take_linear_time() -> None:
+    # 50,000 records over one satellite held by it: 2.56 s for 5,000 records and 10.11 s
+    # for 10,000 when every held record was checked again at each record, so about 250 s
+    # for these; read one at a time they take well under 5 s.
+    satellite = make_satellite(1000, 51_000)
+    snp_after = make_snp(51_100, line_number=60_000)
+    records_a = itertools.chain(make_records_with_no_alt_in_time(50_000, 5.0), (snp_after,))
+
+    loci = list(build_loci(records_a, iter(()), iter((satellite,)), CONTIGS))
+
+    assert loci == [make_locus(51_100, 51_101, (snp_after,))]
 
 
 # A property: build_loci against a slow version of doc/spec.md §5.3 written from its rules.
