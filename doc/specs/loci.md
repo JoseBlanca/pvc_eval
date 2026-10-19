@@ -260,7 +260,8 @@ It skips blank lines and lines that start with `#`, `track` or `browser`, as `re
 does, and uses the first three columns of the others, which are separated by tabs, as BED's are.
 Regions that overlap or lie next to each other are merged. A gzipped or bgzipped BED, known by its
 first two bytes, is read as `parse_vcf` reads a gzipped VCF, since GIAB's stratification BEDs come
-so (decided by the owner on 19 October 2026). It raises `PvcEvalInputError`, naming the file and
+so (decided by the owner on 19 October 2026). A UTF-8 byte-order mark at the start of the text is
+dropped, as `read_str_regions` drops it; kept, it would become part of the first contig's name. It raises `PvcEvalInputError`, naming the file and
 line and how to put it right, for a file that does not exist, is a directory, cannot be read or is
 not UTF-8 text once decompressed; for a BED with no line once blank, comment and header lines are
 skipped, since it would skip every locus without a word (decided by the owner on 19 October 2026);

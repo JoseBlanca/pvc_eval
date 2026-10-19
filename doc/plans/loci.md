@@ -180,6 +180,20 @@ and refuses), which `read_strata` shares.
 
 **What it stands on.** Milestone 3.
 
+- [ ] 5. A BED that starts with a byte-order mark
+
+Added on 19 October 2026, after the merge, for a fault the STR finder session found in
+`parse_bed`: a BED starting with a UTF-8 byte-order mark kept it on its first contig, so its first
+line was refused as an unknown contig.
+
+**The spec it builds.** `doc/specs/loci.md`, Regions: the leading byte-order mark is dropped.
+
+**Deliverables.** A plain and a gzipped BED, each starting with a byte-order mark, read like the
+same BED without it. Check: their tests in `tests/test_bed.py`, which fail on the commit before.
+The four checks of `python.md` pass.
+
+**What it stands on.** Milestone 4.
+
 ## The check of the whole plan
 
 The milestones' tests use small inputs. At the end, `build_loci` is run over the benchmark VCF of
