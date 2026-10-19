@@ -481,7 +481,11 @@ upper case, so its length is `locus.end - locus.start`; a test passes it as a st
 sample result is keyed by the sample's index in its file's header. Both raise `ValueError` for a
 ploidy other than 1 or 2, a phasing cap under 1, bases of another length than the locus, or a VCF
 genotype with another number of alleles than its file's ploidy, which means the records were
-read with another ploidy.
+read with another ploidy, and for a sample pair whose index is not one of a record's genotypes;
+each is a defect of the caller, and the caller reconciles each file with the ploidy it read it
+with. `Locus` raises `ValueError` when it is made with an end not after its start, a record on
+another contig, or a record with an ALT whose span is not within the locus (`doc/spec.md` §4);
+the loci build no such `Locus`, and a `Locus` built by hand is checked where it is made.
 
 ```python
 # pvc_eval.reconcile
