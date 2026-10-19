@@ -257,13 +257,18 @@ lies next to it.
 `read_regions` reads the BED whole, since BEDs such as GIAB's come sorted by contig name rather
 than in the `.fai`'s order. GIAB's benchmark regions for HG002 on GRCh38 hold about 300,000 lines.
 It skips blank lines and lines that start with `#`, `track` or `browser`, as `read_str_regions`
-does, and uses the first three columns of the others. Regions that overlap or lie next to each other
-are merged. It raises `PvcEvalInputError`, naming the file and line and how to put it right, for a
-line with fewer than three columns, a start or end that is not a whole number, or an end not after
-its start, and for a line on a contig the reference lacks. The last stops the run at the first such
+does, and uses the first three columns of the others, which are separated by tabs, as BED's are.
+Regions that overlap or lie next to each other are merged. It raises `PvcEvalInputError`, naming the
+file and line and how to put it right, for a file that does not exist, is a directory, cannot be
+read or is not UTF-8 text (a gzipped BED among them); for a line with fewer than three columns,
+saying when its columns are separated by spaces instead; for a start or end that is not a whole
+number, or an end not after its start; and for a line on a contig the reference lacks. The values
+of the file are quoted in the messages, so that a character the user cannot see shows. The last stops the run at the first such
 line even when the reference was cut to one chromosome and the BED is GIAB's, which covers chr1–22,
 X and Y: the message names the contig and says to keep only the reference's contigs in the BED, and
-how (decided by the owner on 19 October 2026, over skipping such lines with a warning).
+how (decided by the owner on 19 October 2026, over skipping such lines with a warning). When the
+BED's names differ from the reference's only in style, `1` against `chr1`, the message says to
+rename them, since keeping only the reference's contigs would then keep no line.
 
 `select_loci` yields, in their order, the loci that share a position with the regions, and every
 locus when `regions` is None.
@@ -318,10 +323,12 @@ the error comes at the first locus that holds an untyped region, after the rows 
 written (decided by the owner on 19 October 2026, over reading the BED once before the comparison
 to find an untyped line before any row is written).
 
-With a BED, `read_strata` reads it whole, as `read_regions` does, with the same refusals, plus one
-for a line with no fourth column. `Strata.stratum` gives the classes of the intervals that share at
-least one position with the locus, each once, in alphabetical order and joined with `,`, so the same
-classes always give the same text. It gives `.` when the locus shares no position with any of them.
+With a BED, `read_strata` reads it whole, as `read_regions` does, with the same refusals. The
+fourth column is the class, with the spaces at its ends removed. It also refuses a line whose class
+is missing or empty, and one whose class holds a `,`, which the table could not tell from two
+classes. `Strata.stratum` gives the classes of the intervals that share at least one position with
+the locus, each once, sorted by code point and joined with `,`, so the same classes always give the
+same text: `Segdup` comes before `homopolymer`. It gives `.` when the locus shares no position with any of them.
 A locus at 100–120 under `homopolymer` at 90–101 and `segdup` at 115–500 is `homopolymer,segdup`.
 
 ```python
