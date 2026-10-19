@@ -338,6 +338,15 @@ VCF record whose REF differs from the reference at its position, compared withou
 the line, the position, the REF and the reference's bases there: a VCF that disagrees with its
 reference was made on another one, or is damaged, and no comparison over it can be trusted (decided
 by the owner on 19 October 2026, in place of marking the record and making its loci invalid).
+Two bases agree when the bases their IUPAC codes stand for overlap: `N` agrees with any base, `R`
+with `A` or `G`, `A` only with codes that include `A`; so a reference that writes `M` or `N` at a
+site where the VCF has a plain base, as some references and callers do, is no difference, while a
+VCF made on another build still is (decided by the owner on 19 October 2026). The error says how
+many records of the file agreed with the reference before the failing one, which tells a wrong
+reference (none) from a damaged line (many). A record with a symbolic allele (§9) is checked only
+for its contig and its order, not for its REF or its length, since it is skipped and nothing is
+compared from it (decided by the owner on 19 October 2026); a file made on another reference still
+stops at its first record with plain alleles.
 
 **Normalising.** Remove the bases all of a VCF record's alleles but `*` share at the right end,
 then at the left end, keeping at least one base in every allele (the VCF anchor convention). A
