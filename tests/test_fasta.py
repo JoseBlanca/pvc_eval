@@ -4,7 +4,6 @@ import random
 import re
 import shutil
 import subprocess
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -35,7 +34,7 @@ def write_fasta(directory: Path, name: str, fasta: bytes, fai: str | None) -> Pa
     return path
 
 
-def fai_of(contigs: dict[str, str], line_width: int, line_end: str) -> tuple[bytes, str]:
+def fasta_and_fai(contigs: dict[str, str], line_width: int, line_end: str) -> tuple[bytes, str]:
     """A FASTA of the contigs, wrapped at line_width, and the .fai samtools would write."""
     fasta = ""
     fai_lines = []
@@ -162,19 +161,20 @@ def test_bases_agree_with_a_fai_made_by_samtools(tmp_path: Path) -> None:
     line_end=st.sampled_from(["\n", "\r\n"]),
 )
 def test_every_region_is_the_upper_case_slice_of_its_contig(
-    sequences: list[str], line_width: int, line_end: str
+    tmp_path_factory: pytest.TempPathFactory, sequences: list[str], line_width: int, line_end: str
 ) -> None:
+    # tmp_path_factory and not tmp_path, which hypothesis refuses: tmp_path would be one
+    # directory for all the examples.
     contigs = {f"contig{i}": sequence for i, sequence in enumerate(sequences)}
-    fasta, fai = fai_of(contigs, line_width, line_end)
-    with tempfile.TemporaryDirectory() as directory:
-        path = write_fasta(Path(directory), "ref.fa", fasta, fai)
-        with IndexedFasta(path) as indexed_fasta:
-            assert indexed_fasta.contigs == tuple(contigs)
-            for name, sequence in contigs.items():
-                assert indexed_fasta.length(name) == len(sequence)
-                for start in range(len(sequence) + 1):
-                    for end in range(start, len(sequence) + 1):
-                        assert indexed_fasta.bases(name, start, end) == sequence[start:end].upper()
+    fasta, fai = fasta_and_fai(contigs, line_width, line_end)
+    path = write_fasta(tmp_path_factory.mktemp("example"), "ref.fa", fasta, fai)
+    with IndexedFasta(path) as indexed_fasta:
+        assert indexed_fasta.contigs == tuple(contigs)
+        for name, sequence in contigs.items():
+            assert indexed_fasta.length(name) == len(sequence)
+            for start in range(len(sequence) + 1):
+                for end in range(start, len(sequence) + 1):
+                    assert indexed_fasta.bases(name, start, end) == sequence[start:end].upper()
 
 
 def test_threads_reading_one_indexed_fasta_get_the_bases_one_thread_gets(tmp_path: Path) -> None:
@@ -182,7 +182,7 @@ def test_threads_reading_one_indexed_fasta_get_the_bases_one_thread_gets(tmp_pat
     contigs = {
         f"chr{i}": "".join(rng.choices("ACGTacgtN", k=rng.randint(2000, 5000))) for i in range(4)
     }
-    fasta, fai = fai_of(contigs, 60, "\n")
+    fasta, fai = fasta_and_fai(contigs, 60, "\n")
     path = write_fasta(tmp_path, "ref.fa", fasta, fai)
     num_threads, regions_per_thread = 8, 200
     regions = []
@@ -446,3 +446,17 @@ def test_a_closed_indexed_fasta_reads_nothing(one_fa: Path) -> None:
         pass
     with pytest.raises(OSError, match="Bad file descriptor"):
         indexed_fasta.bases("chr1", 0, 3)
+
+
+def test_closing_twice_leaves_a_file_opened_between_alone(one_fa: Path, tmp_path: Path) -> None:
+    indexed_fasta = IndexedFasta(one_fa)
+    indexed_fasta.close()
+    other_path = tmp_path / "other.txt"
+    other_path.write_bytes(b"other file")
+    # Likely to get the descriptor number the IndexedFasta had.
+    other_fd = os.open(other_path, os.O_RDONLY)
+    try:
+        indexed_fasta.close()
+        assert os.pread(other_fd, 10, 0) == b"other file"
+    finally:
+        os.close(other_fd)

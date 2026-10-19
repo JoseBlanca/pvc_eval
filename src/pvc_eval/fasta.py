@@ -14,7 +14,7 @@ from typing import Self
 from pvc_eval.errors import PvcEvalInputError
 
 GZIP_MAGIC = b"\x1f\x8b"  # the first two bytes of a gzip or bgzip file
-NUM_FAI_COLUMNS = 5  # name, length, offset, bases per line, bytes per line
+FAI_COLUMNS = ("name", "length", "offset", "bases per line", "bytes per line")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -182,18 +182,16 @@ def _read_fai(fasta: Path, fasta_size: int) -> dict[str, _FaiLine]:
 def _parse_fai_line(line: str, line_number: int, where: str, remedy: str) -> tuple[str, _FaiLine]:
     """The contig name of a `.fai` line and where its bases are."""
     columns = line.split("\t")
-    if len(columns) != NUM_FAI_COLUMNS:
+    if len(columns) != len(FAI_COLUMNS):
         raise PvcEvalInputError(
-            f"{where} has {len(columns)} columns where a .fai has {NUM_FAI_COLUMNS}:"
-            f" name, length, offset, bases per line, bytes per line.{remedy}"
+            f"{where} has {len(columns)} columns where a .fai has {len(FAI_COLUMNS)}:"
+            f" {', '.join(FAI_COLUMNS)}.{remedy}"
         )
     name = columns[0]
     if not name:
         raise PvcEvalInputError(f"{where} has no contig name.{remedy}")
     numbers = []
-    for column, value in zip(
-        ("length", "offset", "bases per line", "bytes per line"), columns[1:], strict=True
-    ):
+    for column, value in zip(FAI_COLUMNS[1:], columns[1:], strict=True):
         if not value.isdecimal():
             raise PvcEvalInputError(
                 f"{where} has {value} as its {column}, which is not a whole number of 0 or"
