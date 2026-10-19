@@ -169,8 +169,8 @@ def test_strata_from_an_unsorted_bed_with_overlapping_lines(tmp_path: Path) -> N
 
 @pytest.mark.parametrize(
     "line",
-    ["chr1\t100\t200", "chr1\t100\t200\t"],
-    ids=["no-fourth-column", "empty-fourth-column"],
+    ["chr1\t100\t200", "chr1\t100\t200\t", "chr1\t100\t200\t  "],
+    ids=["no-fourth-column", "empty-fourth-column", "spaces-only"],
 )
 def test_read_strata_refuses_a_line_with_no_class(tmp_path: Path, line: str) -> None:
     path = write_bed(tmp_path, ["chr1\t0\t10\tsegdup", line])
@@ -179,9 +179,37 @@ def test_read_strata_refuses_a_line_with_no_class(tmp_path: Path, line: str) -> 
         read_strata(path, _CONTIGS)
 
     assert str(raised.value) == (
-        f"{path}, line 2: has no fourth column, which names the class of its interval. Give"
-        " each line of the --strata BED its class and run again."
+        f"{path}, line 2: has no class: its fourth column, which names the class of its"
+        " interval, is missing or empty. Give each line of the --strata BED its class and"
+        " run again."
     )
+
+
+def test_read_strata_refuses_a_class_holding_a_comma(tmp_path: Path) -> None:
+    path = write_bed(tmp_path, ["chr1\t0\t10\tsegdup", "chr1\t100\t200\tlow,map"])
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        read_strata(path, _CONTIGS)
+
+    assert str(raised.value) == (
+        f"{path}, line 2: the class 'low,map' holds a comma, which the table puts between"
+        " the classes of a locus. Replace the commas in the fourth column of the --strata"
+        " BED, for instance with `_`, and run again."
+    )
+
+
+def test_strata_removes_the_spaces_at_the_ends_of_a_class(tmp_path: Path) -> None:
+    lines = ["chr1\t0\t10\tsegdup ", "chr1\t20\t30\t segdup"]
+    strata = read_strata(write_bed(tmp_path, lines), _CONTIGS)
+
+    assert strata.stratum(Locus("chr1", 0, 30, (), (), ())) == "segdup"
+
+
+def test_strata_sorts_the_classes_by_code_point(tmp_path: Path) -> None:
+    lines = ["chr1\t0\t10\thomopolymer", "chr1\t20\t30\tSegdup"]
+    strata = read_strata(write_bed(tmp_path, lines), _CONTIGS)
+
+    assert strata.stratum(Locus("chr1", 0, 30, (), (), ())) == "Segdup,homopolymer"
 
 
 def test_strata_holds_less_than_200_bytes_per_line(tmp_path: Path) -> None:

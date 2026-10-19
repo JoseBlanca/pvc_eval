@@ -12,7 +12,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from pvc_eval.bed import parse_bed
+from pvc_eval.bed import BedLine, parse_bed
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.locus import Locus
 from pvc_eval.regions import Regions
@@ -80,17 +80,31 @@ def read_strata(path: Path, contigs: Sequence[str]) -> Strata:
     contigs: the reference's contig names.
 
     Raises PvcEvalInputError as parse_bed does, a line on a contig the reference lacks
-    among them, and for a line with no fourth column.
+    among them, and for a line whose class is missing, empty or holds a `,`.
     """
     spans_by_class: defaultdict[str, defaultdict[str, list[tuple[int, int]]]] = defaultdict(
         lambda: defaultdict(list)
     )
     for bed_line in parse_bed(path, contigs):
-        if bed_line.name is None:
-            raise PvcEvalInputError(
-                f"{path}, line {bed_line.line_number}: has no fourth column, which names the"
-                " class of its interval. Give each line of the --strata BED its class and run"
-                " again."
-            )
-        spans_by_class[bed_line.name][bed_line.contig].append((bed_line.start, bed_line.end))
+        name = _parse_class(bed_line, path)
+        spans_by_class[name][bed_line.contig].append((bed_line.start, bed_line.end))
     return Strata({name: Regions(spans) for name, spans in spans_by_class.items()})
+
+
+def _parse_class(bed_line: BedLine, path: Path) -> str:
+    """The class of a line of a --strata BED, its fourth column without the spaces at its
+    ends."""
+    where = f"{path}, line {bed_line.line_number}:"
+    name = "" if bed_line.name is None else bed_line.name.strip(" ")
+    if not name:
+        raise PvcEvalInputError(
+            f"{where} has no class: its fourth column, which names the class of its interval,"
+            " is missing or empty. Give each line of the --strata BED its class and run again."
+        )
+    if "," in name:
+        raise PvcEvalInputError(
+            f"{where} the class {name!r} holds a comma, which the table puts between the"
+            " classes of a locus. Replace the commas in the fourth column of the --strata BED,"
+            " for instance with `_`, and run again."
+        )
+    return name
