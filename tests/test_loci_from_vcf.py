@@ -192,9 +192,10 @@ def test_insertion_shares_a_locus_with_a_record_on_the_base_after_its_anchor(
     assert loci == [Locus("chr1", 9, 11, (insertion_a, snp_a), (complex_b,), ())]
 
 
-# An AT repeat of 10 copies at 0-based 25-45, with 25 bases on each side that the STR finder
-# finds no repeat in. Its segments, found with segment_contig at 6d179b0 on the branch
-# str-finder, are a generic region at 0-25, the STR at 25-45 and a generic region at 45-70.
+# An AT repeat of 10 copies at 26-45, 1-based, with 25 bases on each side that the STR
+# finder finds no repeat in. Its segments, found with segment_contig at 6d179b0 on the
+# branch str-finder, are, 0-based and half-open, a generic region at (0, 25), the STR at
+# (25, 45) and a generic region at (45, 70).
 AT_REPEAT_REFERENCE = "GCGTCAGCTGCAGTCCGTGAGCATG" + "AT" * 10 + "CGGTACCTGAGGCTCAGCGTGCAAG"
 
 
@@ -207,8 +208,9 @@ def test_insertion_before_an_at_repeat_found_by_segment_contig_holds_the_repeat(
     if segment_contig is None:
         pytest.skip("segment_contig is not in pvc_eval.segments yet")
 
-    # `25 G GAT` inserts AT after the G at 25, before the repeat, and slides right through
-    # it: its span runs from its anchor to the C after the repeat, 25-46.
+    # 1-based, `25 G GAT` inserts AT after the G at 25, before the repeat, and slides right
+    # through it: its span runs from its anchor to the C after the repeat, 25-46, which is
+    # (24, 46) 0-based.
     with IndexedFasta(write_reference(tmp_path, AT_REPEAT_REFERENCE)) as reference:
         loci = find_loci(
             tmp_path,
