@@ -329,43 +329,81 @@ def trim(record: VcfRecord) -> VcfRecord:
 
 
 def left_align(record: VcfRecord, contig_sequence: str) -> VcfRecord:
-    """The trimmed record slid left while the base it uncovers equals the base it drops,
-    as `bcftools norm` and vt do.
+    """The record with its indel slid left while the base it uncovers equals the base it
+    drops, as `bcftools norm` and vt do, and written with one shared base on its left.
 
-    A record moves only when every ALT is an indel and every ALT moves by the same
-    number of bases; otherwise it stays where it is: a SNP or a complex ALT cannot move,
-    and ALTs that would move apart cannot be written as one record (§5.2).
+    An ALT is an indel when, without the bases it shares with REF at both ends, one of
+    the two is empty, whichever side the shared bases were on. A record moves only when
+    every ALT is an indel and every ALT ends at the same place; otherwise it stays where
+    it is: a SNP or a complex ALT cannot move, and ALTs that would move apart cannot be
+    written as one record (§5.2). An indel at the first base of the contig, with no base
+    left of it, stays too.
     """
-    ref = record.alleles[0]
-    alts = _sequences(record.alleles[1:])
-    if not alts:
+    sequences = _sequences(record.alleles)
+    if len(sequences) < 2:
         return record
-    shifts = {_indel_shift(record.start, ref, alt, contig_sequence) for alt in alts}
-    if len(shifts) != 1:
+    ref = sequences[0]
+    alts = sequences[1:]
+    indels = [
+        indel
+        for alt in alts
+        if (indel := _leftmost_indel(record.start, ref, alt, contig_sequence)) is not None
+    ]
+    positions = {indel.position for indel in indels}
+    if len(indels) != len(alts) or len(positions) != 1:
         return record
-    shift = shifts.pop()
-    if not shift:
+    position = positions.pop()
+    if position == 0:
         return record
-    new_start = record.start - shift
-    flank = contig_sequence[new_start : record.start]
-    moved = [(flank + allele)[: len(allele)] for allele in _sequences(record.alleles)]
-    return trim(replace(record, start=new_start, alleles=_put_back(record.alleles, moved)))
+    # The anchor base is at position - 1, and REF covers the longest deletion.
+    end = position + max(indel.num_deleted for indel in indels)
+    anchor = contig_sequence[position - 1]
+    moved_alts = [
+        anchor + indel.inserted + contig_sequence[position + indel.num_deleted : end]
+        for indel in indels
+    ]
+    alleles = [contig_sequence[position - 1 : end], *moved_alts]
+    return replace(record, start=position - 1, alleles=_put_back(record.alleles, alleles))
 
 
-def _indel_shift(start: int, ref: str, alt: str, contig_sequence: str) -> int | None:
-    """How many bases left the indel ref -> alt can slide; None for a SNP or a complex
-    ALT, which cannot move."""
-    start, (ref, alt) = _trim(start, [ref, alt])
-    is_indel = len(ref) != len(alt) and min(len(ref), len(alt)) == 1 and ref[0] == alt[0]
-    if not is_indel:
+@dataclass(frozen=True, slots=True)
+class _Indel:
+    """Bases inserted before, or deleted from, a 0-based position of the contig."""
+
+    position: int
+    inserted: str
+    num_deleted: int
+
+
+def _leftmost_indel(start: int, ref: str, alt: str, contig_sequence: str) -> _Indel | None:
+    """The indel ref -> alt at its leftmost position that keeps a base on its left, or at
+    0 when it is at the first base and cannot move; None for a SNP or a complex ALT.
+
+    The shared bases are removed from the left first, so that the indel starts as far
+    right as the record allows, and sliding left reaches its leftmost place from there.
+    """
+    num_prefix = _num_shared(ref, alt)
+    ref, alt = ref[num_prefix:], alt[num_prefix:]
+    num_suffix = _num_shared(ref[::-1], alt[::-1])
+    ref, alt = ref[: len(ref) - num_suffix], alt[: len(alt) - num_suffix]
+    if bool(ref) == bool(alt):
         return None
-    event = max(ref, alt, key=len)[1:]  # the inserted or deleted bases, after the anchor
-    event_start = start + 1
-    # Slide while an anchor base stays to the left (event_start - 2 >= 0).
-    while event_start > 1 and contig_sequence[event_start - 1] == event[-1]:
-        event = contig_sequence[event_start - 1] + event[:-1]
-        event_start -= 1
-    return start - (event_start - 1)
+    event = ref or alt  # the inserted or deleted bases
+    position = start + num_prefix
+    while position > 1 and contig_sequence[position - 1] == event[-1]:
+        event = contig_sequence[position - 1] + event[:-1]
+        position -= 1
+    return _Indel(
+        position=position, inserted=event if alt else "", num_deleted=len(event) if ref else 0
+    )
+
+
+def _num_shared(first: str, second: str) -> int:
+    """How many bases two sequences share at their start."""
+    for index, (base, other_base) in enumerate(zip(first, second, strict=False)):
+        if base != other_base:
+            return index
+    return min(len(first), len(second))
 
 
 def _trim(start: int, alleles: Sequence[str]) -> tuple[int, list[str]]:

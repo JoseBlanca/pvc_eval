@@ -47,6 +47,8 @@ def test_trim_removes_shared_bases_and_keeps_one(
         (DINUCLEOTIDE, make_record(4, "ACA", "A"), (0, ("GCA", "G"))),
         (HOMOPOLYMER, make_record(2, "AAA", "AA", "A"), (0, ("GAA", "GA", "G"))),
         (HOMOPOLYMER, make_record(3, "AA", "A", "*"), (0, ("GA", "G", "*"))),
+        # The A at 5 is deleted, written with the G on its right as the shared base.
+        ("TTGAAAGCT", make_record(5, "AG", "G"), (2, ("GA", "G"))),
     ],
     ids=[
         "deletion_in_homopolymer",
@@ -54,6 +56,7 @@ def test_trim_removes_shared_bases_and_keeps_one(
         "deletion_in_dinucleotide_repeat",
         "two_alts_moving_alike",
         "spanning_deletion_kept",
+        "deletion_anchored_on_the_right",
     ],
 )
 def test_indel_slides_to_the_left_end_of_its_repeat(
@@ -123,3 +126,56 @@ def test_normalising_twice_changes_nothing(case: tuple[str, VcfRecord]) -> None:
     once = normalise(record, contig)
 
     assert placed(normalise(once, contig)) == placed(once)
+
+
+@st.composite
+def contig_and_spelt_indel(draw: st.DrawFn) -> tuple[str, VcfRecord, str]:
+    """A contig, one indel spelt with its shared base on the left, on the right, or with
+    shared bases on both sides, and the haplotype it gives."""
+    contig = draw(st.text(alphabet="AC", min_size=4, max_size=30))
+    if draw(st.booleans()):
+        # Insert before position, which keeps a base on its left and on its right.
+        position = draw(st.integers(min_value=1, max_value=len(contig) - 1))
+        num_deleted = 0
+        inserted = draw(st.text(alphabet="AC", min_size=1, max_size=6))
+    else:
+        position = draw(st.integers(min_value=1, max_value=len(contig) - 2))
+        num_deleted = draw(st.integers(min_value=1, max_value=len(contig) - 1 - position))
+        inserted = ""
+    after = position + num_deleted
+    spelling = draw(st.sampled_from(["left", "right", "both"]))
+    if spelling == "left":
+        num_left, num_right = 1, 0
+    elif spelling == "right":
+        num_left, num_right = 0, 1
+    else:
+        num_left = draw(st.integers(min_value=1, max_value=position))
+        num_right = draw(st.integers(min_value=1, max_value=len(contig) - after))
+    start = position - num_left
+    ref = contig[start : after + num_right]
+    alt = contig[start:position] + inserted + contig[after : after + num_right]
+    haplotype = contig[:position] + inserted + contig[after:]
+    return contig, make_record(start, ref, alt), haplotype
+
+
+def leftmost_anchored(contig: str, haplotype: str) -> tuple[int, tuple[str, ...]]:
+    """By brute force: the first start whose indel, written with one shared base on the
+    left, gives the haplotype."""
+    size = len(haplotype) - len(contig)
+    for start in range(len(contig)):
+        if size < 0:
+            ref, alt = contig[start : start + 1 - size], contig[start]
+        else:
+            ref, alt = contig[start], contig[start] + haplotype[start + 1 : start + 1 + size]
+        if contig[:start] + alt + contig[start + len(ref) :] == haplotype:
+            return start, (ref, alt)
+    raise AssertionError("no start gives the haplotype")
+
+
+@given(contig_and_spelt_indel())
+def test_normalised_indel_is_at_its_leftmost_anchored_place(
+    case: tuple[str, VcfRecord, str],
+) -> None:
+    contig, record, haplotype = case
+
+    assert placed(normalise(record, contig)) == leftmost_anchored(contig, haplotype)
