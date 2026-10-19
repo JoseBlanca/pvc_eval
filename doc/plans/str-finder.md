@@ -15,7 +15,9 @@ In: everything the spec names, `doc/specs/str_finder.md` and `doc/specs/str_find
 Out:
 
 - The measurement of time and memory on GRCh38, and any faster step 1, numpy among them. They come
-  after this plan, with the `performance` skill, as the brief for this port says. This plan holds the
+  after this plan, with the `performance` skill, as the brief for this port says.
+- The comparison with pvc over GRCh38. It comes after the performance work (the owner, 19 October
+  2026); the spec, "The same check over GRCh38", holds what it needs. This plan holds the
   finder to one bound of its own, in milestone 1.
 - Threads in `str-regions` (the spec's "Not in this spec").
 - `compare` and the loci, which read the segments. Another session builds them against
@@ -142,29 +144,30 @@ wrong; the literals of the worked cases, which came from pvc, guard it.
 
 - [ ] 5. The whole-port check against pvc
 
-**What it gives.** The check of `doc/specs/str_finder.md`, "The whole-port check", and its first run.
+**What it gives.** The check of `doc/specs/str_finder.md`, "The whole-port check", on generated
+contigs and slices of GRCh38, and its first run.
 
 **The spec it builds.** That section.
 
 **Deliverables.**
 
-- The test, marked `slow`, skipped with a message naming what is missing. Check: with none of
-  `PVC_EVAL_PVC`, `PVC_EVAL_GRCH38` and `PVC_EVAL_GIAB_BED` set, `uv run pytest -m slow -q -rs` reports it skipped and names all three.
-- pvc built at bbcc9f4 and its GRCh38 catalogue built beside links to the FASTA, in a scratch
-  directory, as the spec says; pvc's repository untouched. Check: `pvc dev type-regions --help` runs,
-  and `git -C /Users/jose/devel/pop_var_caller status --short` shows nothing new.
-- The first run, with its result: identical, or the differences, each traced to the step that makes
-  it and fixed, with a test of its own, before the milestone is done. Where pvc's code and the spec
-  disagree, the spec is corrected first, in a commit of its own, as the `spec` skill says, and the
-  owner is asked when the correction changes a segment. Check: the test passes, and the
-  report gives the time it took and the number of STR regions compared.
+- pvc built at bbcc9f4 from `git archive` into a scratch directory, as the spec says. Check: `pvc dev
+  type-regions --help` runs, and `git -C /Users/jose/devel/pop_var_caller status --short` shows nothing
+  new.
+- The test, marked `slow`, over the 600 generated contigs at both settings and over the slices of
+  GRCh38. Check: with neither `PVC_EVAL_PVC` nor `PVC_EVAL_GRCH38` set, `uv run pytest -m slow -q -rs`
+  reports each part skipped and names what is missing; with both set, it compares, and the slices
+  hold each of the three types.
+- The first run: identical, or the differences, each traced to the step that makes it and fixed, with
+  a test of its own, before the milestone is done. Where pvc's code and the spec disagree, the spec is
+  corrected first, in a commit of its own, as the `spec` skill says, and the owner is asked when the
+  correction changes a segment. Check: the test passes, and the report gives how long it took and how
+  many STR regions it compared.
 
-**What stands on it.** Milestones 1 to 4; about 22 GB of memory for the catalogue build with four
-threads, which the review measured.
-
-**What could go wrong.** The run of pvc_eval over chromosomes 1 to 22 may take hours in pure Python.
-If it takes more than 8 hours, the session stops and brings the owner the time per contig,
-rather than going on.
+**What could go wrong.** Slices too small to hold a satellite or a bundle, so that a step is never
+compared; the assertion that each type appears guards it. Generated contigs whose planted repeats
+never come near each other or a contig end; the generator plants them so, and the test counts the
+bundles and the candidates dropped at step 2 and asserts there are some.
 
 ## At the end
 
