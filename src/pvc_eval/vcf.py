@@ -598,7 +598,8 @@ def _find_key_index(keys: list[str], key: str) -> int:
 
     VCF does not allow a key twice; when it is, the last one counts, as it did when each
     sample was read into a dict. Unlike the dict, a sample that drops that last value has
-    none for the key, even when it has a value at an earlier copy.
+    none for the key, even when it has a value at an earlier copy; so a GQ that is not a
+    number at that earlier copy is no longer counted as taken as absent.
     """
     for index in range(len(keys) - 1, -1, -1):
         if keys[index] == key:
