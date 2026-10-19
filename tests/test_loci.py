@@ -708,9 +708,13 @@ def make_loci_over_records_with_no_alt(count: int) -> Iterator[Locus]:
 
 
 def test_records_with_no_alt_are_not_kept_once_passed() -> None:
+    # 1,000 against 10,000 first, so that a build_loci that keeps what it passed fails
+    # in seconds, before the time of the larger run grows with the square of what it keeps.
+    peak_1_000 = find_peak_memory(make_loci_over_records_with_no_alt, 1_000)
     peak_10_000 = find_peak_memory(make_loci_over_records_with_no_alt, 10_000)
-    peak_100_000 = find_peak_memory(make_loci_over_records_with_no_alt, 100_000)
+    assert abs(peak_10_000 - peak_1_000) < 0.1 * peak_1_000, (peak_1_000, peak_10_000)
 
+    peak_100_000 = find_peak_memory(make_loci_over_records_with_no_alt, 100_000)
     assert abs(peak_100_000 - peak_10_000) < 0.1 * peak_10_000, (peak_10_000, peak_100_000)
     assert list(make_loci_over_records_with_no_alt(100_000)) == [
         make_locus(
@@ -728,9 +732,13 @@ def make_loci_over_snps_and_str_regions(count: int) -> Iterator[Locus]:
 
 
 def test_str_regions_are_not_kept_once_passed() -> None:
+    # 1,000 against 10,000 first, so that a build_loci that keeps what it passed fails
+    # in seconds, before the time of the larger run grows with the square of what it keeps.
+    peak_1_000 = find_peak_memory(make_loci_over_snps_and_str_regions, 1_000)
     peak_10_000 = find_peak_memory(make_loci_over_snps_and_str_regions, 10_000)
-    peak_100_000 = find_peak_memory(make_loci_over_snps_and_str_regions, 100_000)
+    assert abs(peak_10_000 - peak_1_000) < 0.1 * peak_1_000, (peak_1_000, peak_10_000)
 
+    peak_100_000 = find_peak_memory(make_loci_over_snps_and_str_regions, 100_000)
     assert abs(peak_100_000 - peak_10_000) < 0.1 * peak_10_000, (peak_10_000, peak_100_000)
 
 
