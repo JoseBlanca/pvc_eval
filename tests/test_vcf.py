@@ -1063,6 +1063,19 @@ def test_two_dots_read_with_ploidy_1_are_missing(tmp_path: Path, reference: Inde
     )
 
 
+def test_sample_without_gt_read_with_ploidy_1_has_its_haplotype_missing(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGQ:PS\t30:7\t.:.\n")
+
+    (record,) = parse_vcf(path, reference, ploidy=1)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(MISSING,), phased=False, phase_set="7", quality=30),
+        VcfGenotype(alleles=(MISSING,), phased=False, phase_set=None, quality=None),
+    )
+
+
 def test_one_dot_read_with_ploidy_2_is_missing_on_both_haplotypes(
     tmp_path: Path, reference: IndexedFasta
 ) -> None:
