@@ -27,7 +27,9 @@ import random
 import subprocess
 from collections import Counter
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -57,9 +59,8 @@ _GENERATED_CONTIGS = 600
 # The stretches of GRCh38 written as contigs of their own, 0-based and half-open. The
 # first holds chr1's first 10,000 bases of N, its telomere of (CCCTAA) right after them,
 # and three gaps of 50,000 N, so that runs of N meet repeats; the other two, stretches of
-# ordinary sequence picked by position, hold no N. Run on 19
-# October 2026, the three together held 1,928 STR segments, 138 STR bundles and 23
-# satellites at the defaults, and each slice held each of the three types.
+# ordinary sequence picked by position, hold no N. On 19 October 2026 each slice held each
+# of the three types of STR region.
 _GRCH38_SLICES = (
     ("chr1", 0, 1_000_000),
     ("chr1", 10_000_000, 11_000_000),
@@ -67,25 +68,46 @@ _GRCH38_SLICES = (
 )
 
 
-_PVC = ("PVC_EVAL_PVC", "a pvc binary built at bbcc9f4, as this module's docstring says")
-_GRCH38 = ("PVC_EVAL_GRCH38", "the GRCh38 FASTA, with its .fai beside it")
+@dataclass(frozen=True, slots=True)
+class _EnvironmentPath:
+    """A path the test reads from the environment: its variable, what it names, and the
+    suffixes of the files that must be beside it."""
+
+    variable: str
+    what: str
+    beside: tuple[str, ...] = ()
 
 
-def _get_paths_from_environment(*needed: tuple[str, str]) -> list[Path]:
-    """The paths the variables name, in their order. Each is given as its name and what it
-    names; the test is skipped, naming each that is missing, when a variable is unset or
-    its file, or a FASTA's .fai, does not exist."""
+_PVC = _EnvironmentPath(
+    "PVC_EVAL_PVC", "a pvc binary built at bbcc9f4, as this module's docstring says"
+)
+_GRCH38 = _EnvironmentPath(
+    "PVC_EVAL_GRCH38", "the GRCh38 FASTA, with its .fai beside it", beside=(".fai",)
+)
+
+
+def _get_paths_from_environment(*needed: _EnvironmentPath) -> list[Path]:
+    """The paths the variables name, in their order. The test is skipped, naming each that
+    is missing, when a variable is unset, or its file or a file beside it does not
+    exist."""
     paths = []
     missing = []
-    for variable, what in needed:
+    for environment_path in needed:
+        variable, what = environment_path.variable, environment_path.what
         value = os.environ.get(variable)
-        path = Path(value) if value else None
-        if path is None:
+        if not value:
             missing.append(f"{variable} is not set; it names {what}")
-        elif not path.is_file():
+            continue
+        path = Path(value)
+        absent = [
+            f"{path.name}{suffix}"
+            for suffix in environment_path.beside
+            if not Path(f"{path}{suffix}").is_file()
+        ]
+        if not path.is_file():
             missing.append(f"{variable} names {path}, which does not exist; it names {what}")
-        elif variable == _GRCH38[0] and not Path(f"{path}.fai").is_file():
-            missing.append(f"{variable} names {path}, which has no {path.name}.fai beside it")
+        elif absent:
+            missing.append(f"{variable} names {path}, which has no {', '.join(absent)} beside it")
         else:
             paths.append(path)
     if missing:
@@ -101,7 +123,7 @@ def _write_fasta(path: Path, contigs: dict[str, str]) -> Path:
         fasta += f">{name}\n"
         fai += f"{name}\t{len(bases)}\t{len(fasta)}\t{len(bases)}\t{len(bases) + 1}\n"
         fasta += f"{bases}\n"
-    path.write_text(fasta, encoding="ascii")
+    path.write_text(fasta, encoding="utf-8")
     Path(f"{path}.fai").write_text(fai, encoding="utf-8")
     return path
 
@@ -165,42 +187,52 @@ def _make_grch38_slices(grch38: Path) -> dict[str, str]:
         }
 
 
-def _build_catalogue(pvc: Path, fasta: Path) -> None:
+def _run_command(command: Sequence[str | Path]) -> None:
+    """Run a program; the test fails with the command, its exit status and what it wrote
+    to stderr when the status is not 0."""
+    finished = subprocess.run(command, capture_output=True, text=True, check=False)
+    if finished.returncode != 0:
+        shown = " ".join(map(str, command))
+        pytest.fail(f"{shown} exited with status {finished.returncode}:\n{finished.stderr}")
+
+
+def _make_catalogue(pvc: Path, fasta: Path) -> None:
     """pvc's repeat catalogue, beside the FASTA, at its defaults."""
-    subprocess.run(
-        [pvc, "repeat-catalog", "--reference", fasta, "--quiet"], check=True, capture_output=True
-    )
+    _run_command([pvc, "repeat-catalog", "--reference", fasta, "--quiet"])
 
 
-def _read_pvc_rows(pvc: Path, fasta: Path, output: Path, options: Sequence[str]) -> list[str]:
-    """The STR regions of `pvc dev type-regions`, as pvc_eval writes them: pvc's types
+def _find_pvc_str_regions(pvc: Path, fasta: Path, options: Sequence[str]) -> list[str]:
+    """The STR regions `pvc dev type-regions` gives, as pvc_eval writes them: pvc's types
     renamed, and the motif of an STR segment alone."""
-    subprocess.run(
-        [pvc, "dev", "type-regions", "--reference", fasta, "--output", output, "--quiet", *options],
-        check=True,
-        capture_output=True,
+    output = fasta.with_suffix(".pvc.bed")
+    _run_command(
+        [pvc, "dev", "type-regions", "--reference", fasta, "--output", output, "--quiet", *options]
     )
     rows = []
     for line in output.read_text(encoding="utf-8").splitlines():
         if line.startswith("#"):
             continue
-        contig, start, end, kind, motif = line.split("\t")[:5]
-        if kind == "generic":
+        contig, start, end, pvc_type, motif = line.split("\t")[:5]
+        if pvc_type == "generic":
             continue
-        region_type = _PVC_TYPES[kind]
+        region_type = _PVC_TYPES[pvc_type]
         shown_motif = motif if region_type == "str" else "."
         rows.append(f"{contig}\t{start}\t{end}\t{region_type}\t{shown_motif}")
     return rows
 
 
-def _read_pvc_eval_rows(fasta: Path, output: Path, options: Sequence[str]) -> list[str]:
+def _find_pvc_eval_str_regions(fasta: Path, options: Sequence[str]) -> list[str]:
+    """The STR regions `pvc_eval str-regions` gives with pvc's calling floors, as rows of
+    its BED."""
+    output = fasta.with_suffix(".pvc_eval.bed")
+    copy_floors = ",".join(map(str, _PVC_COPY_FLOORS))
     main(
         [
             "str-regions",
             "--reference",
             str(fasta),
             "--min-copies",
-            ",".join(map(str, _PVC_COPY_FLOORS)),
+            copy_floors,
             "--output",
             str(output),
             *options,
@@ -210,17 +242,15 @@ def _read_pvc_eval_rows(fasta: Path, output: Path, options: Sequence[str]) -> li
     return [line for line in lines if not line.startswith("#")]
 
 
-def _compare(pvc: Path, fasta: Path, options: Sequence[str]) -> Counter[str]:
-    """Check that both programs give the same STR regions of the FASTA, and count them by
-    type."""
-    pvc_rows = _read_pvc_rows(pvc, fasta, fasta.with_suffix(".pvc.bed"), options)
-    pvc_eval_rows = _read_pvc_eval_rows(fasta, fasta.with_suffix(".pvc_eval.bed"), options)
-    assert pvc_eval_rows == pvc_rows
-    return Counter(row.split("\t")[3] for row in pvc_rows)
+def _count_region_types(rows: Sequence[str]) -> Counter[str]:
+    return Counter(row.split("\t")[3] for row in rows)
 
 
-# A comparison input: the pvc binary, and a FASTA with pvc's catalogue beside it.
-type _Input = tuple[Path, Path]
+class _Input(NamedTuple):
+    """A comparison input: the pvc binary, and a FASTA with pvc's catalogue beside it."""
+
+    pvc: Path
+    fasta: Path
 
 
 @pytest.fixture(scope="module")
@@ -228,8 +258,8 @@ def generated_input(tmp_path_factory: pytest.TempPathFactory) -> _Input:
     (pvc,) = _get_paths_from_environment(_PVC)
     directory = tmp_path_factory.mktemp("generated")
     fasta = _write_fasta(directory / "generated.fa", _make_generated_contigs())
-    _build_catalogue(pvc, fasta)
-    return pvc, fasta
+    _make_catalogue(pvc, fasta)
+    return _Input(pvc=pvc, fasta=fasta)
 
 
 @pytest.fixture(scope="module")
@@ -237,8 +267,8 @@ def grch38_input(tmp_path_factory: pytest.TempPathFactory) -> _Input:
     pvc, grch38 = _get_paths_from_environment(_PVC, _GRCH38)
     directory = tmp_path_factory.mktemp("grch38")
     fasta = _write_fasta(directory / "slices.fa", _make_grch38_slices(grch38))
-    _build_catalogue(pvc, fasta)
-    return pvc, fasta
+    _make_catalogue(pvc, fasta)
+    return _Input(pvc=pvc, fasta=fasta)
 
 
 def test_generated_contigs_have_candidates_near_each_end_of_a_contig() -> None:
@@ -270,7 +300,10 @@ def test_generated_contigs_have_candidates_near_each_end_of_a_contig() -> None:
 def test_generated_contigs_give_the_str_regions_of_pvc(
     generated_input: _Input, setting: str
 ) -> None:
-    counts = _compare(*generated_input, _SETTINGS[setting])
+    options = _SETTINGS[setting]
+    pvc_rows = _find_pvc_str_regions(generated_input.pvc, generated_input.fasta, options)
+    assert _find_pvc_eval_str_regions(generated_input.fasta, options) == pvc_rows
+    counts = _count_region_types(pvc_rows)
     assert counts["str"] > 0
     assert counts["str-bundle"] > 0
     assert counts["satellite"] > 0
@@ -278,7 +311,10 @@ def test_generated_contigs_give_the_str_regions_of_pvc(
 
 @pytest.mark.parametrize("setting", _SETTINGS)
 def test_grch38_slices_give_the_str_regions_of_pvc(grch38_input: _Input, setting: str) -> None:
-    counts = _compare(*grch38_input, _SETTINGS[setting])
+    options = _SETTINGS[setting]
+    pvc_rows = _find_pvc_str_regions(grch38_input.pvc, grch38_input.fasta, options)
+    assert _find_pvc_eval_str_regions(grch38_input.fasta, options) == pvc_rows
+    counts = _count_region_types(pvc_rows)
     assert counts["str"] > 0
     assert counts["str-bundle"] > 0
     assert counts["satellite"] > 0
