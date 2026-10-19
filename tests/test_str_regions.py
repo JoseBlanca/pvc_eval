@@ -99,7 +99,8 @@ def _write_lines(path: Path, lines: Sequence[str]) -> Path:
 
 
 def _run(argv: Sequence[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, str]:
-    """The exit status of `pvc_eval` with these arguments, and what it wrote to stderr."""
+    """The exit status of `pvc_eval` with these arguments, and what it wrote to stderr. It
+    writes nothing to stdout."""
     try:
         main(argv)
     except SystemExit as exit_:
@@ -107,7 +108,9 @@ def _run(argv: Sequence[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, 
     else:
         status = 0
     assert isinstance(status, int)
-    return status, capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    return status, captured.err
 
 
 def _run_str_regions(
@@ -215,7 +218,8 @@ def test_the_installed_command_runs(tmp_path: Path) -> None:
 def test_a_region_that_cuts_an_str_region_writes_it_whole(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    regions = _write_lines(tmp_path / "regions.bed", ["four_a\t70\t75", "twice\t220\t300"])
+    # In an order that is not the .fai's, which the rows keep.
+    regions = _write_lines(tmp_path / "regions.bed", ["twice\t220\t300", "four_a\t70\t75"])
     lines = _run_str_regions(tmp_path, capsys, "--regions", str(regions))
     assert lines == [*_DEFAULT_HEADER, "four_a\t58\t80\tstr\tCA", "twice\t209\t231\tstr\tCA"]
 
@@ -443,6 +447,77 @@ def test_an_output_that_cannot_be_written_stops_the_run_before_segmenting(
     assert (status, stderr) == (1, f"{message}\n")
 
 
+def test_a_missing_fai_stops_the_run(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    fasta = _write_fasta(tmp_path, {"four_a": _FOUR_A})
+    Path(f"{fasta}.fai").unlink()
+    status, stderr = _run(
+        ["str-regions", "--reference", str(fasta), "--output", str(tmp_path / "str.bed")], capsys
+    )
+    assert (status, stderr) == (
+        1,
+        f"{fasta} has no index {fasta}.fai. Make it with `samtools faidx {fasta}` and run again.\n",
+    )
+
+
+def test_a_regions_bed_that_is_a_directory_stops_the_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fasta = _write_fasta(tmp_path, {"four_a": _FOUR_A})
+    regions = tmp_path / "regions.bed"
+    regions.mkdir()
+    status, stderr = _run(
+        [
+            *("str-regions", "--reference", str(fasta)),
+            *("--output", str(tmp_path / "str.bed"), "--regions", str(regions)),
+        ],
+        capsys,
+    )
+    assert (status, stderr) == (
+        1,
+        f"{regions} is a directory, not a BED file. Check its path and run again.\n",
+    )
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file without read permission")
+def test_a_regions_bed_that_cannot_be_read_stops_the_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fasta = _write_fasta(tmp_path, {"four_a": _FOUR_A})
+    regions = _write_lines(tmp_path / "regions.bed", ["four_a\t0\t10"])
+    regions.chmod(0)
+    status, stderr = _run(
+        [
+            *("str-regions", "--reference", str(fasta)),
+            *("--output", str(tmp_path / "str.bed"), "--regions", str(regions)),
+        ],
+        capsys,
+    )
+    assert (status, stderr) == (
+        1,
+        f"{regions} cannot be read: permission denied. Allow reading it and run again.\n",
+    )
+
+
+def test_copy_floors_that_are_not_numbers_get_a_usage_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A command line that cannot be parsed keeps argparse's usage message and exit status 2.
+    fasta = _write_fasta(tmp_path, {"four_a": _FOUR_A})
+    status, stderr = _run(
+        [
+            *("str-regions", "--reference", str(fasta), "--output", str(tmp_path / "str.bed")),
+            *("--min-copies", "5,a,4,4,4,3"),
+        ],
+        capsys,
+    )
+    assert status == 2
+    assert stderr.startswith("usage: pvc_eval str-regions ")
+    assert stderr.splitlines()[-1] == (
+        "pvc_eval str-regions: error: argument --min-copies: '5,a,4,4,4,3' is not whole numbers"
+        " separated by commas, such as 5,5,4,4,4,3"
+    )
+
+
 def test_an_empty_output_path_stops_the_run(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -663,6 +738,12 @@ def _make_str_regions_errors(bed: Path) -> list[tuple[str, list[str], str]]:
             "start_not_a_number",
             ["chr1\t1.5\t20"],
             f"{bed}, line 1: the start is '1.5', and it must be a whole number of 0 or"
+            f" more.{remedy}",
+        ),
+        (
+            "start_a_digit_not_ascii",
+            ["chr1\t\u0661\t20"],
+            f"{bed}, line 1: the start is '\u0661', and it must be a whole number of 0 or"
             f" more.{remedy}",
         ),
         (
