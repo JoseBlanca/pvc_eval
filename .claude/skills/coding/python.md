@@ -370,9 +370,10 @@ The command line catches it alone, prints its message to stderr and exits
 with 1. Anything else is a defect of pvc_eval and is left to rise with its
 traceback.
 
-What the spec calls invalid is not an error: a REF that disagrees with the
-reference, a malformed GT, contradicting VCF records. It becomes an outcome
-of the row, and the run goes on.
+What the spec calls invalid is not an error: a malformed or haploid GT,
+contradicting VCF records. It becomes an outcome of the row, and the run
+goes on. A REF that disagrees with the reference is an error that stops the
+run (decided by the owner on 19 October 2026, `doc/spec.md` §5.2).
 
 - No silent fallback: no `except` that returns `None`, `[]` or a default,
   no `dict.get(key, default)` where a missing key is a defect, no record
