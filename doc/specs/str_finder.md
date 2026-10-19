@@ -294,8 +294,10 @@ the `performance` skill. That measurement decides whether the finder needs numpy
 dependency and the owner's decision (`doc/spec.md` §5.1).
 
 **`read_str_regions(path, reference)`** reads a BED of STR regions: the one `str-regions` writes,
-or a user's. It skips blank lines and lines that start with `#`, `track` or `browser`. Each other
-line has the contig, start and end, 0-based and half-open, and may have two more columns. The
+or a user's. It reads the file as UTF-8, a byte-order mark at its start ignored. It skips lines
+that hold only spaces or tabs, lines that start with `#`, and lines whose first field is `track` or
+`browser` (a contig may be named `trackA`). Empty columns at the end of a line are no columns. Each
+other line has the contig, start and end, 0-based and half-open, and may have two more columns. The
 fourth is the region type, `str`, `str-bundle` or `satellite`. The fifth is the motif, which is
 upper-case A, C, G and T for `str` and `.` for the others. It yields one `GenomeSegment` per line.
 A line of three columns gives `region_type` `None` and `motif` `None`, as `doc/spec.md` §4 says. A
@@ -323,7 +325,7 @@ which keeps three columns.
 
 **`write_str_regions(reference, output, parameters, regions)`** does what the `str-regions` command
 does, below: it segments the contigs, keeps the STR regions that the requested regions overlap, or all
-of them when there are none, and writes the BED. The command calls it, and it is public because the
+of them when `regions` is `None` (no `--regions`), and writes the BED. The command calls it, and it is public because the
 `--regions` reader and the filter it uses are private to `pvc_eval.segments` (added on 19 October
 2026, during the build).
 
@@ -356,8 +358,9 @@ The BED:
 
 ```
 ##pvc_eval str-regions 0.1.0
-##copy_floors: 5,5,4,4,4,3
-…                                  one ##field: value line for each field of StrFinderParameters
+##scan_min_period: 1
+…                                  one ##field: value line for each field of StrFinderParameters,
+                                   in the order of its fields
 #chrom	start	end	type	motif
 chr1	10432	10470	str	CA
 chr1	10519	10601	str-bundle	.
@@ -368,12 +371,23 @@ The rows are in the order of the `.fai` and then by start, 0-based and half-open
 let a user see the parameters a cached BED was made with. It is written under `<output>.tmp` and
 renamed when complete, so that `compare --str-regions` never reads half a file.
 
-Errors, as `doc/spec.md` §3 and the `writing` skill say, through `PvcEvalInputError`:
+Errors, as `doc/spec.md` §3 and the `writing` skill say, through `PvcEvalInputError`, with exit
+status 1:
 
 - the reference or its `.fai` missing, which `IndexedFasta` reports;
 - an option value outside the table of the parameters;
-- a `--regions` line with a contig the `.fai` lacks, a start or end that is not a whole number, an
-  end not after its start, or an end past the contig's length.
+- a `--regions` file that is missing or cannot be read, and a `--regions` line with a contig the
+  `.fai` lacks, a start or end that is not a whole number, an end not after its start, or an end
+  past the contig's length;
+- an `--output` that cannot be written: a directory, a path through a file, a directory without
+  permission. These are checked before any contig is segmented, so that the user does not wait
+  through a run to learn it.
+
+A command line that cannot be parsed, an option missing or a value that is not a number, gets
+argparse's usage message and exit status 2, as for any program built on it.
+
+A `--regions` BED that holds no region writes a BED of the `##` and `#chrom` lines only, as
+`compare --regions` with such a file compares nothing.
 
 The `--regions` reader is a private function of `pvc_eval.segments`. `compare --regions` may share
 it once it is built.
