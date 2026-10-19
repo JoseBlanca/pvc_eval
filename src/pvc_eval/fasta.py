@@ -44,16 +44,21 @@ class IndexedFasta:
     manager that holds one open file descriptor and closes it on exit. Its reads do not
     depend on a file position, so several threads can read one IndexedFasta at once.
 
-    Raises PvcEvalInputError when the FASTA is compressed, when the `.fai` is missing, and
-    for a line of the `.fai` that is malformed or whose bases fall past the end of the
-    FASTA; FileNotFoundError when the FASTA itself is missing.
+    Raises PvcEvalInputError when the FASTA is missing or compressed, when the `.fai` is
+    missing or names no contig, and for a line of the `.fai` that is not UTF-8, is
+    malformed or puts bases past the end of the FASTA.
     """
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        with path.open("rb") as fasta:
-            magic = fasta.read(len(GZIP_MAGIC))
-            fasta_size = os.fstat(fasta.fileno()).st_size
+        try:
+            with path.open("rb") as fasta:
+                magic = fasta.read(len(GZIP_MAGIC))
+                fasta_size = os.fstat(fasta.fileno()).st_size
+        except FileNotFoundError:
+            raise PvcEvalInputError(
+                f"{path} does not exist. Check the path given to --reference, and run again."
+            ) from None
         if magic == GZIP_MAGIC:
             raise PvcEvalInputError(
                 f"{path} is compressed with gzip or bgzip, and pvc_eval reads only an"
@@ -143,13 +148,19 @@ def _read_fai(fasta: Path, fasta_size: int) -> dict[str, _FaiLine]:
     fai = Path(f"{fasta}.fai")
     remedy = f" Make the .fai again with `samtools faidx {fasta}` and run again."
     try:
-        text = fai.read_text(encoding="utf-8")
+        fai_bytes = fai.read_bytes()
     except FileNotFoundError:
         raise PvcEvalInputError(
             f"{fasta} has no index {fai}. Make it with `samtools faidx {fasta}` and run again."
         ) from None
     fai_lines: dict[str, _FaiLine] = {}
-    for line_number, line in enumerate(text.splitlines(), start=1):
+    for line_number, line_bytes in enumerate(fai_bytes.splitlines(), start=1):
+        try:
+            line = line_bytes.decode("utf-8")
+        except UnicodeDecodeError as err:
+            raise PvcEvalInputError(
+                f"{fai}, line {line_number}, is not UTF-8 text.{remedy}"
+            ) from err
         where = f"{fai}, line {line_number}:"
         name, fai_line = _parse_fai_line(line, line_number, where, remedy)
         if name in fai_lines:
@@ -163,6 +174,8 @@ def _read_fai(fasta: Path, fasta_size: int) -> dict[str, _FaiLine]:
                 f" {fasta_size} bytes.{remedy}"
             )
         fai_lines[name] = fai_line
+    if not fai_lines:
+        raise PvcEvalInputError(f"{fai} names no contig.{remedy}")
     return fai_lines
 
 

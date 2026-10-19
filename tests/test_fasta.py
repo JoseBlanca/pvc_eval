@@ -210,6 +210,37 @@ def test_a_missing_fai_says_how_to_make_one(tmp_path: Path) -> None:
         IndexedFasta(path)
 
 
+def test_a_missing_fasta_says_to_check_the_path(tmp_path: Path) -> None:
+    path = tmp_path / "ref.fa"
+    expected = f"{path} does not exist. Check the path given to --reference, and run again."
+    with pytest.raises(PvcEvalInputError, match=f"^{re.escape(expected)}$"):
+        IndexedFasta(path)
+
+
+def test_an_empty_fai_says_to_make_it_again(tmp_path: Path) -> None:
+    path = write_fasta(tmp_path, "one.fa", ONE_FA, "")
+    expected = (
+        f"{path}.fai names no contig."
+        f" Make the .fai again with `samtools faidx {path}` and run again."
+    )
+    with pytest.raises(PvcEvalInputError, match=f"^{re.escape(expected)}$"):
+        IndexedFasta(path)
+
+
+def test_a_fai_that_is_not_utf8_is_named_with_its_line(tmp_path: Path) -> None:
+    # The .fai is what `samtools faidx` (samtools 1.24) wrote for this FASTA, whose second
+    # contig name is in Latin-1: it copies the name as it is.
+    path = tmp_path / "lat.fa"
+    path.write_bytes(b">chr1\nACGT\n>chr\xe92\nACGT\n")
+    Path(f"{path}.fai").write_bytes(b"chr1\t4\t6\t4\t5\nchr\xe92\t4\t18\t4\t5\n")
+    expected = (
+        f"{path}.fai, line 2, is not UTF-8 text."
+        f" Make the .fai again with `samtools faidx {path}` and run again."
+    )
+    with pytest.raises(PvcEvalInputError, match=f"^{re.escape(expected)}$"):
+        IndexedFasta(path)
+
+
 def test_a_compressed_fasta_says_to_decompress_it(tmp_path: Path) -> None:
     path = write_fasta(tmp_path, "one.fa.gz", gzip.compress(ONE_FA), ONE_FAI)
     expected = (
