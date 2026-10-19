@@ -45,7 +45,7 @@ is written once, in a commit of its own, which the others bring in with `git che
 
 ## Milestones
 
-- [ ] 1. `build_loci` on hand-built records
+- [x] 1. `build_loci` on hand-built records
 
 **What it gives.** `build_loci` in `pvc_eval.loci`, which reconciliation and the wrappers of §8 can
 call: the loci of two streams of records and the STR regions, yielded as it reads.
