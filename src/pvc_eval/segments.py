@@ -689,16 +689,21 @@ def segment_contig(
     non-overlapping from 0 to the contig's length, 0-based and half-open
     (doc/specs/str_finder.md, steps 1 to 8). A contig of no bases has none.
 
-    It reads the whole contig once and resolves all of it before the first segment comes
-    out, since step 7 can grow a satellite to either side by any length. It keeps no state
-    between calls, so threads can segment contigs of one IndexedFasta at once.
+    It reads the whole contig once and resolves all of it when called, before the first
+    segment comes out, since step 7 can grow a satellite to either side by any length. It
+    keeps no state between calls, so threads can segment contigs of one IndexedFasta at
+    once.
 
-    Raises ValueError for a contig the .fai lacks, and PvcEvalInputError for a byte of the
-    FASTA that is not a letter, as IndexedFasta.get_bases does.
+    Raises, when called, ValueError for a contig the .fai lacks or a closed reference, and
+    PvcEvalInputError for a byte of the FASTA that is not a letter, as
+    IndexedFasta.get_bases does.
     """
     bases = reference.get_bases(contig, 0, reference.get_length(contig))
-    for segment in _find_segments(bases, parameters):
-        yield GenomeSegment(contig, segment.start, segment.end, segment.region_type, segment.motif)
+    segments = _find_segments(bases, parameters)
+    return (
+        GenomeSegment(contig, segment.start, segment.end, segment.region_type, segment.motif)
+        for segment in segments
+    )
 
 
 def _find_segments(bases: str, parameters: StrFinderParameters) -> list[_Segment]:

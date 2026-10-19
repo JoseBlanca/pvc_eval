@@ -13,6 +13,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
 from pvc_eval.segments import (
     GenomeSegment,
@@ -2175,7 +2176,23 @@ def test_a_contig_shorter_than_the_longest_period_is_one_generic_region(
 def test_a_contig_the_fai_lacks_raises_value_error(tmp_path: Path) -> None:
     fasta = _write_fasta(tmp_path, {"chr1": "ACGT"})
     with IndexedFasta(fasta) as reference, pytest.raises(ValueError, match="chr2"):
-        list(segment_contig(reference, "chr2"))
+        segment_contig(reference, "chr2")
+
+
+def test_a_byte_that_is_not_a_letter_raises_pvc_eval_input_error(tmp_path: Path) -> None:
+    fasta = _write_fasta(tmp_path, {"chr1": "AC-GT"})
+    with (
+        IndexedFasta(fasta) as reference,
+        pytest.raises(PvcEvalInputError, match="chr1:3 is not a letter"),
+    ):
+        segment_contig(reference, "chr1")
+
+
+def test_a_closed_reference_raises_value_error(tmp_path: Path) -> None:
+    reference = IndexedFasta(_write_fasta(tmp_path, {"chr1": "ACGT"}))
+    reference.close()
+    with pytest.raises(ValueError, match="is closed"):
+        segment_contig(reference, "chr1")
 
 
 @pytest.mark.parametrize(
