@@ -192,6 +192,56 @@ def test_name_in_two_columns_that_no_pair_needs_is_only_warned_of(
     ]
 
 
+def test_map_that_does_not_exist_stops_the_run(tmp_path: Path) -> None:
+    path_a, path_b = _write_files(tmp_path, ["HG002"], ["HG002"])
+    sample_map = tmp_path / "pairs.tsv"
+
+    with pytest.raises(PvcEvalInputError) as error:
+        make_sample_pairs(path_a, path_b, sample_map=sample_map)
+
+    assert str(error.value) == f"{sample_map} does not exist. Check its path and run again."
+
+
+def test_map_that_is_a_directory_stops_the_run(tmp_path: Path) -> None:
+    path_a, path_b = _write_files(tmp_path, ["HG002"], ["HG002"])
+    sample_map = tmp_path / "pairs.tsv"
+    sample_map.mkdir()
+
+    with pytest.raises(PvcEvalInputError) as error:
+        make_sample_pairs(path_a, path_b, sample_map=sample_map)
+
+    assert str(error.value) == (
+        f"{sample_map} is a directory, not a sample map. Check its path and run again."
+    )
+
+
+def test_map_that_cannot_be_opened_stops_the_run(tmp_path: Path) -> None:
+    path_a, path_b = _write_files(tmp_path, ["HG002"], ["HG002"])
+    sample_map = _write_map(tmp_path, "HG002\tHG002\n")
+    sample_map.chmod(0o000)
+
+    with pytest.raises(PvcEvalInputError) as error:
+        make_sample_pairs(path_a, path_b, sample_map=sample_map)
+
+    assert str(error.value) == (
+        f"{sample_map} cannot be read: permission denied. Allow reading it and run again."
+    )
+
+
+def test_map_that_is_not_utf8_names_the_line(tmp_path: Path) -> None:
+    path_a, path_b = _write_files(tmp_path, ["HG002"], ["HG002"])
+    sample_map = tmp_path / "pairs.tsv"
+    sample_map.write_bytes(b"HG002\tHG002\n\nHG\xe9002\tHG002\n")
+
+    with pytest.raises(PvcEvalInputError) as error:
+        make_sample_pairs(path_a, path_b, sample_map=sample_map)
+
+    assert str(error.value) == (
+        f"{sample_map} is not UTF-8 text: line 3 cannot be read as UTF-8. Save it as UTF-8"
+        " and run again."
+    )
+
+
 def test_files_that_share_no_name_stop_the_run(tmp_path: Path) -> None:
     path_a, path_b = _write_files(tmp_path, ["HG002"], ["NA12878"])
 

@@ -43,7 +43,8 @@ def make_sample_pairs(
 
     The samples of each file that are in no pair are logged in one warning per file.
 
-    Raises PvcEvalInputError for a line of the map that is not two non-empty fields, a
+    Raises PvcEvalInputError for a map that cannot be read or is not UTF-8, a line of the
+    map that is not two non-empty fields, a
     sample of the map absent from its file, the same pair on two lines of the map, a name
     in two columns of a header when a pair needs it, and no pair at all.
     """
@@ -97,32 +98,64 @@ def _make_pairs_from_map(
     columns_b = _get_columns_by_name(samples_b)
     # The line each pair was first given on, to name both lines of a pair given twice.
     line_of_pair: dict[SamplePair, int] = {}
-    with sample_map.open(encoding="utf-8") as map_file:
-        for line_number, line in enumerate(map_file, start=1):
-            if not line.strip():
-                continue
-            fields = line.rstrip("\r\n").split("\t")
-            if len(fields) != 2 or "" in fields:
-                raise _make_fields_error(sample_map, line_number, fields, path_a, path_b)
-            name_a, name_b = fields
-            _check_in_file(sample_map, line_number, name_a, path_a, samples_a)
-            _check_in_file(sample_map, line_number, name_b, path_b, samples_b)
-            sample_pair = SamplePair(
-                name_a=name_a,
-                index_a=_find_column(path_a, columns_a, name_a),
-                name_b=name_b,
-                index_b=_find_column(path_b, columns_b, name_b),
+    for line_number, line in enumerate(_read_map_lines(sample_map), start=1):
+        if not line.strip():
+            continue
+        fields = line.rstrip("\r").split("\t")
+        if len(fields) != 2 or "" in fields:
+            raise _make_fields_error(sample_map, line_number, fields, path_a, path_b)
+        name_a, name_b = fields
+        _check_in_file(sample_map, line_number, name_a, path_a, samples_a)
+        _check_in_file(sample_map, line_number, name_b, path_b, samples_b)
+        sample_pair = SamplePair(
+            name_a=name_a,
+            index_a=_find_column(path_a, columns_a, name_a),
+            name_b=name_b,
+            index_b=_find_column(path_b, columns_b, name_b),
+        )
+        if sample_pair in line_of_pair:
+            raise PvcEvalInputError(
+                f"{sample_map}, lines {line_of_pair[sample_pair]} and {line_number}: both"
+                f" pair {name_a} of {path_a} with {name_b} of {path_b}, which would give"
+                " every row twice. Remove one and run again."
             )
-            if sample_pair in line_of_pair:
-                raise PvcEvalInputError(
-                    f"{sample_map}, lines {line_of_pair[sample_pair]} and {line_number}: both"
-                    f" pair {name_a} of {path_a} with {name_b} of {path_b}, which would give"
-                    " every row twice. Remove one and run again."
-                )
-            line_of_pair[sample_pair] = line_number
+        line_of_pair[sample_pair] = line_number
     if not line_of_pair:
         raise PvcEvalInputError(f"{sample_map} holds no pair.")
     return tuple(line_of_pair)
+
+
+def _read_map_lines(sample_map: Path) -> list[str]:
+    """The lines of a sample map, without their newlines.
+
+    Raises PvcEvalInputError for a map that is missing, a directory, cannot be opened or
+    is not UTF-8 text.
+    """
+    try:
+        # Whole, since a map holds a line per pair, and so the bytes that are not UTF-8
+        # can be found on their line.
+        map_bytes = sample_map.read_bytes()
+    except FileNotFoundError:
+        raise PvcEvalInputError(
+            f"{sample_map} does not exist. Check its path and run again."
+        ) from None
+    except IsADirectoryError:
+        raise PvcEvalInputError(
+            f"{sample_map} is a directory, not a sample map. Check its path and run again."
+        ) from None
+    except PermissionError:
+        raise PvcEvalInputError(
+            f"{sample_map} cannot be read: permission denied. Allow reading it and run again."
+        ) from None
+    try:
+        map_text = map_bytes.decode("utf-8")
+    except UnicodeDecodeError as err:
+        line_number = map_bytes.count(b"\n", 0, err.start) + 1
+        raise PvcEvalInputError(
+            f"{sample_map} is not UTF-8 text: line {line_number} cannot be read as UTF-8."
+            " Save it as UTF-8 and run again."
+        ) from err
+    return map_text.split("\n")
 
 
 def _get_columns_by_name(sample_names: Sequence[str]) -> dict[str, list[int]]:
