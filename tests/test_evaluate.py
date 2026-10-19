@@ -32,6 +32,8 @@ def make_record(
     alleles: tuple[str, ...],
     qual: float | None,
     genotypes: Sequence[VcfGenotype | MALFORMED_GT | OTHER_PLOIDY_GT],
+    *,
+    ref_mismatch: bool = False,
 ) -> VcfRecord:
     """A VCF record at a 0-based start, whose span is its REF."""
     return VcfRecord(
@@ -41,7 +43,7 @@ def make_record(
         qual=qual,
         genotypes=tuple(genotypes),
         line_number=start,
-        ref_mismatch=False,
+        ref_mismatch=ref_mismatch,
         span=(start, start + len(alleles[0])),
     )
 
@@ -380,6 +382,24 @@ def test_make_outcome_rows_gives_reason_and_partner_genotype_in_rows_too_complex
             invalid_reason_b=None,
         ),
     ]
+
+
+def test_make_outcome_rows_fills_quality_and_gq_of_invalid_sample() -> None:
+    # Locus 10-11, A. A's record has a REF mismatch, and the sample is 0/1 there.
+    records_a = (make_record(10, ("A", "G"), 30.0, [make_genotype((0, 1), 20)], ref_mismatch=True),)
+    locus = Locus(CONTIG, 10, 11, records_a, (), ())
+    sample_pairs = (SamplePair(name_a="S0", index_a=0, name_b="T0", index_b=0),)
+    reconciled = reconcile(locus, "A", sample_pairs)
+
+    (row,) = make_outcome_rows(reconciled, sample_pairs, kind=Kind.SNP, stratum=None)
+
+    assert (
+        row.outcome,
+        row.invalid_reason_a,
+        row.possible_a,
+        row.quality_a,
+        row.gq_a,
+    ) == (Outcome.INVALID_IN_A, InvalidReason.REF_MISMATCH, 0, 30.0, 20)
 
 
 def test_make_outcome_rows_shows_reported_pair_not_first_genotypes() -> None:
