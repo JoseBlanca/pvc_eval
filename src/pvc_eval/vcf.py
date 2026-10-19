@@ -120,7 +120,6 @@ class VcfRecord:
     qual: float | None
     genotypes: tuple[VcfGenotype | MALFORMED_GT | OTHER_PLOIDY_GT, ...]
     line_number: int
-    ref_mismatch: bool = False
     span: Span
 
     def __post_init__(self) -> None:
