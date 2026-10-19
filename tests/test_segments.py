@@ -391,11 +391,10 @@ def test_a_candidate_under_its_copy_floor_still_drops_a_longer_period() -> None:
 
 
 # Step 1's drop rule on inputs where a slip in one of its clauses changes the output. The
-# expected candidates, (start, end, period, score) with no copy floor, are those of a direct
-# transcription of pvc's find_tandem_repeats at bbcc9f4, written by the review of this
-# milestone in the session's scratchpad, rev_spec/pvc_ref.py. On 19 October 2026 the command
-# was `python3 -c "from pvc_ref import find_tandem_repeats; print(find_tandem_repeats(b'...',
-# 1, 6))"` in that directory, with each sequence in place of the dots.
+# expected candidates, (start, end, period, score) with no copy floor, are pvc's: its code at
+# bbcc9f4 (tandem_repeat.rs `find_tandem_repeats`, `maximal_scoring_subsequences` and
+# `is_primitive_motif`), run over periods 1 to 6 through a line-by-line Python transcription
+# on 19 October 2026. Milestone 5 checks the whole finder against pvc's own binary.
 _DROP_RULE_CASES: list[tuple[str, str, list[tuple[int, int, int, int]]]] = [
     (
         "half_covered_is_dropped",  # an overlap of exactly half drops (18, 34) of period 2
@@ -1068,11 +1067,11 @@ _SYNTHETIC_REF = Path(__file__).parent / "data" / "tandem_repeat" / "synthetic_r
 def test_differential_vs_production_build_loci_on_scanner_output() -> None:
     # pvc compares each contig's STR segments with its former production code
     # (assert_agrees), which is not ported. What is left counts the STR segments and the
-    # bundle members of each contig, against pvc's: the port's step 1, then a transcription
-    # of pvc's prefilter and classify, run as
-    # uv run python /private/tmp/claude-501/-Users-jose-devel-pvc-eval/2dab6280-84d0-4e89-88dc-7955494ebca9/scratchpad/m2_fix_t4.py \
-    #     /private/tmp/claude-501/-Users-jose-devel-pvc-eval/2dab6280-84d0-4e89-88dc-7955494ebca9/scratchpad/review_m2_spec \
-    #     tests/data/tandem_repeat/synthetic_ref.fa
+    # bundle members of each contig, against pvc's: the port's step 1, then pvc's code at
+    # bbcc9f4 (segment_criteria.rs `prefilter` and `classify`, with `split_bundles`,
+    # `finish_locus`, `minimal_trim`, `recompute_purity` and `is_compound`), run through a
+    # line-by-line Python transcription on 19 October 2026. Milestone 5 checks the whole
+    # finder against pvc's own binary.
     counts = {}
     with IndexedFasta(_SYNTHETIC_REF) as reference:
         for contig in reference.contigs:
@@ -1212,9 +1211,12 @@ def test_the_candidates_are_bundled_in_order_of_start() -> None:
 
 # ---- The order of the rules of steps 4 to 6, pvc_eval's own -----------------------------------
 # Each case has two rules that apply, so that only the order the spec gives passes. The
-# expected values are pvc's, from a transcription of its classify, run as
-# uv run python /private/tmp/claude-501/-Users-jose-devel-pvc-eval/2dab6280-84d0-4e89-88dc-7955494ebca9/scratchpad/m2_fix_values.py \
-#     /private/tmp/claude-501/-Users-jose-devel-pvc-eval/2dab6280-84d0-4e89-88dc-7955494ebca9/scratchpad/review_m2_spec
+# expected values here and in the tests below are pvc's: its code at bbcc9f4
+# (segment_criteria.rs `prefilter`, `classify`, `split_bundles`, `joins_cluster`,
+# `finish_locus`, `minimal_trim`, `recompute_purity`, `is_compound` and
+# `bundle_member_from_bases`, and repeat_catalog/row.rs `row_for_interval`), run through a
+# line-by-line Python transcription on 19 October 2026. Milestone 5 checks the whole finder
+# against pvc's own binary.
 
 
 def test_a_candidate_under_min_score_bundles_nothing() -> None:
@@ -1270,7 +1272,7 @@ def test_step_six_tests_the_copy_floor_then_the_purity_then_the_contig_ends() ->
 
 
 # ---- The cut's bounds, pvc_eval's own ----------------------------------------------------------
-# The expected values are pvc's, from the transcription named above.
+# The expected values are pvc's, from the transcription of its code named above.
 
 
 def test_the_cut_reaches_no_further_than_half_the_repeat() -> None:
@@ -1291,7 +1293,7 @@ def test_a_bundle_member_starts_where_its_cut_starts() -> None:
 
 
 # A contig-end flank of 0 turns step 2 off: a repeat on the first base, or on the last, is
-# kept. pvc's values, from the transcription's row_flank_ok with a flank of 0.
+# kept. pvc's values, from the transcription of its row_for_interval with a flank of 0.
 _NO_FLANK_CASES = [
     ("on_the_first_base", "AT" * 8 + "G" * 20, _make_candidate(0, 16, 2, 1)),
     ("on_the_last_base", "G" * 20 + "AT" * 8, _make_candidate(20, 36, 2, 1)),
@@ -1309,8 +1311,8 @@ def test_a_contig_end_flank_of_zero_drops_nothing(bases: str, candidate: _Candid
 
 
 # pvc's prefilter keeps only a candidate whose end is after its start, and its classify
-# passes over one that is not, without a reason. pvc's values, from the transcription's
-# prefilter and classify.
+# passes over one that is not, without a reason. pvc's values, from the transcription of
+# its prefilter and classify.
 def test_an_empty_candidate_is_dropped_even_at_a_copy_floor_of_zero() -> None:
     no_floors = replace(_PARAMS, copy_floors=_ZERO_FLOORS)
     assert (
