@@ -180,7 +180,7 @@ and refuses), which `read_strata` shares.
 
 **What it stands on.** Milestone 3.
 
-- [ ] 5. A BED that starts with a byte-order mark
+- [x] 5. A BED that starts with a byte-order mark
 
 Added on 19 October 2026, after the merge, for a fault the STR finder session found in
 `parse_bed`: a BED starting with a UTF-8 byte-order mark kept it on its first contig, so its first

@@ -32,7 +32,9 @@ skipped until it exists.
 **One point for the owner.** `parse_vcf` lets `zlib.error` through, so a gzipped VCF whose
 compressed data is damaged ends in a traceback; the BED reader of milestone 4 catches it. The two
 readers hold one copy each of the gzip handling. Making it one private function, used by both,
-fixes the VCF reader too, and changes `vcf.py`, which the handoff keeps for the owner.
+fixes the VCF reader too, and changes `vcf.py`, which the handoff keeps for the owner. The same
+function would drop a leading UTF-8 byte-order mark from a VCF, which `parse_vcf` keeps on its
+first header line today, as the BED reader did until milestone 5.
 
 **What went wrong.** While removing its reviewers' worktrees, this session removed 14 worktrees
 of the other sessions' reviewers and deleted 15 `worktree-agent-*` branches, by a glob. No commit
@@ -183,6 +185,17 @@ and still stops the run. The gzip handling copied from `vcf.py` is the point for
 
 **Tokens**: implementation 75,000; review, one reviewer for four categories, not given.
 
+## Milestone 5: a BED that starts with a byte-order mark
+
+Done, in `16eff9f`, after the merge into main. The STR finder session found that `parse_bed` kept
+a leading UTF-8 byte-order mark on the first contig, so the first line was refused as an unknown
+contig. The BED is now decoded as `utf-8-sig`, which drops the mark at the start of the text only.
+Three new tests in `tests/test_bed.py` failed on the commit before; `tests/test_bed.py` gave "34
+passed", the four checks "27 files already formatted", "All checks passed!" twice and "371 passed,
+1 skipped". The review found no defect: 45 error cases gave the same messages before and after,
+and a second mark on a block edge of the gzip stream is kept. This commit is on `loci`, not yet on
+main.
+
 ## The check of the whole plan
 
 `build_loci` over `chr20_5mb_200s.vcf.gz` (18,310 records, 200 samples) against itself, with no STR
@@ -194,6 +207,11 @@ traced peak 5.8 MB.
 ## For whoever next revises the skills
 
 You can stop here if you are the owner deciding the merge.
+
+- A reviewer that copies the worktree to mutate it, `.venv` included, tests the worktree and not the
+  copy: the copied environment imports the worktree's `src`. The review of milestone 5 found its
+  first mutation runs all passing for that reason. The coding skill's instructions to reviewers
+  could say to build a fresh environment in the copy.
 
 - The coding skill's worktree for side-by-side milestones is not said: milestone 3 ran on a branch
   `loci-m3` in a worktree of its own, cherry-picked afterwards, so that two subagents never
