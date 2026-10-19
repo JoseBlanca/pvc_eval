@@ -71,7 +71,7 @@ it in part; on GRCh38, milestone 5 would show it as STR regions pvc does not hav
 Python on 2000 cases of up to 160 scores: the inputs stay, and the test is marked `slow` if it takes
 more than 10 s.
 
-- [ ] 2. From candidates to STR segments and bundle members
+- [x] 2. From candidates to STR segments and bundle members
 
 **What it gives.** Steps 2 to 6: which candidates are dropped, which bundle, and which become STR
 segments, with the reason of each rejection.
@@ -91,7 +91,8 @@ segments, with the reason of each rejection.
 out-of-range candidate bundle its neighbour; and the copy floor, counted twice, on the detected span
 (step 3) and on the cut (step 6), counted once. `the_copy_floor_counts_the_trimmed_tract_not_the_detected_one`
 and `each_rejection_reason_names_the_gate_that_fired` guard it. `minimal_trim` fails before it
-compares; `minimal_trim_returns_none_without_two_clean_copies` guards it.
+compares; a test of the port's own guards it (pvc's `minimal_trim_returns_none_without_two_clean_copies`
+has no cut either way, found during milestone 2).
 
 - [ ] 3. The segmented genome of a contig
 

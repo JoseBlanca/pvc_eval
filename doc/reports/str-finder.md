@@ -48,7 +48,7 @@ the contract is shared. The duplicate default tests: they are pvc's, ported by n
 
 ## Milestone 2: from candidates to STR segments and bundle members
 
-Commits 098c345 to the second-round fix. Steps 2 to 6 in `src/pvc_eval/segments.py`, private; pvc's
+Commits 098c345 to 221d69c. Steps 2 to 6 in `src/pvc_eval/segments.py`, private; pvc's
 fixtures in `tests/data/tandem_repeat/`, byte for byte (`cmp`), with `tests/data/README.md`.
 
 - **The 44 ported tests** (42 of `segment_criteria.rs`, 2 of `repeat_catalog/row.rs`), by pvc's
