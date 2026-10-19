@@ -6,7 +6,7 @@ span (99, 100) and its "11-20" is (10, 20).
 """
 
 import tracemalloc
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from itertools import pairwise
 
 import pytest
@@ -650,31 +650,54 @@ def make_adjacent_records_with_no_alt(count: int) -> Iterator[VcfRecord]:
         yield make_no_alt(position, 1, line_number=position + 1)
 
 
-def find_peak_memory(count: int) -> tuple[int, list[Locus]]:
-    """The peak tracemalloc traces while build_loci reads count records with no ALT, one
-    position apart, and then a SNP of file B over the last of them."""
-    snp = make_snp(count - 1)
+def find_peak_memory(make_loci: Callable[[int], Iterator[Locus]], count: int) -> int:
+    """The peak tracemalloc traces while the loci of make_loci(count) are made and passed,
+    after one call on a small input, so that what the first call allocates is not
+    counted."""
+    for _locus in make_loci(10):
+        pass
     tracemalloc.start()
     try:
-        loci = list(
-            build_loci(make_adjacent_records_with_no_alt(count), iter((snp,)), iter(()), CONTIGS)
-        )
+        for _locus in make_loci(count):
+            pass
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
-    return peak, loci
+    return peak
+
+
+def make_loci_over_records_with_no_alt(count: int) -> Iterator[Locus]:
+    """The loci of count records with no ALT of file A, one position apart, and a SNP of
+    file B over the last of them."""
+    snp = make_snp(count - 1)
+    return build_loci(make_adjacent_records_with_no_alt(count), iter((snp,)), iter(()), CONTIGS)
 
 
 def test_records_with_no_alt_are_not_kept_once_passed() -> None:
-    peak_10_000, _ = find_peak_memory(10_000)
-    peak_100_000, loci = find_peak_memory(100_000)
+    peak_10_000 = find_peak_memory(make_loci_over_records_with_no_alt, 10_000)
+    peak_100_000 = find_peak_memory(make_loci_over_records_with_no_alt, 100_000)
 
     assert abs(peak_100_000 - peak_10_000) < 0.1 * peak_10_000, (peak_10_000, peak_100_000)
-    assert loci == [
+    assert list(make_loci_over_records_with_no_alt(100_000)) == [
         make_locus(
             99_999, 100_000, (make_no_alt(99_999, 1, line_number=100_000),), (make_snp(99_999),)
         )
     ]
+
+
+def make_loci_over_snps_and_str_regions(count: int) -> Iterator[Locus]:
+    """The loci of count SNPs 100 positions apart, each followed by an STR region at 50 to
+    60 positions after it, which it does not touch."""
+    snps = (make_snp(100 * index, line_number=index + 1) for index in range(count))
+    regions = (make_region(100 * index + 50, 100 * index + 60) for index in range(count))
+    return build_loci(snps, iter(()), regions, CONTIGS)
+
+
+def test_str_regions_are_not_kept_once_passed() -> None:
+    peak_10_000 = find_peak_memory(make_loci_over_snps_and_str_regions, 10_000)
+    peak_100_000 = find_peak_memory(make_loci_over_snps_and_str_regions, 100_000)
+
+    assert abs(peak_100_000 - peak_10_000) < 0.1 * peak_10_000, (peak_10_000, peak_100_000)
 
 
 # A property: build_loci against a slow version of doc/spec.md §5.3 written from its rules.
