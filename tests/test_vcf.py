@@ -799,11 +799,33 @@ def test_with_no_limit_a_span_is_never_cut(
     assert not caplog.text
 
 
-def test_a_negative_span_limit_is_a_value_error(tmp_path: Path, reference: IndexedFasta) -> None:
+@pytest.mark.parametrize(
+    "span_limit", [-1, 0, 1.5, "10", True], ids=["negative", "zero", "fraction", "text", "bool"]
+)
+def test_a_span_limit_that_is_not_a_whole_number_of_1_or_more_is_a_value_error(
+    tmp_path: Path, reference: IndexedFasta, span_limit: object
+) -> None:
     path = write_vcf(tmp_path, make_snp_line("chr1", 1))
 
-    with pytest.raises(ValueError, match="span_limit must be 0 or more, not -1"):
-        list(parse_vcf(path, reference, span_limit=-1))
+    with pytest.raises(
+        ValueError,
+        match=rf"^span_limit must be a whole number of 1 or more, or None, not {span_limit!r}$",
+    ):
+        list(parse_vcf(path, reference, span_limit=span_limit))  # ty: ignore[invalid-argument-type]  # a wrong type on purpose
+
+
+def test_span_limit_of_1_is_named_in_the_singular(
+    tmp_path: Path, make_reference: MakeReference, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = write_vcf(tmp_path, LIMIT_LINES)
+
+    with caplog.at_level(logging.WARNING):
+        list(parse_vcf(path, make_reference(*LIMIT_REFERENCE), span_limit=1))
+
+    assert (
+        "a.vcf: 3 VCF records, the first at line 3, could slide more than 1 base along the"
+        " reference and each was given only its REF as its span;"
+    ) in caplog.text
 
 
 def make_walk(tmp_path: Path) -> tuple[Path, tuple[str, str], list[int]]:

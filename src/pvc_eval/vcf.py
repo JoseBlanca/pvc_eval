@@ -135,8 +135,8 @@ def parse_vcf(
     reference: the reference. The contigs, their order and their lengths are those of its
         `.fai`. The reader reads it through a FastaWindow of its own, which gives the bases
         in upper case, so a soft-masked reference gives no REF mismatch (§5.2).
-    span_limit: the most bases a span may reach beyond its REF on either side, or None
-        for no limit (§5.2). A record whose span would reach further is given its REF as
+    span_limit: the most bases a span may reach beyond its REF on either side, a whole
+        number of 1 or more, or None for no limit (§5.2). A record whose span would reach further is given its REF as
         its span, and the number of those is logged as a warning at the end.
 
     With a limit, a record is held only until no later record of its contig can have a
@@ -159,11 +159,15 @@ def parse_vcf(
     number of samples the #CHROM line names. A blank line is skipped. A record with a symbolic
     allele is skipped, and the number skipped is logged as a warning at the end (§9). A
     QUAL or GQ that is not a number is taken as absent, and those are counted in a
-    warning at the end too. Raises ValueError, when the stream starts, for a negative
-    span_limit.
+    warning at the end too. Raises ValueError, when the stream starts, for a span_limit
+    that is neither None nor a whole number of 1 or more.
     """
-    if span_limit is not None and span_limit < 0:
-        raise ValueError(f"span_limit must be 0 or more, not {span_limit}")
+    # §5.2: a limit of 0 would cut every insertion, whose span holds the base after it.
+    is_whole = isinstance(span_limit, int) and not isinstance(span_limit, bool)
+    if span_limit is not None and not (is_whole and span_limit >= 1):
+        raise ValueError(
+            f"span_limit must be a whole number of 1 or more, or None, not {span_limit!r}"
+        )
     with closing(_parse_records_in_file_order(path, reference, span_limit)) as records:
         yield from _sort_by_span_start(records, span_limit)
 
@@ -281,13 +285,13 @@ def _parse_records_in_file_order(
         else:
             which, given = f"the first at line {first_beyond_reach_line}", "each was given"
         _logger.warning(
-            "%s: %s, %s, could slide more than %s bases along the reference and %s only"
+            "%s: %s, %s, could slide more than %s along the reference and %s only"
             " its REF as its span; another spelling of the same event further along may"
             " fall into another locus and be compared apart.",
             path,
             _format_count(num_beyond_reach, "VCF record"),
             which,
-            f"{span_limit:,}",
+            f"{span_limit:,} {'base' if span_limit == 1 else 'bases'}",
             given,
         )
 
