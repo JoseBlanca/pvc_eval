@@ -74,7 +74,7 @@ Milestones 1 and 2 touch different files and can run side by side. The others ru
 
   Stands on: nothing.
 
-- [ ] **3. Reconciliation**
+- [x] **3. Reconciliation**
 
   What it gives: `reconcile` and `reconcile_loci`: for a `Locus`, its locus alleles and the sample
   result of each paired sample, possible genotypes, *too complex* or *invalid* with its reason.

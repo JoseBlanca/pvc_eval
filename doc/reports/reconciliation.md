@@ -70,3 +70,43 @@ a sample named "". Both are older than this plan and belong to the VCF reader.
 
 Changed in the plan: milestone 3 stands on milestone 2 too, since `reconcile` takes the `SamplePair`
 of milestone 2; the plan first named milestone 1 alone, and milestone 3's implementer found it.
+
+## Milestone 3: reconciliation
+
+Done in f603bec (`Locus`), e2a8ac7 (`InvalidReason`, `LocusGenotype`) and f6822e4 (`reconcile`,
+`reconcile_loci`), and fixed in 50d1293 to af717e6. For a `Locus`, the locus alleles and each
+paired sample's possible genotypes, *too complex*, or *invalid* with its reason.
+
+- `uv run pytest tests/test_reconcile.py` gives "68 passed": every case R1 to R9 of the spec's
+  §4.4 with its label in the test's id, the other cases of the `reconcile` item of §9, and the
+  cases the review added. `tests/test_locus.py` gives "6 passed". The whole suite gives "337
+  passed" on af717e6.
+- The five checks pass on af717e6.
+- `Locus` (f603bec, with its checks in 18ce521) was sent to the loci session through the
+  coordinating session.
+
+Changed in the plan: milestone 3 stands on milestone 2 as well as milestone 1 (above).
+
+The review found one wrong outcome, a blocker found by two reviewers apart: an insertion whose
+point lies inside a `*` record's REF counted as covering the `*`, so a sample the spec makes
+invalid got a possible genotype. It is fixed, with two tests that fail without the fix. A
+reviewer compared the code with a prototype of the rules, corrected to the spec, over 20,000
+random loci of up to four records, phased and not, with cut spans among them: with the fix,
+every outcome, set of locus alleles and order agreed. The same code gives equal results run
+serially and on 8 threads.
+
+The review also found nine plausible wrong rules that no test could fail on, among them `./1`
+making a block, the order of the assignments with three blocks, the insertion collision in the
+other record order, and two orders of the invalid reasons; each now has a test that fails
+under the wrong rule, confirmed by the reviewers' second looks. Further: `Locus` checks its
+own invariants and `reconcile` a sample index, both added to the spec's §7 first (10ee2e2);
+each edit is made once per locus, 13 times at 13 blocks where it was made 106,496 times; and
+the helpers take the verbs of `python.md`. Not taken: a third copy of the whole-number check
+(in `vcf.py`, which another branch edits); `kw_only` on `Locus`, which `doc/spec.md` §4 fixes
+without it; a read-only mapping for the sample results, which nothing writes; lower-case bases
+passed to `reconcile`, which `reconcile_loci` never passes.
+
+For the owner: two cases pass unchecked, both only from a `Locus` built by hand. A sample index
+past the genotypes goes unseen at a locus where its file has no record. And a record with no
+ALT that does not overlap the locus at all is accepted; with a REF mismatch it would make its
+file's samples invalid at a locus it does not touch.
