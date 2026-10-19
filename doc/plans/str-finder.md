@@ -1,6 +1,6 @@
 # Plan: the STR finder
 
-*19 October 2026. Draft: it is run once the owner approves it. It builds `doc/specs/str_finder.md`, approved by
+*19 October 2026. Approved by the owner on 19 October 2026; under way. It builds `doc/specs/str_finder.md`, approved by
 the owner on 19 October 2026, on the branch `str-finder`. Its report will be
 `doc/reports/str-finder.md`.*
 
