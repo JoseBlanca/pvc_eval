@@ -83,11 +83,12 @@ Milestones 1 and 2 touch different files and can run side by side. The others ru
   of `pvc_eval.outcome`.
 
   Deliverables:
-  - First, in a commit of its own, `pvc_eval.segments` with `RegionType` and `GenomeSegment`
-    only, and `pvc_eval.locus` with `Locus`, exactly as `doc/spec.md` §4 gives them; the session
-    sends the commit, with `SendMessage`, to the sessions building the loci (branch `loci`) and
-    the STR finder (branch `str-finder`), found with `ListAgents`; they write the functions of
-    those modules. `uv run ty check` passes.
+  - First, in a commit of its own, `pvc_eval.locus` with `Locus`, exactly as `doc/spec.md` §4
+    gives it; the session sends the commit, with `SendMessage`, to the session building the loci
+    (branch `loci`), found with `ListAgents`, which writes `build_loci` beside it. `uv run ty
+    check` passes. `pvc_eval.segments`, which `Locus` needs, is the STR finder's commit 90a3c39,
+    picked into this branch as 6bbc7bc (changed on 19 October 2026: the STR finder wrote it
+    first).
   - `uv run pytest tests/test_reconcile.py -v` runs a test for each row and each case of §4.4,
     R1 to R9, each with its locus alleles and possible genotypes as literals and the case's label
     in its id, and the other cases of the `reconcile` item of §9: the order of the locus alleles

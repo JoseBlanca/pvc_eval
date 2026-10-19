@@ -33,3 +33,9 @@ For the owner: the reader gives `MALFORMED_GT` for a GT with a phase mark before
 allele, `|1`, which VCF 4.4 allows for a phased haploid call. pvc_eval reads VCF 4.2 and 4.3,
 where it is not allowed; it is later work if 4.4 files are to be compared. A sample with no GT
 in `vcf.py` reached the GT parser through its own branch, now through the GT parser itself.
+
+## Changes to the plan before milestone 3
+
+`pvc_eval.segments` was written first by the STR finder session, in 90a3c39 on its branch, as
+`doc/spec.md` §4 gives it. It is picked into this branch as 6bbc7bc, and milestone 3 writes only
+`pvc_eval.locus`.
