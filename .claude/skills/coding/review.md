@@ -76,6 +76,10 @@ Can each test fail, and are the numbers the change claims true?
   the right value.
 - Run `uv run pytest --cov --cov-report=term-missing` and read the lines of
   the change that no test runs, error branches first.
+- Run every experiment that changes the code with
+  `PYTHONDONTWRITEBYTECODE=1` and with the `__pycache__` of the changed
+  module removed: on 19 October 2026 a stale `.pyc` made a broken line look
+  covered, and fooled two reviewers of the VCF reader for one run each.
 - Put the code back after each experiment and end with `git status` clean.
 
 ## correctness
