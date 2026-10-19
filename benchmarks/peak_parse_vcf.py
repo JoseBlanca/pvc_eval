@@ -2,7 +2,9 @@
 tracemalloc traced, and the source lines that held the most when the bytes held between
 two records were at their highest.
 
-    uv run --no-sync python benchmarks/peak_parse_vcf.py VCF FASTA [SPAN_LIMIT]
+    uv run --no-sync python benchmarks/peak_parse_vcf.py VCF FASTA [SPAN_LIMIT] [--threads N]
+
+N is parse_vcf's num_threads; without it, parse_vcf's default, DEFAULT_NUM_THREADS.
 
 The peak inside a call, while a record is made, can be above the highest bytes held
 between two records; both are printed. tracemalloc slows the run, so its time is not a
@@ -14,7 +16,7 @@ import tracemalloc
 from pathlib import Path
 
 from pvc_eval.fasta import IndexedFasta
-from pvc_eval.vcf import DEFAULT_SPAN_LIMIT, parse_vcf
+from pvc_eval.vcf import DEFAULT_NUM_THREADS, DEFAULT_SPAN_LIMIT, parse_vcf
 
 _NUM_TOP_LINES = 15
 _NUM_FRAMES = 10
@@ -29,7 +31,7 @@ def main() -> None:
     tracemalloc.start(_NUM_FRAMES)
     with IndexedFasta(args.fasta) as reference:
         num_records, snapshot, snapshot_bytes = _find_largest_snapshot(
-            args.vcf, reference, args.span_limit
+            args.vcf, reference, args.span_limit, args.threads
         )
     _, peak = tracemalloc.get_traced_memory()
     print(f"records: {num_records}")
@@ -51,6 +53,12 @@ def _parse_args() -> argparse.Namespace:
         default=DEFAULT_SPAN_LIMIT,
         help=f"a whole number, or none (default {DEFAULT_SPAN_LIMIT})",
     )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=DEFAULT_NUM_THREADS,
+        help=f"the threads that parse the samples (default {DEFAULT_NUM_THREADS})",
+    )
     return parser.parse_args()
 
 
@@ -59,14 +67,14 @@ def _parse_span_limit(text: str) -> int | None:
 
 
 def _find_largest_snapshot(
-    vcf: Path, reference: IndexedFasta, span_limit: int | None
+    vcf: Path, reference: IndexedFasta, span_limit: int | None, num_threads: int
 ) -> tuple[int, tracemalloc.Snapshot, int]:
     """The number of records, and a snapshot taken when the bytes held between two
     records were within _SNAPSHOT_GROWTH of their highest, with those bytes."""
     snapshot = tracemalloc.take_snapshot()
     snapshot_bytes, _ = tracemalloc.get_traced_memory()
     num_records = 0
-    for _ in parse_vcf(vcf, reference, span_limit=span_limit):
+    for _ in parse_vcf(vcf, reference, span_limit=span_limit, num_threads=num_threads):
         num_records += 1
         held, _ = tracemalloc.get_traced_memory()
         if held > snapshot_bytes * _SNAPSHOT_GROWTH:

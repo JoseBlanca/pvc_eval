@@ -2,10 +2,11 @@
 every record, in the order given: the output an experiment compares with its baseline's,
 since the count alone would not change if a span or a genotype did.
 
-    uv run --no-sync python benchmarks/digest_parse_vcf.py VCF FASTA [SPAN_LIMIT]
+    uv run --no-sync python benchmarks/digest_parse_vcf.py VCF FASTA [SPAN_LIMIT] [--threads N]
 
 SPAN_LIMIT is a whole number of 1 or more, or `none` for no limit; without it,
-parse_vcf's default, DEFAULT_SPAN_LIMIT. Not timed: the hashing adds to the run.
+parse_vcf's default, DEFAULT_SPAN_LIMIT. N is parse_vcf's num_threads; without it,
+parse_vcf's default, DEFAULT_NUM_THREADS. Not timed: the hashing adds to the run.
 """
 
 import argparse
@@ -13,7 +14,7 @@ import hashlib
 from pathlib import Path
 
 from pvc_eval.fasta import IndexedFasta
-from pvc_eval.vcf import DEFAULT_SPAN_LIMIT, parse_vcf
+from pvc_eval.vcf import DEFAULT_NUM_THREADS, DEFAULT_SPAN_LIMIT, parse_vcf
 
 
 def main() -> None:
@@ -21,7 +22,9 @@ def main() -> None:
     digest = hashlib.sha256()
     num_records = 0
     with IndexedFasta(args.fasta) as reference:
-        for vcf_record in parse_vcf(args.vcf, reference, span_limit=args.span_limit):
+        for vcf_record in parse_vcf(
+            args.vcf, reference, span_limit=args.span_limit, num_threads=args.threads
+        ):
             # No separator: every repr starts with "VcfRecord(", so none is needed.
             digest.update(repr(vcf_record).encode("utf-8"))
             num_records += 1
@@ -38,6 +41,12 @@ def _parse_args() -> argparse.Namespace:
         type=_parse_span_limit,
         default=DEFAULT_SPAN_LIMIT,
         help=f"a whole number, or none (default {DEFAULT_SPAN_LIMIT})",
+    )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=DEFAULT_NUM_THREADS,
+        help=f"the threads that parse the samples (default {DEFAULT_NUM_THREADS})",
     )
     return parser.parse_args()
 

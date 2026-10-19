@@ -332,7 +332,36 @@ def test_parse_bed_says_to_rename_a_contig_named_in_another_style(
 
 
 def test_parse_bed_quotes_a_contig_so_that_a_byte_order_mark_shows(tmp_path: Path) -> None:
-    path = write_bed(tmp_path, ["\ufeffchr1\t0\t10"])
+    # A byte-order mark at the start of a line other than the first is not dropped.
+    path = write_bed(tmp_path, ["chr1\t0\t10", "\ufeffchr2\t0\t10"])
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_bed(path, _CONTIGS))
+
+    assert str(raised.value).startswith(
+        f"{path}, line 2: the contig '\\ufeffchr2' is not in the reference."
+    )
+
+
+_BYTE_ORDER_MARK_BED = "\ufeffchr1\t190\t300\n".encode()
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [_BYTE_ORDER_MARK_BED, gzip.compress(_BYTE_ORDER_MARK_BED)],
+    ids=["plain", "gzipped"],
+)
+def test_parse_bed_drops_a_byte_order_mark_at_the_start(tmp_path: Path, contents: bytes) -> None:
+    path = tmp_path / "regions.bed"
+    path.write_bytes(contents)
+
+    assert list(parse_bed(path, _CONTIGS)) == [
+        BedLine(contig="chr1", start=190, end=300, name=None, line_number=1)
+    ]
+
+
+def test_parse_bed_drops_only_the_first_of_two_byte_order_marks(tmp_path: Path) -> None:
+    path = write_bed(tmp_path, ["\ufeff\ufeffchr1\t0\t10"])
 
     with pytest.raises(PvcEvalInputError) as raised:
         list(parse_bed(path, _CONTIGS))

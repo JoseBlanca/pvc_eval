@@ -123,8 +123,8 @@ Streams are iterators, as `doc/spec.md` §4 says. Nothing private.
 
 **The cases** where the result is not what the rules would make a reader
 expect: a multi-ALT record whose ALTs move apart, a `./1`, a phase set
-that spans two loci, a REF that disagrees with the reference, a VCF with
-no samples.
+that spans two loci, a reference with an IUPAC code where the VCF has a
+plain base, a VCF with no samples.
 
 **How it runs**, when there is something to say: what it holds in memory
 and how that grows, and how long it takes on what input, when the spec

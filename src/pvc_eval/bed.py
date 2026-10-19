@@ -40,7 +40,8 @@ class BedLine:
 
 def parse_bed(path: Path, contigs: Sequence[str]) -> Iterator[BedLine]:
     """The intervals of a BED, plain, gzipped or bgzipped, in the order of its lines, from
-    its first three columns and its fourth. Blank lines, lines that start with `#`, and
+    its first three columns and its fourth. A byte-order mark at the start of the text is
+    dropped. Blank lines, lines that start with `#`, and
     lines whose first word is `track` or `browser` are skipped.
 
     contigs: the reference's contig names.
@@ -96,12 +97,16 @@ def parse_bed(path: Path, contigs: Sequence[str]) -> Iterator[BedLine]:
 
 
 def _open_text(path: Path) -> TextIO:
-    """Open a BED, plain or gzipped, known by its first two bytes, as UTF-8 text."""
+    """Open a BED, plain or gzipped, known by its first two bytes, as UTF-8 text, with a
+    byte-order mark at the start of the text dropped and one anywhere else kept.
+    """
     with path.open("rb") as raw:
         is_gzipped = raw.read(len(_GZIP_MAGIC)) == _GZIP_MAGIC
+    # utf-8-sig drops the byte-order mark only at the start of the text; kept, it would
+    # become part of the first contig's name (doc/specs/loci.md, Regions).
     if is_gzipped:
-        return gzip.open(path, "rt", encoding="utf-8")
-    return path.open(encoding="utf-8")
+        return gzip.open(path, "rt", encoding="utf-8-sig")
+    return path.open(encoding="utf-8-sig")
 
 
 def _is_skipped(line: str) -> bool:

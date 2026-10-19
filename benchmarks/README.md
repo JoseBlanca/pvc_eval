@@ -90,14 +90,22 @@ every experiment compares its digest with the baseline's:
 
     uv run --no-sync python benchmarks/digest_parse_vcf.py VCF FASTA [SPAN_LIMIT]
 
-At the default span limit, on commit 6f8865c (the code of ac58b60):
+At the default span limit, with VcfRecord without its field `ref_mismatch`:
 
 | input | records | sha256 |
 |---|---|---|
-| small | 18,310 | 79a790572bb28048339e585db1e51a39a4ec8a32e73db1c96b66ae6bf73a542e |
-| small, GATK-like | 18,127 | 74cf45d11f11404781cd14198825e06ce0e0f8a70f8e1a340287f8bc72f02d57 |
-| one sample | 98,149 | 02860ac4303f8f8994705370279e8a0d6a06141a2bf1e0db7e226e8954dca361 |
-| spec size | 234,998 | 2c627ea747c255e0a12cd8c6c38503e127f174f0cd62028abc1eb7c4d86c4297 |
+| small | 18,310 | 798c27cc82733aa70da7b61bb6a364783cd7427144522a15ff600f36990ac27f |
+| small, GATK-like | 18,127 | 2a494a745203118da1588498dd270025d4b48a6a8c31eb85892e13972684b98d |
+| one sample | 98,149 | 6b7cc70543d2f6e043b894ef1be72eee1296836b151f25f8c94cf705ce5d6b79 |
+| spec size | 234,998 | afefe073faad3daa92e0359e8de78460d49b9a97851dfd32af70bfef772703f8 |
+
+These replaced, on 19 October 2026, the digests of commit 6f8865c (the code of ac58b60),
+because the repr of every record lost `ref_mismatch=False` when a REF that differs from
+the reference became an error that stops the run (`doc/spec.md` §5.2). The inputs were
+made again that day with the commands above, and their bytes and records equal the
+table's. The records are the same as before: the repr of each, with
+`ref_mismatch=False, ` put back after its line number, gave the old digest on the small
+input, 79a790572bb2..., and on the one-sample one, 02860ac4303f....
 
 ### Measuring
 
@@ -138,7 +146,7 @@ and P3. Its code was measured on 19 October 2026 between 16:13 and 16:35, at com
 on the same machine and Python. Each input and limit was one hyperfine call that ran both,
 10 runs after 1 warm-up (5 for the spec-size input at 10,000, 3 with no limit). The wall
 time is the mean ± sd, and the peak RSS the median of 3 (1 for the spec-size input with no
-limit). The digests at the default limit equal the ones above.
+limit). The digests at the default limit equal those of commit 6f8865c, which the ones above replaced.
 
 | input | span limit | wall time | peak RSS | before the review, measured beside it |
 |---|---|---|---|---|

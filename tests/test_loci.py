@@ -40,7 +40,6 @@ def make_record(
         qual=None,
         genotypes=(),
         line_number=line_number,
-        ref_mismatch=False,
         span=span,
     )
 
@@ -684,6 +683,12 @@ def make_adjacent_records_with_no_alt(count: int) -> Iterator[VcfRecord]:
         yield make_no_alt(position, 1, line_number=position + 1)
 
 
+# A few hundred bytes from the garbage collector or a lazy cache can move one peak of
+# about 4,000 bytes by more than 10%; a build_loci that keeps what it passed adds
+# 255,000 bytes at 1,000 SNPs and 2,509,000 at 10,000.
+PEAK_MARGIN = 4096
+
+
 def find_peak_memory(make_loci: Callable[[int], Iterator[Locus]], count: int) -> int:
     """The peak tracemalloc traces while the loci of make_loci(count) are made and passed,
     after one call on a small input, so that what the first call allocates is not
@@ -700,6 +705,12 @@ def find_peak_memory(make_loci: Callable[[int], Iterator[Locus]], count: int) ->
     return peak
 
 
+def is_peak_flat(smaller_peak: int, larger_peak: int) -> bool:
+    """Whether the peak of the larger input is within 10% and PEAK_MARGIN bytes of the
+    peak of the smaller one."""
+    return abs(larger_peak - smaller_peak) < 0.1 * smaller_peak + PEAK_MARGIN
+
+
 def make_loci_over_records_with_no_alt(count: int) -> Iterator[Locus]:
     """The loci of count records with no ALT of file A, one position apart, and a SNP of
     file B over the last of them."""
@@ -712,10 +723,10 @@ def test_records_with_no_alt_are_not_kept_once_passed() -> None:
     # in seconds, before the time of the larger run grows with the square of what it keeps.
     peak_1_000 = find_peak_memory(make_loci_over_records_with_no_alt, 1_000)
     peak_10_000 = find_peak_memory(make_loci_over_records_with_no_alt, 10_000)
-    assert abs(peak_10_000 - peak_1_000) < 0.1 * peak_1_000, (peak_1_000, peak_10_000)
+    assert is_peak_flat(peak_1_000, peak_10_000), (peak_1_000, peak_10_000)
 
     peak_100_000 = find_peak_memory(make_loci_over_records_with_no_alt, 100_000)
-    assert abs(peak_100_000 - peak_10_000) < 0.1 * peak_10_000, (peak_10_000, peak_100_000)
+    assert is_peak_flat(peak_10_000, peak_100_000), (peak_10_000, peak_100_000)
     assert list(make_loci_over_records_with_no_alt(100_000)) == [
         make_locus(
             99_999, 100_000, (make_no_alt(99_999, 1, line_number=100_000),), (make_snp(99_999),)
@@ -736,10 +747,10 @@ def test_str_regions_are_not_kept_once_passed() -> None:
     # in seconds, before the time of the larger run grows with the square of what it keeps.
     peak_1_000 = find_peak_memory(make_loci_over_snps_and_str_regions, 1_000)
     peak_10_000 = find_peak_memory(make_loci_over_snps_and_str_regions, 10_000)
-    assert abs(peak_10_000 - peak_1_000) < 0.1 * peak_1_000, (peak_1_000, peak_10_000)
+    assert is_peak_flat(peak_1_000, peak_10_000), (peak_1_000, peak_10_000)
 
     peak_100_000 = find_peak_memory(make_loci_over_snps_and_str_regions, 100_000)
-    assert abs(peak_100_000 - peak_10_000) < 0.1 * peak_10_000, (peak_10_000, peak_100_000)
+    assert is_peak_flat(peak_10_000, peak_100_000), (peak_10_000, peak_100_000)
 
 
 def make_records_with_no_alt_in_time(count: int, seconds: float) -> Iterator[VcfRecord]:

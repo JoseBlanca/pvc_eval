@@ -43,7 +43,7 @@ use for it.
 | **normalise** | trim the bases a VCF record's alleles share at either end (§5.2). A VCF record is never moved, split or decomposed. | "decompose", "atomise" |
 | **VCF record span** | every reference position at which the VCF record could have been written: its REF after trimming, widened for an indel to the whole stretch it can slide along (§5.2) | |
 | **sample pair** | a sample of file A matched to a sample of file B: same name unless the user maps them | |
-| **ploidy** | the number of haplotypes a sample has at every locus; a global constant, 2 | |
+| **ploidy** | the number of haplotypes each sample of a file has at every locus: 1 or 2, given per file, 2 by default | |
 
 **From the reference**
 
@@ -83,7 +83,8 @@ use for it.
 ```
 pvc_eval compare --reference ref.fa --a a.vcf.gz --b b.vcf.gz --output loci.tsv
                  [--regions regions.bed] [--strata strata.bed|pvc] [--str-regions str.bed]
-                 [--sample-map pairs.tsv] [--phasing-cap N] [--span-limit N|none] [--chain-distance N]
+                 [--sample-map pairs.tsv] [--ploidy-a N] [--ploidy-b N] [--phasing-cap N]
+                 [--span-limit N|none] [--chain-distance N]
                  [--summary summary.tsv] [--all-rows]
                  [--evaluator pvc|vcfeval|happy|naive]
 ```
@@ -96,7 +97,8 @@ pvc_eval compare --reference ref.fa --a a.vcf.gz --b b.vcf.gz --output loci.tsv
 | `--strata` | BED with a fourth column naming each interval's class; a locus takes the class of the intervals it overlaps (several are joined with `,`; none gives `.`). The word `pvc` instead of a path gives each locus one region type from the STR regions it holds — `satellite`, `str-bundle`, `str` or `generic` — with no BED needed (§5.7); a file named `pvc` is given as `./pvc`. |
 | `--str-regions` | BED of STR regions to use instead of running the STR finder. |
 | `--sample-map` | two columns: a sample of A, a sample of B. Without it, samples are paired by name. |
-| `--phasing-cap` | default 4096 (§5.4, **Open 2**). |
+| `--ploidy-a`, `--ploidy-b` | the ploidy each file is read with, 1 or 2, default 2 (§5.4). |
+| `--phasing-cap` | default 4096 (§5.4). |
 | `--chain-distance` | default 10 (§5.3): a whole number of 0 or more. |
 | `--span-limit` | how far, in bases, a VCF record's span may reach beyond its REF before it is cut back to the REF (§5.2): a whole number of 1 or more, default 10000, or `none` for no limit. |
 | `--output` | the table of §6, one row per sample pair and locus. |
@@ -106,12 +108,13 @@ pvc_eval compare --reference ref.fa --a a.vcf.gz --b b.vcf.gz --output loci.tsv
 
 **Errors, which stop the run:** a VCF not sorted in the `.fai`'s contig order and by position; a
 contig in a VCF but not in the reference; a VCF record whose REF reaches past the end of its
-contig; no sample pairs; a sample named in `--sample-map` absent
-from its file. Samples present in only one file and not mapped are listed as a warning and not
+contig, or whose REF differs from the reference (§5.2); no sample pairs; a sample named in `--sample-map` absent
+from its file; a line of `--sample-map` that is not two fields; a pair given twice; a sample name
+given twice in a header, when a pair needs it. Samples present in only one file and not mapped are listed as a warning and not
 compared.
 
-**Not errors:** everything about the content of a VCF record — a REF that disagrees with the
-reference, a malformed or haploid GT, contradicting VCF records. Those make the affected locus
+**Not errors:** everything else about the content of a VCF record — a malformed GT or one of
+another ploidy, contradicting VCF records. Those make the affected locus
 *invalid* for the affected sample (§5.4) and the run goes on.
 
 The Python API offers each stage of §4 as a function over iterators, so a user can, for example,
@@ -126,7 +129,8 @@ def compare(a: Path, b: Path, reference: Path, config: CompareConfig,
             evaluator: Evaluator = PVC) -> Iterator[OutcomeRow]: ...
 ```
 
-`CompareConfig` holds `--regions`, `--strata`, `--str-regions`, `--sample-map`, `--phasing-cap`,
+`CompareConfig` holds `--regions`, `--strata`, `--str-regions`, `--sample-map`, `--ploidy-a`,
+`--ploidy-b`, `--phasing-cap`,
 `--span-limit` and `--chain-distance`.
 
 ## 4. The pipeline
@@ -332,8 +336,19 @@ another reference, as a contig the reference lacks does, and so do contigs out o
 order: the VCFs, the FASTA and its `.fai` must agree (both decided by the owner on 19 October
 2026). A
 VCF record whose REF differs from the reference at its position, compared without regard to case
-(references are often soft-masked in lower case), is kept and marked *REF mismatch*; every locus
-containing it is invalid for every sample of that file (§5.4).
+(references are often soft-masked in lower case), stops the run too, with an error naming the file,
+the line, the position, the REF and the reference's bases there: a VCF that disagrees with its
+reference was made on another one, or is damaged, and no comparison over it can be trusted (decided
+by the owner on 19 October 2026, in place of marking the record and making its loci invalid).
+Two bases agree when the bases their IUPAC codes stand for overlap: `N` agrees with any base, `R`
+with `A` or `G`, `A` only with codes that include `A`; so a reference that writes `M` or `N` at a
+site where the VCF has a plain base, as some references and callers do, is no difference, while a
+VCF made on another build still is (decided by the owner on 19 October 2026). The error says how
+many records of the file agreed with the reference before the failing one, which tells a wrong
+reference (none) from a damaged line (many). A record with a symbolic allele (§9) is checked only
+for its contig and its order, not for its REF or its length, since it is skipped and nothing is
+compared from it (decided by the owner on 19 October 2026); a file made on another reference still
+stops at its first record with plain alleles.
 
 **Normalising.** Remove the bases all of a VCF record's alleles but `*` share at the right end,
 then at the left end, keeping at least one base in every allele (the VCF anchor convention). A
@@ -396,7 +411,12 @@ cut every insertion, whose span always holds the base after it). With no limit n
 left a later record can start, the stream holds the records of a contig until the next contig
 begins.
 
-A REF-mismatch record's span is its trimmed REF.
+**Threads.** The reader parses the sample columns of batches of VCF records on a pool of threads,
+4 by default, and 1 parses them in the calling thread with no pool; whatever the number, it gives
+the same records, in the same order, with the same errors and warnings (decided by the owner on
+19 October 2026, for a measured gain of about three times on 200 samples). The number is set in
+the Python API; whether the command line sets it too, and how two files read together share the
+cores, is not decided yet.
 
 **Three cases.** The first is valid, and would be made invalid by moving its deletion; the other
 two are one haplotype written twice, whose spellings overlap only through the span.
@@ -499,6 +519,9 @@ it. Taking the whole repeat whenever a VCF record touches it puts every spelling
 
 ### 5.4 Reconciliation
 
+The rules below are given in full, with their cases and the Python interface, in
+`doc/specs/reconciliation.md`.
+
 For each locus, each file and each sample, pvc_eval builds the sample's possible genotypes, then
 expresses the possible genotypes of both files over one shared list of locus alleles.
 
@@ -518,13 +541,15 @@ meant; the two are the same haplotype unless another edit lies at p+1 or p+2.
 - A `*` allele makes no edit: it says the haplotype's bases here are removed by another VCF record,
   which carries that edit. The haplotype must carry a deletion, from another VCF record of the
   locus, that deletes a position of the `*` record's normalised REF, where it was written or at
-  any other placement its span allows (§5.2); if it does not, the haplotype is **impossible**.
+  any other placement its span allows (§5.2), or another edit that replaces such a position as
+  written, as GATK writes `*` under an MNP; a haplotype missing at a VCF record might carry any
+  of its ALTs. If it carries none, the haplotype is **impossible**.
   The placements count because `bcftools norm` moves the deletion and leaves the `*` record where
   it was. A deletion's anchor base is in its span but deleted by no placement, so a `*` on it
   alone is not covered.
 - The edits of one haplotype are applied to the reference over the locus in position order. Two
-  edits **collide** if they change the same reference position or are two insertions at the same
-  point, as written. Colliding edits cannot both apply: the haplotype is **impossible**.
+  edits **collide** if they change the same reference position, if one is an insertion between
+  two positions the other replaces, or if they are two insertions at the same point, as written. Colliding edits cannot both apply: the haplotype is **impossible**.
 - If any VCF genotype leaves the haplotype missing (`.`), the locus allele is missing, however many
   other VCF records give it a definite allele. Impossibility is checked first: a haplotype whose
   definite edits collide, or whose `*` is not covered, is impossible even when it is also
@@ -542,7 +567,8 @@ each haplotype carries, up to phase.
   allele, so `./1` is a block. Homozygous VCF genotypes, and records of one phase set, add none.
 
 **The phasing cap.** A sample whose assignments at a locus would exceed the phasing cap (default
-4096, that is 13 blocks; **Open 2**) is not reconciled there, and its sample pairs get the outcome
+4096, that is 13 blocks; kept by the owner on 19 October 2026, to be lowered if it costs too much
+time) is not reconciled there, and its sample pairs get the outcome
 *too complex* (§5.5). The count is made before any assignment is built, and a sample over the cap
 adds nothing to the shared locus alleles. This bounds the work,
 which doubles with every block, and only the work: a satellite holding hundreds of phased VCF
@@ -552,10 +578,11 @@ Each assignment gives one locus genotype, unless one of its haplotypes is imposs
 possible genotypes are the distinct locus genotypes that result. A sample whose VCF genotypes allow
 none is **invalid** at the locus.
 
-**A sample is also invalid** at a locus if any of its VCF genotypes there is malformed — a number of
-alleles other than the ploidy, or an allele index the VCF record lacks — or if any VCF record of its
-file in the locus has a REF mismatch (§5.2). A haploid VCF genotype, such as `1` on chrX of a male
-sample, is not malformed but makes the sample invalid too, with its own reason (**Open 1**).
+**A sample is also invalid** at a locus if any of its VCF genotypes there is malformed — an allele
+that is neither `.` nor an index of the VCF record's alleles. A VCF genotype with a number of alleles other than its file's
+ploidy, such as `1` on chrX of a male sample in a file read with ploidy 2, is not malformed but
+makes the sample invalid too, with the reason `ploidy mismatch` (decided by the owner on 19
+October 2026). A VCF genotype whose alleles are all `.` is missing, whatever their number.
 
 **The example of an invalid sample.** Reference positions 9 to 13 read `CAGTC`. One file has
 
@@ -571,14 +598,16 @@ deletion `0/1` the same records are fine — one haplotype `C`, the other `CAAT`
 the second record as `G → A,*` with `1/2`, which says exactly that.
 
 **Shared locus alleles.** The locus's alleles are REF followed by every distinct non-missing locus
-allele appearing in any possible genotype of any sample of either file, in order of first appearance,
-samples in header order, file A before file B. A locus allele whose sequence equals REF, because its
+allele appearing in any possible genotype of any paired sample of either file, in order of first
+appearance, samples in header order, file A before file B. A locus allele whose sequence equals REF, because its
 edits cancel or an ALT spells the reference, is REF, index 0. Each possible genotype becomes a
 sorted tuple of indices into that list, with missing haplotypes written as missing and sorted after
 every index, and a sample's possible genotypes are in the order of those tuples. This is what lets §5.5 compare genotypes by number: two files that spelled one
 sequence differently now name it by the same index.
 
 ### 5.5 Evaluation
+
+The rules below are given in full, with their cases, in `doc/specs/reconciliation.md`.
 
 Each sample pair at each compared locus gets exactly one outcome. The first rule that applies wins:
 
@@ -588,7 +617,7 @@ Each sample pair at each compared locus gets exactly one outcome. The first rule
 | **invalid in A**, **invalid in B**, **invalid in both** | that file's sample is invalid at the locus |
 | **missing in A**, **missing in B**, **missing in both** | every possible genotype of that file's sample has a missing haplotype |
 | **reference in both** | in both files, the only possible genotype is all REF |
-| **same genotype** | some possible genotype of A equals some possible genotype of B |
+| **same genotype** | some possible genotype of A equals some possible genotype of B; two genotypes all REF are equal whatever their ploidies |
 | **same alleles, other genotype** | some possible genotype of A and some of B carry the same set of non-reference locus alleles, on different numbers of haplotypes (one in A, both in B, say) |
 | **only in A**, **only in B** | one file gives the sample a non-reference locus allele, and the other's only possible genotype is all REF |
 | **different** | both give the sample non-reference locus alleles, and no pair of possible genotypes matches as above |
@@ -596,7 +625,8 @@ Each sample pair at each compared locus gets exactly one outcome. The first rule
 When several possible genotypes exist, the pair reported in the table is the first, taking A's
 possible genotypes in order and, for each, B's in order, that meets the rule of the outcome. Where
 the rule names no pair (*missing*, *reference in both*, *only in*, *different*), it is the first
-possible genotype of each file. *Too complex* and *invalid* report none (§6). Rows come locus by
+possible genotype of each file. *Too complex* and *invalid* report no pair; in their rows a sample
+that was reconciled shows its first possible genotype (§6). Rows come locus by
 locus, and within a locus in the order of the sample pairs: file A's header order, or the order of
 `--sample-map`.
 
@@ -673,7 +703,7 @@ Tab-separated, one row per sample pair and locus (without `--all-rows`, rows who
 | `quality_a`, `quality_b` | §2, *quality*; `.` when the file gives the sample no non-reference VCF allele |
 | `gq_a`, `gq_b` | the lowest GQ among the sample's VCF records in the locus that give it a non-reference VCF allele, `.` when absent |
 | `records_a`, `records_b` | how many VCF records with an ALT of each file the locus holds |
-| `invalid_reason_a`, `invalid_reason_b` | for an invalid outcome, the first that applies: `REF mismatch`, `malformed GT`, `haploid GT`, `contradicting records`; `.` otherwise |
+| `invalid_reason_a`, `invalid_reason_b` | for an invalid sample, whatever the outcome, the first that applies: `malformed GT`, `ploidy mismatch`, `contradicting records`; `.` otherwise |
 
 The summary (`--summary`) counts rows by outcome, kind and stratum.
 
@@ -687,7 +717,8 @@ Nothing about pvc_eval is trusted until these pass.
 2. **Each stage on hand-written cases**, including:
    - normalising and spans: trimming at both ends; a `*`-only record, not trimmed; deletion and
      insertion spans in homopolymers and longer repeats; a multi-ALT record; a complex record; the
-     three cases of §5.2; a span cut at 10 kb;
+     three cases of §5.2; a span cut at 10 kb; a REF that differs from the reference, which stops
+     the run, and a lower-case reference, which is no difference;
    - loci: chaining across both files; the traded events of §5.3, one locus at chain distance 1
      and two at 0; adjacent SNPs, chained at 0; a record with no ALT, which starts no locus; an insertion next to a repeat pulling it in; two
      complex records at the two ends of a repeat; with `--regions`, a locus
@@ -696,8 +727,8 @@ Nothing about pvc_eval is trusted until these pass.
      on a haplotype with no deletion, and one on a deletion's anchor base only (impossible); the
      `bcftools norm` output of GATK's `*` form (valid), and of the first case of §5.2 (invalid); an insertion that slides with its bases rotated; the insertion of `52 AG → A,AAG` after the
      anchor; phase sets; the phasing cap at 13 blocks (reconciled) and 14 (*too complex*), and 14
-     heterozygous records in one phase set (one block, reconciled); `./1`; a REF mismatch, and a
-     lower-case reference that is no mismatch; malformed GT; haploid GT;
+     heterozygous records in one phase set (one block, reconciled); `./1`; malformed GT; ploidy
+     mismatch, and a file of ploidy 1;
    - kind: one locus of each kind, and a *too complex* locus, which still has one;
    - evaluation: one case per outcome;
    - strata with `--strata pvc`: the insertion of §5.7 (`str`), a locus with no STR region
@@ -712,7 +743,12 @@ Nothing about pvc_eval is trusted until these pass.
    indels shifted right within their repeats, where no other edit of the same haplotype lies in
    the stretch they cross; GATK-style `*` records added — every row in the set allowed for
    the file against itself. Records decomposed from one record are written phased, in one phase
-   set, so the re-spelling adds no blocks (§5.4). The re-spelling program is part of the tests.
+   set, so the re-spelling adds no blocks (§5.4). Each re-spelling rewrites only records none of
+   whose edits on a haplotype touches an edit of another record on the same haplotype, edits
+   being judged as §5.4 makes them: collisions are judged on
+   edits as written (§5.4), so where the edits of one haplotype touch, the outcome can follow the
+   spelling (decided by the owner on 19 October 2026, over collision rules that do not depend on
+   it). The re-spelling program is part of the tests.
    `bcftools norm` is not one of the re-spellings, since it can change a haplotype (§5.2).
 5. **The hard cases from pvc's STR work:** the VCF records behind the cases recorded in pvc's
    reports (GIAB's split indel-plus-SNP truth records against pvc's single repeat record; GATK's
@@ -750,31 +786,15 @@ apart, the A/B asymmetry of tools that call one file the truth — is its own sh
   written against the same tests.
 - **Structural variants and symbolic alleles** (`<DEL>`, breakends): a VCF record with one is
   skipped and counted in a warning.
-- **Ploidy other than 2**: functions are written for any ploidy where that costs nothing; where one
-  is limited to 2 (the phase enumeration of §5.4 is the likely one), it raises an error for any
-  other ploidy.
+- **Ploidy other than 1 or 2**: functions are written for any ploidy where that costs nothing; where
+  one is limited to 1 and 2 (the phase enumeration of §5.4), it raises an error for any other
+  ploidy.
 
 ## 10. Open points
 
-**Open 1. Haploid genotypes.** A haploid VCF genotype (`1`, `0`) is what callers write on chrX and
-chrY of male samples, and on chrM. The options:
-
-- *Invalid*, as now: the sample is invalid at the locus, with the reason `haploid GT`. Nothing is
-  compared on those contigs, and the table says why.
-- *Read as homozygous*: `1` is compared as `1/1`. A file that writes male chrX haploid then agrees
-  with one that writes it diploid and homozygous, which is what both mean; a heterozygous call on
-  male chrX shows as *same alleles, other genotype*.
-- *Support ploidy 1*: a locus genotype of one haplotype, compared only with another of one. Most
-  faithful, and the most work; §9 leaves ploidy other than 2 out.
-
-I recommend reading it as homozygous: it compares what the files mean, at the cost of one rule.
-Meanwhile the implementer makes it invalid, which the other two can replace without touching
-anything else.
-
-**Open 2. The phasing cap's default.** 4096 assignments is 13 blocks; how long they take per sample
-and locus is not measured yet. A higher cap compares more loci in unphased cohort data and
-costs time exponentially; a lower one gives more *too complex* rows. I recommend 4096 until §8's
-comparisons show how many rows it costs. Meanwhile the implementer uses 4096.
+Open 1, haploid genotypes, and Open 2, the phasing cap's default, were answered by the owner on
+19 October 2026: each file is read with one ploidy, 1 or 2, and a GT of another ploidy makes the
+sample invalid (§5.4); the cap stays at 4096, to be lowered if it costs too much time.
 
 **Open 3. The hard cases of §7.5.** The VCF records of the cases in pvc's reports, and the outcome
 each must give, are to be copied into §7 from pvc's reports. Until then §7.5 checks nothing; the
