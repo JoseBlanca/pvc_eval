@@ -575,3 +575,22 @@ def test_soft_masked_reference_gives_no_mismatch_and_the_same_spans(tmp_path: Pa
         (3, ("AA", "A"), (2, 5), False),
         (4, ("A", "T"), (4, 5), False),
     ]
+
+
+def test_reference_is_asked_once_for_each_contig_with_records(tmp_path: Path) -> None:
+    path = write_vcf(
+        tmp_path,
+        "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n"
+        "chr1\t7\t.\tA\tG\t.\t.\t.\tGT\t0/1\t0/1\n"
+        "chr2\t3\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n"
+        "chr2\t5\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+    )
+    contigs_asked: list[str] = []
+
+    def contig_sequence(contig: str) -> str:
+        contigs_asked.append(contig)
+        return REFERENCE[contig]
+
+    list(read_vcf_records(path, CONTIGS, contig_sequence))
+
+    assert contigs_asked == ["chr1", "chr2"]
