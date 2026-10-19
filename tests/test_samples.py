@@ -120,7 +120,7 @@ def test_map_sample_absent_from_file_b_stops_the_run(tmp_path: Path) -> None:
         make_sample_pairs(path_a, path_b, sample_map=sample_map)
 
     assert str(error.value) == (
-        f"{sample_map}, line 3: HG005 is not a sample of {path_b}, whose samples are HG002,"
+        f"{sample_map}, line 3: 'HG005' is not a sample of {path_b}, whose samples are HG002,"
         " HG003, HG004. Correct the name and run again."
     )
 
@@ -133,9 +133,45 @@ def test_map_sample_absent_from_file_a_stops_the_run(tmp_path: Path) -> None:
         make_sample_pairs(path_a, path_b, sample_map=sample_map)
 
     assert str(error.value) == (
-        f"{sample_map}, line 1: HG005 is not a sample of {path_a}, whose samples are HG002,"
+        f"{sample_map}, line 1: 'HG005' is not a sample of {path_a}, whose samples are HG002,"
         " HG003. Correct the name and run again."
     )
+
+
+def test_map_line_with_neither_sample_in_its_file_names_the_sample_of_a(tmp_path: Path) -> None:
+    path_a, path_b = _write_files(tmp_path, ["HG002"], ["HG002"])
+    sample_map = _write_map(tmp_path, "HG005\tHG006\n")
+
+    with pytest.raises(PvcEvalInputError) as error:
+        make_sample_pairs(path_a, path_b, sample_map=sample_map)
+
+    assert str(error.value) == (
+        f"{sample_map}, line 1: 'HG005' is not a sample of {path_a}, whose samples are HG002."
+        " Correct the name and run again."
+    )
+
+
+def test_map_name_with_trailing_space_is_quoted_in_the_error(tmp_path: Path) -> None:
+    path_a, path_b = _write_files(tmp_path, ["HG002"], ["HG002"])
+    sample_map = _write_map(tmp_path, "HG002\tHG002 \n")
+
+    with pytest.raises(PvcEvalInputError) as error:
+        make_sample_pairs(path_a, path_b, sample_map=sample_map)
+
+    assert str(error.value) == (
+        f"{sample_map}, line 1: 'HG002 ' is not a sample of {path_b}, whose samples are HG002."
+        " Correct the name and run again."
+    )
+
+
+def test_map_ignores_a_byte_order_mark(tmp_path: Path) -> None:
+    path_a, path_b = _write_files(tmp_path, ["HG002"], ["HG002"])
+    sample_map = tmp_path / "pairs.tsv"
+    sample_map.write_bytes(b"\xef\xbb\xbfHG002\tHG002\n")
+
+    pairs = make_sample_pairs(path_a, path_b, sample_map=sample_map)
+
+    assert pairs == (SamplePair(name_a="HG002", index_a=0, name_b="HG002", index_b=0),)
 
 
 def test_map_with_same_pair_on_two_lines_stops_the_run(tmp_path: Path) -> None:
@@ -228,10 +264,11 @@ def test_map_that_cannot_be_opened_stops_the_run(tmp_path: Path) -> None:
     )
 
 
-def test_map_that_is_not_utf8_names_the_line(tmp_path: Path) -> None:
+@pytest.mark.parametrize("start", [b"", b"\xef\xbb\xbf"], ids=["plain", "byte_order_mark"])
+def test_map_that_is_not_utf8_names_the_line(tmp_path: Path, start: bytes) -> None:
     path_a, path_b = _write_files(tmp_path, ["HG002"], ["HG002"])
     sample_map = tmp_path / "pairs.tsv"
-    sample_map.write_bytes(b"HG002\tHG002\n\nHG\xe9002\tHG002\n")
+    sample_map.write_bytes(start + b"HG002\tHG002\n\nHG\xe9002\tHG002\n")
 
     with pytest.raises(PvcEvalInputError) as error:
         make_sample_pairs(path_a, path_b, sample_map=sample_map)

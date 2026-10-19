@@ -20,6 +20,7 @@ _logger = logging.getLogger(__name__)
 _FIRST_SAMPLE_COLUMN = 10
 # How many samples a warning of samples in no pair names before it counts the rest (§3).
 _NAMES_IN_WARNING = 10
+_BYTE_ORDER_MARK = "\ufeff"  # U+FEFF, which UTF-8 writes as EF BB BF
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -148,7 +149,9 @@ def _read_map_lines(sample_map: Path) -> list[str]:
             f"{sample_map} cannot be read: permission denied. Allow reading it and run again."
         ) from None
     try:
-        map_text = map_bytes.decode("utf-8")
+        # The byte-order mark that spreadsheet programs write is dropped (§3) here and not
+        # by decoding with utf-8-sig, whose error offsets would not count it.
+        map_text = map_bytes.decode("utf-8").removeprefix(_BYTE_ORDER_MARK)
     except UnicodeDecodeError as err:
         line_number = map_bytes.count(b"\n", 0, err.start) + 1
         raise PvcEvalInputError(
@@ -190,7 +193,7 @@ def _check_in_file(
     if name in sample_names:
         return
     raise PvcEvalInputError(
-        f"{sample_map}, line {line_number}: {name} is not a sample of {path}, whose samples"
+        f"{sample_map}, line {line_number}: '{name}' is not a sample of {path}, whose samples"
         f" are {', '.join(sample_names)}. Correct the name and run again."
     )
 
