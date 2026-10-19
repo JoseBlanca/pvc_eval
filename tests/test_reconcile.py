@@ -309,7 +309,6 @@ CASES = {
         alleles=("CG", "AT"),
         result_a=((1, 1),),
     ),
-    # R5, reference 51-54 TAGC, locus 51-53.
     # Beside R4, the insertion first: the T goes in between 11 and 12, which the MNP
     # replaces, and second: the T goes in at the start of the deleted G.
     "R4-beside-insertion-inside-a-later-mnp-collides": Case(
@@ -328,6 +327,7 @@ CASES = {
         alleles=("CGA", "CTA"),
         result_a=((1, 1),),
     ),
+    # R5, reference 51-54 TAGC, locus 51-53.
     "R5-insertion-after-anchor": Case(
         ref_start=51,
         bases="TAGC",
