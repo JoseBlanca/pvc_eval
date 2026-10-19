@@ -688,7 +688,8 @@ def test_a_bundle_member_is_trimmed_to_whole_copies_and_carries_its_motif() -> N
 
 def test_locus_reports_its_span_period_and_purity() -> None:
     # pvc's [6, 21], 1-based, is 16 bases, 8 copies of AT. Without the contig name, which
-    # an STR segment of the port does not hold.
+    # an STR segment of the port does not hold. It checks only that the record gives back
+    # the fields it was made with; pvc's test checks its accessors, which the port has not.
     segment = _StrSegment(start=5, end=21, motif="AT", purity=1.0)
     assert (segment.start, segment.end) == (5, 21)
     assert segment.end - segment.start == 16
@@ -821,6 +822,7 @@ def test_classify_drops_period_one_homopolymer_and_spares_the_neighbour_ssr() ->
     segments = _find_whole_contig([_iv(0, 20, 1, 100), _iv(20, 50, 3, 100)], contig, _PARAMS)
     assert len(segments) == 1
     assert segments[0].motif == "CAG"
+    assert len(segments[0].motif) == 3  # pvc's period()
 
 
 def test_prefilter_drops_low_copy_noise() -> None:
