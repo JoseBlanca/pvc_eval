@@ -480,7 +480,15 @@ def _check_ref(
     # Equal codes agree, so only a letter that is no code needs the pairs then.
     if ref_upper == ref_bases and _IUPAC_CODES.issuperset(ref_upper):
         return
-    if all(pair in _AGREEING_CODES for pair in zip(ref_upper, ref_bases, strict=True)):
+    first_differing = next(
+        (
+            index
+            for index, pair in enumerate(zip(ref_upper, ref_bases, strict=True))
+            if pair not in _AGREEING_CODES
+        ),
+        None,
+    )
+    if first_differing is None:
         return
     if num_agreeing == 0:
         remedy = (
@@ -499,8 +507,35 @@ def _check_ref(
             " or remove it, and run again."
         )
     raise PvcEvalInputError(
-        f"{path}, line {line_number}: the REF of {contig}:{pos + 1} is {ref}, and the"
-        f" reference has {ref_bases} there. {remedy}"
+        f"{path}, line {line_number}: the REF of {contig}:{pos + 1}"
+        f" {_format_ref_difference(ref, ref_bases, contig, pos, first_differing)} {remedy}"
+    )
+
+
+# A REF of up to this many bases is written whole in its error, beside the reference's
+# bases; a longer one only where it first differs, so that a deletion of 5 kb does not put
+# two strings of 5 kb into the message.
+_MAX_REF_WRITTEN = 20
+
+
+def _format_ref_difference(
+    ref: str, ref_bases: str, contig: str, pos: int, first_differing: int
+) -> str:
+    """What a REF that differs from the reference has against the reference's bases, as a
+    sentence that follows "the REF of contig:POS".
+
+    pos: the 0-based position of POS. first_differing: the index in the REF of the first
+    base that does not agree.
+    """
+    differing_pair = (ref[first_differing].upper(), ref_bases[first_differing])
+    no_code = next((base for base in differing_pair if base not in _IUPAC_CODES), None)
+    note = "" if no_code is None else f" ('{no_code}' is no IUPAC code)"
+    if len(ref) <= _MAX_REF_WRITTEN:
+        return f"is '{ref}', and the reference, read in upper case, has '{ref_bases}' there{note}."
+    return (
+        f"({len(ref):,} bases) has '{ref[first_differing]}' at"
+        f" {contig}:{pos + first_differing + 1}, where the reference, read in upper case, has"
+        f" '{ref_bases[first_differing]}'{note}."
     )
 
 

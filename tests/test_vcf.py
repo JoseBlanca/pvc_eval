@@ -734,7 +734,8 @@ def test_ref_that_differs_from_the_reference_stops_the_run(
         given.extend(records)
 
     assert str(raised.value) == (
-        f"{path}, line 3: the REF of chr1:5 is Ca, and the reference has AG there. It is"
+        f"{path}, line 3: the REF of chr1:5 is 'Ca', and the reference, read in upper case,"
+        " has 'AG' there. It is"
         " the file's first record with no symbolic allele, so the VCF looks made on another"
         " reference: compare against the reference it was called on, and run again."
     )
@@ -776,19 +777,78 @@ def test_iupac_codes_that_share_a_base_agree(
 
 
 @pytest.mark.parametrize(
-    ("reference_base", "ref"),
-    [("A", "C"), ("R", "C"), ("N", "X"), ("X", "X")],
+    ("reference_base", "ref", "found"),
+    [
+        ("A", "c", "is 'c', and the reference, read in upper case, has 'A' there."),
+        ("R", "C", "is 'C', and the reference, read in upper case, has 'R' there."),
+        (
+            "N",
+            "x",
+            "is 'x', and the reference, read in upper case, has 'N' there ('X' is no IUPAC code).",
+        ),
+        (
+            "x",
+            "X",
+            "is 'X', and the reference, read in upper case, has 'X' there ('X' is no IUPAC code).",
+        ),
+    ],
     ids=["a_against_c", "reference_r_against_c", "no_code_against_n", "no_code_against_itself"],
 )
 def test_iupac_codes_that_share_no_base_differ(
-    tmp_path: Path, make_reference: MakeReference, reference_base: str, ref: str
+    tmp_path: Path, make_reference: MakeReference, reference_base: str, ref: str, found: str
 ) -> None:
     # A letter that is no IUPAC code stands for no base, so it agrees with nothing.
     path = write_vcf(tmp_path, f"chr1\t3\t.\t{ref}\t.\t.\t.\t.\tGT\t0/0\t0/0\n")
     reference = make_reference(*make_fasta({"chr1": f"GG{reference_base}GG"}))
 
-    with pytest.raises(PvcEvalInputError, match=r"line 3: the REF of chr1:3 "):
+    with pytest.raises(PvcEvalInputError) as raised:
         list(parse_vcf(path, reference))
+
+    assert str(raised.value) == (
+        f"{path}, line 3: the REF of chr1:3 {found} It is the file's first record with no"
+        " symbolic allele, so the VCF looks made on another reference: compare against the"
+        " reference it was called on, and run again."
+    )
+
+
+# 20 bases of REF are written whole in the message, and one more only where they differ.
+LONG_REF_SEQUENCE = "G" + "ACGT" * 6 + "G"
+
+
+@pytest.mark.parametrize(
+    ("ref", "found"),
+    [
+        (
+            "ACGTACGTACGTACGTACGA",
+            "is 'ACGTACGTACGTACGTACGA', and the reference, read in upper case, has"
+            " 'ACGTACGTACGTACGTACGT' there.",
+        ),
+        (
+            "ACGTACGTACGTACGTACGAA",
+            "(21 bases) has 'A' at chr1:21, where the reference, read in upper case, has 'T'.",
+        ),
+        (
+            "ACGTACGTAXGTACGTACGTA",
+            "(21 bases) has 'X' at chr1:11, where the reference, read in upper case, has 'C'"
+            " ('X' is no IUPAC code).",
+        ),
+    ],
+    ids=["20_bases_written_whole", "21_bases_where_they_differ", "21_bases_no_code"],
+)
+def test_ref_of_more_than_20_bases_is_named_where_it_first_differs(
+    tmp_path: Path, make_reference: MakeReference, ref: str, found: str
+) -> None:
+    path = write_vcf(tmp_path, f"chr1\t2\t.\t{ref}\t.\t.\t.\t.\tGT\t0/0\t0/0\n")
+    reference = make_reference(*make_fasta({"chr1": LONG_REF_SEQUENCE}))
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == (
+        f"{path}, line 3: the REF of chr1:2 {found} It is the file's first record with no"
+        " symbolic allele, so the VCF looks made on another reference: compare against the"
+        " reference it was called on, and run again."
+    )
 
 
 def test_records_are_trimmed_and_never_moved(tmp_path: Path, reference: IndexedFasta) -> None:
@@ -1546,8 +1606,8 @@ def test_ref_that_differs_comes_after_the_records_before_it(
             " reference, so this line looks damaged: correct it or remove it, and run again."
         )
     assert str(raised.value) == (
-        f"{path}, line {line_number}: the REF of chr1:{pos_1based} is T, and the reference"
-        f" has A there. {remedy}"
+        f"{path}, line {line_number}: the REF of chr1:{pos_1based} is 'T', and the"
+        f" reference, read in upper case, has 'A' there. {remedy}"
     )
     assert [record.line_number for record in given] == list(range(3, line_number - 1))
     assert [record.start for record in given] == [10 + 10 * index for index in range(len(given))]
