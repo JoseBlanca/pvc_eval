@@ -94,7 +94,7 @@ and `each_rejection_reason_names_the_gate_that_fired` guard it. `minimal_trim` f
 compares; a test of the port's own guards it (pvc's `minimal_trim_returns_none_without_two_clean_copies`
 has no cut either way, found during milestone 2).
 
-- [ ] 3. The segmented genome of a contig
+- [x] 3. The segmented genome of a contig
 
 **What it gives.** `segment_contig`: the segments of one contig of an `IndexedFasta`, steps 7 and 8
 on the result of milestones 1 and 2.
@@ -142,7 +142,11 @@ command".
 - The `--help` and the messages go to the `first-reader` subagent, read as a user of pvc_eval.
 
 **What could go wrong.** The spec's own reader and writer agreeing with each other while both are
-wrong; the literals of the worked cases, which came from pvc, guard it.
+wrong; the literals of the worked cases, which came from pvc, guard it. `StrFinderParameters` and
+`segment_contig` raise `ValueError` for a bad parameter and a contig the `.fai` lacks; the command
+turns each into a `PvcEvalInputError` with its remedy, or the user sees a traceback (found by the
+reviews of milestones 2 and 3). The filter of STR regions by requested spans exists already, from
+milestone 3, and takes `GenomeSegment`.
 
 - [ ] 5. The whole-port check against pvc
 

@@ -86,3 +86,47 @@ shorter than its period, where pvc refuses it: step 1 never makes one.
 
 **What the owner should know.** Nothing that changes a result. The comparison with pvc's binary on
 400 random contigs agrees for steps 1 to 3; milestone 5 compares the whole finder.
+
+## Milestone 3: the segmented genome of a contig
+
+Commits 6d179b0 to e6961f6. `segment_contig`, steps 7 and 8, and a private filter of STR regions by
+requested spans for `str-regions --regions`.
+
+- **The 31 ported tests** of pvc's `region_typing/mod.rs`, the golden-catalogue test among them, run
+  with a contig-end flank of 0 and the periods scanned equal to the periods admitted, as pvc's
+  scanning route. All pass.
+- **The spec's own cases**: the four worked cases, the 120-A case (periods scanned 1 to 6, admitted
+  2 to 6: a satellite), the copy floors at their boundary, an empty contig, a contig shorter than the
+  period, a property test that the segments of a contig run consecutively from 0 to its length, and
+  four threads giving what one gives. Their expected values come from pvc's binary at bbcc9f4.
+- `segment_contig` reads and resolves the contig when it is called, so its errors come at the call.
+- Checks: ruff and ty clean, `pytest -q` "450 passed".
+
+**Changed in the plan.** The plan left open how pvc's four tests with requested spans are ported;
+they run against the private filter that `str-regions --regions` will use, without pvc's assertions on
+generic regions.
+
+**What the review found and is fixed.**
+- *Spec and tests, a blocker found from both sides.* No test checked that a bundle's hull ends at the
+  furthest end of its members rather than its last member's; changed that way, the code cut 7 of 600
+  contigs' bundles short and every test passed. A contig whose bundle has a member inside another now
+  pins it, with pvc's segments.
+- *Errors and tests, a blocker found from both sides.* `segment_contig` passing on a bad FASTA byte or
+  a closed FASTA had no test; a version that returned no segments passed.
+- *Tests.* Two more rules of step 7 had no test that could fail: a repeat run with one span inside
+  another, and the distance at which bundles are regrouped after absorption.
+- *Design.* The `--regions` filter took the private segment type and compared every segment with
+  every span; it now takes `GenomeSegment` and walks sorted spans once.
+- The code matched pvc in every comparison: 4,500 contig runs against pvc's binary at two settings,
+  and 51,700 layouts and contigs against two transcriptions of pvc.
+
+**Not taken.** Three comments keep pvc's names `RepeatInterval` and `contig_with_tract`, so that a
+reader can find pvc's code.
+
+**What the owner should know.**
+- Absorption is the plain fixed point the brief asked for. On each pass it compares every feature
+  with every satellite; pvc counted 9.3 billion such comparisons on GRCh38 before it moved to a
+  sweep. It is fine at the size of milestone 5's sequences, and is the first thing the performance
+  work will meet on a whole chromosome.
+- pvc's two tests of absorption that the plan named do not fail when absorption stops after one pass;
+  a test of the port's own does.
