@@ -393,7 +393,8 @@ SPELLING_CASES = {
     ),
     # A replaces 2-3 by GCTA and inserts a C after 3, at the end of the stretch: GCTACT.
     # Decomposed, the TA left over is an insertion after 3 too, and two insertions at one
-    # point collide.
+    # point collide. The locus reaches 5, the N that pads the reference, because B's TA
+    # insertion slides right to it (its span holds the base after it).
     "insertion-at-the-end-of-a-replacement-invalid-only-decomposed": Case(
         ref_start=1,
         bases="GTTT",
