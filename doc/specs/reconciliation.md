@@ -581,7 +581,10 @@ a literal.
   is built in the test over the spans of both. Every row is then *same genotype*, *reference in
   both*, *missing in both*, *invalid in both* or *too complex*, the last three only where A
   itself has a missing haplotype, an invalid sample or a sample over the cap (`doc/spec.md`
-  §7.3). B being A itself would check little, since both then get the same results by
+  §7.3). Each sample's result in B is also the same as in A, the same possible genotypes with
+  the same indices, or the same reason: B has A's blocks, one phase set for each record of A,
+  and its haplotypes have A's sequences. The outcome alone would let a B that lost phase
+  assignments pass, since *same genotype* needs only one pair to match. B being A itself would check little, since both then get the same results by
   construction. The other re-spellings of §7.4 move records, and are tested over the whole
   pipeline once `build_loci` exists.
 
