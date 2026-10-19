@@ -347,17 +347,183 @@ def test_a_candidate_under_its_copy_floor_still_drops_a_longer_period() -> None:
     assert _find_candidates(_PERIOD_SIX_OVER_AN_A_RUN, parameters) == []
 
 
-def test_a_longer_period_waits_for_the_shorter_one_still_open_at_a_block_end() -> None:
-    # After this tail the periods 5 and 6 over [0, 30) are final some bases before the run
-    # of A's that drops them is; a block of 1 base ends between the two. The tail was found
-    # by searching random ones for a case where testing a candidate before its divisors are
-    # known lets both through.
-    bases = _PERIOD_SIX_OVER_AN_A_RUN + "CAGATTTTCATATTATGCAG"
-    parameters = StrFinderParameters(copy_floors=_ZERO_FLOORS, contig_end_flank=0)
-    expected = _find_candidates(bases, parameters)
-    assert not any(candidate.period in (5, 6) for candidate in expected), expected
+# Step 1's drop rule on inputs where a slip in one of its clauses changes the output. The
+# expected candidates, (start, end, period, score) with no copy floor, are those of a direct
+# transcription of pvc's find_tandem_repeats at bbcc9f4, written by the review of this
+# milestone in the session's scratchpad, rev_spec/pvc_ref.py. On 19 October 2026 the command
+# was `python3 -c "from pvc_ref import find_tandem_repeats; print(find_tandem_repeats(b'...',
+# 1, 6))"` in that directory, with each sequence in place of the dots.
+_DROP_RULE_CASES: list[tuple[str, str, list[tuple[int, int, int, int]]]] = [
+    (
+        "half_covered_is_dropped",  # an overlap of exactly half drops (18, 34) of period 2
+        "GGAGGGGAGAAAAAGGAAAGAGAGAGAAAAAAAAGAGAAAGGAAGAGA",
+        [
+            (0, 2, 1, 2),
+            (3, 7, 1, 6),
+            (9, 14, 1, 8),
+            (14, 16, 1, 2),
+            (16, 19, 1, 4),
+            (26, 34, 1, 14),
+            (37, 40, 1, 4),
+            (40, 42, 1, 2),
+            (42, 44, 1, 2),
+            (6, 10, 2, 4),
+            (33, 38, 2, 6),
+            (43, 48, 2, 6),
+        ],
+    ),
+    (
+        "only_dividing_periods_drop",  # (11, 19) of period 4 stays beside a period 3
+        "CCGACCACAAACCACCCACAAGAGGACCGGAAAACCCACGGACGGGCAACCCGCGGGAGGGGCCGCACCGCAACGAAGG",
+        [
+            (0, 2, 1, 2),
+            (4, 6, 1, 2),
+            (8, 11, 1, 4),
+            (11, 13, 1, 2),
+            (14, 17, 1, 4),
+            (19, 21, 1, 2),
+            (23, 25, 1, 2),
+            (26, 28, 1, 2),
+            (28, 30, 1, 2),
+            (30, 34, 1, 6),
+            (34, 37, 1, 4),
+            (39, 41, 1, 2),
+            (43, 46, 1, 4),
+            (47, 49, 1, 2),
+            (49, 52, 1, 4),
+            (54, 57, 1, 4),
+            (58, 62, 1, 6),
+            (62, 64, 1, 2),
+            (67, 69, 1, 2),
+            (71, 73, 1, 2),
+            (75, 77, 1, 2),
+            (77, 79, 1, 2),
+            (5, 9, 2, 4),
+            (16, 20, 2, 4),
+            (20, 24, 2, 4),
+            (51, 55, 2, 4),
+            (10, 16, 3, 6),
+            (11, 19, 4, 8),
+            (37, 45, 4, 8),
+            (62, 72, 5, 10),
+        ],
+    ),
+    (
+        "a_dropped_candidate_drops_nothing",  # (6, 19) of period 4 stays
+        "GAAGGGAAGAAAGAGAGAGGGGGGGAAAGAAAAGAGAGGGAGGAAGGGAAGGGA",
+        [
+            (1, 3, 1, 2),
+            (3, 6, 1, 4),
+            (6, 8, 1, 2),
+            (9, 12, 1, 4),
+            (18, 25, 1, 12),
+            (25, 28, 1, 4),
+            (29, 33, 1, 6),
+            (37, 40, 1, 4),
+            (41, 43, 1, 2),
+            (43, 45, 1, 2),
+            (45, 48, 1, 4),
+            (48, 50, 1, 2),
+            (50, 53, 1, 4),
+            (32, 38, 2, 8),
+            (5, 11, 3, 6),
+            (38, 44, 3, 6),
+            (6, 19, 4, 9),
+            (24, 32, 4, 8),
+            (35, 43, 4, 8),
+            (25, 35, 5, 10),
+            (41, 54, 5, 16),
+        ],
+    ),
+    (
+        "a_long_shorter_candidate_drops_by_its_end",  # (34, 54) of period 1 drops (38, 54)
+        "CAAAACCCACCCAAACAAAACACAACAACACAACAAAAAAAAACAAAAAAAAAACACCACAAACCACAACCCCAAACCC",
+        [
+            (1, 5, 1, 6),
+            (5, 8, 1, 4),
+            (9, 12, 1, 4),
+            (12, 15, 1, 4),
+            (16, 20, 1, 6),
+            (23, 25, 1, 2),
+            (26, 28, 1, 2),
+            (31, 33, 1, 2),
+            (34, 54, 1, 20),
+            (56, 58, 1, 2),
+            (60, 63, 1, 4),
+            (63, 65, 1, 2),
+            (67, 69, 1, 2),
+            (69, 73, 1, 6),
+            (73, 76, 1, 4),
+            (76, 79, 1, 4),
+            (19, 24, 2, 6),
+            (27, 32, 2, 6),
+            (53, 57, 2, 4),
+            (57, 61, 2, 4),
+            (64, 68, 2, 4),
+            (21, 30, 3, 12),
+            (54, 60, 3, 6),
+            (4, 13, 4, 10),
+            (11, 19, 4, 8),
+            (12, 27, 5, 11),
+        ],
+    ),
+    (
+        "a_period_waits_for_the_first_untested_start",  # (11, 23) of period 6 goes
+        "ACACCCCAAAAACCCCCACCCCCCAAACACAACCCCACACACCACACCACACCCAAAACAC",
+        [
+            (3, 7, 1, 6),
+            (7, 17, 1, 9),
+            (18, 24, 1, 10),
+            (24, 27, 1, 4),
+            (30, 32, 1, 2),
+            (32, 36, 1, 6),
+            (41, 43, 1, 2),
+            (46, 48, 1, 2),
+            (51, 54, 1, 4),
+            (54, 58, 1, 6),
+            (0, 4, 2, 4),
+            (26, 31, 2, 6),
+            (35, 42, 2, 10),
+            (42, 47, 2, 6),
+            (47, 52, 2, 6),
+            (57, 61, 2, 4),
+            (39, 45, 3, 6),
+            (44, 50, 3, 6),
+            (37, 53, 5, 22),
+        ],
+    ),
+    (
+        # After the tail, the periods 5 and 6 over [0, 30) are final some bases before the
+        # run of A's that drops them is, and a block of 1 base ends between the two. The
+        # tail was found by searching random ones for a case where testing a candidate
+        # before its divisors are known lets both through.
+        "a_longer_period_waits_for_a_shorter_one_still_open",
+        _PERIOD_SIX_OVER_AN_A_RUN + "CAGATTTTCATATTATGCAG",
+        [
+            (0, 4, 1, 6),
+            (5, 30, 1, 48),
+            (34, 38, 1, 6),
+            (42, 44, 1, 2),
+            (39, 43, 2, 4),
+            (40, 46, 3, 6),
+        ],
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("bases", "expected"),
+    [(bases, expected) for _, bases, expected in _DROP_RULE_CASES],
+    ids=[name for name, _, _ in _DROP_RULE_CASES],
+)
+def test_the_drop_rule_gives_pvcs_candidates_in_any_blocks(
+    bases: str, expected: list[tuple[int, int, int, int]]
+) -> None:
+    parameters = StrFinderParameters(copy_floors=_ZERO_FLOORS)
     for block_bases in range(1, 61):
-        assert _find_candidates(bases, parameters, block_bases=block_bases) == expected, block_bases
+        got = _find_candidates(bases, parameters, block_bases=block_bases)
+        found = [(c.start, c.end, c.period, c.score) for c in got]
+        assert found == expected, block_bases
 
 
 def test_a_candidate_under_its_copy_floor_is_not_returned() -> None:
