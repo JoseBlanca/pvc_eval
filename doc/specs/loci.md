@@ -10,10 +10,20 @@ file B and the STR regions of the reference, and yields the loci: the stretches 
 are compared, each with the records of both files and the STR regions that fall in it. A locus that
 is too narrow splits one event between two rows, and each of them comes out *different*. A locus
 that is too wide joins unrelated events in one row, which is *same genotype* only when all of them
-agree. Neither shows as an error. This spec gives `build_loci` in full: how it merges its inputs,
+agree. This spec gives `build_loci` in full: how it merges its inputs,
 what it holds while it works, what it does at each boundary, and what it raises. After it come the
 three things read from a locus once it is built: whether `--regions` selects it, its kind and its
 stratum. One point is open, in the list at the end.
+
+`doc/spec.md` §3, §4 and §5.3 already give the rules of the loci, the `Locus` type and the
+signature of `build_loci`. This spec decides, beyond them:
+
+- the order in which the two files and the segments are read, and which records with no ALT and
+  which STR regions are held, and for how long;
+- that a locus holds every STR region that lies inside it, also one that no record touches;
+- the `ValueError`s of `build_loci`, for inputs out of order or on an unknown contig;
+- how `--regions` and `--strata` BEDs are read, and the text of a stratum from a BED;
+- that a locus whose only ALTs are `*` is of kind complex.
 
 Positions in the cases below are 1-based and inclusive, as in a VCF and in `doc/spec.md`: "span
 100–103" is the four positions 100 to 103. In the code and in the tests they are 0-based and
@@ -46,11 +56,15 @@ ending at 100 takes a SNP at 111 (gap 10, positions 101 to 110) and leaves a SNP
 With a chain distance of 0, SNPs at 100 and 101 are one locus (gap 0) and SNPs at 100 and 102 are
 two. A record's span can start before the locus ends; it then overlaps the locus and chains whatever
 the chain distance. The chain distance is measured from the locus, which by then may hold STR
-regions, and not from the nearest record in it.
+regions, and not from the nearest record in it. In the code, with the locus from `start` to `end`
+and a span from `span_start` to `span_end`, all 0-based and half-open, the record chains when
+`span_start <= end + chain_distance`; records come by span start, so their `span_start` is never
+before the locus's first record.
 
 **Touching an STR region.** A record touches an STR region when its span overlaps the region or
 ends on the position just before the region's first, or starts on the position just after its
-last. Only a record with an ALT touches. The locus itself does not: an STR region next to the
+last: in 0-based half-open terms, `span_start <= region.end and region.start <= span_end`. Only a
+record with an ALT touches. The locus itself does not: an STR region next to the
 locus but touched by no record of it stays out. With an AT repeat as an STR region at 11–20:
 
 | records with an ALT | locus | STR regions |
@@ -69,8 +83,9 @@ its kind is STR (§5.6). The locus allele covers the repeat whichever record tou
 wholly inside it: one that reached past the locus's edge would overlap the record or the STR region
 at that edge, and STR regions do not overlap.
 
-**Two loci closer than the chain distance.** A record is in one locus only (`doc/spec.md` §5.3), so
-an STR region can widen a locus to the left until it lies near the locus before it. Take a SNP at
+**Two loci closer than the chain distance.** A record is in one locus only (`doc/spec.md` §5.3). A
+locus can widen to an STR region that starts before its first record, and so end up near the
+locus before it, whose records it cannot take. Take a SNP at
 100, a satellite at 105–300 that the SNP does not touch, and a SNP at 200. The first locus is 100.
 The SNP at 200 leaves a gap of 99, so it starts a second locus, which widens to the satellite,
 105–300. The gap between the two loci is 4, and they stay apart. It never makes the loci overlap:
@@ -125,25 +140,28 @@ dropped, or ahead and kept.
 
 - **The next record of each file**, read but not yet placed.
 - **The current locus**, its records and STR regions, until the next record with an ALT, of either
-  file, is on a later contig or leaves a gap of more than the chain distance after it. No later
+  file, is on a later contig or leaves a gap of more than the chain distance after it, or both
+  streams end; it is then yielded. No later
   record can then chain to it, since later records start no earlier, and no STR region can widen it
   but through a record of its own.
-- **Every STR region that a later record could still touch**: those whose last position is at or
-  after the position just before the next record with an ALT. A region that ends further back is
-  dropped. Such a
+- **Every STR region that a later record could still touch**: those with `region.end >=
+  span_start` of the next record with an ALT. A region that ends further back is dropped. Such a
   region can be held far ahead of the current locus, as the satellite of the case above is held
   while the locus at 100 is built.
 - **Every record with no ALT that a later locus could still overlap.** A record with no ALT is
-  dropped once its REF ends before the span of the next record with an ALT starts and no held STR
-  region overlaps its REF, since such a region can still widen a later locus over it. An all-sites VCF over a satellite of 5 kb with no record with
+  dropped once `record.end <= span_start` of the next record with an ALT and no held STR region
+  overlaps its REF, since such a region can still widen a later locus over it. An all-sites VCF over a satellite of 5 kb with no record with
   an ALT in it therefore holds about 5,000 records until the records pass the satellite's end.
 
 `build_loci` reads the segments only as far as the records need, which is up to the first segment
-that starts more than one position after the span of the record it is placing. After the last record it reads no
-more. GENERIC segments are read and dropped. So when the segments come from the STR finder, a
+that starts after the end of the span of the record it is placing, with a position between them:
+in 0-based terms, `segment.start > span_end`. After the last record it reads no
+more. GENERIC segments, the generic regions of `segment_contig`, whose `region_type` is
+`RegionType.GENERIC`, are read and dropped. So when the segments come from the STR finder, a
 contig is segmented only if the caller asks for it. `compare` passes the segments of the contigs
 that hold records: reading only the contig column of the chr20 benchmark VCF (234,998 records, 200
-samples) took 0.64 s, against 52 s for `parse_vcf` over the same file, on 19 October 2026.
+samples) took 0.64 s, against 52 s for `parse_vcf` over the same file, on an Apple M5 Pro with CPython
+3.15t on 19 October 2026. That pass is what `compare` adds to learn which contigs to segment.
 
 How large the locus grows is set by the data: §5.3's simulation gives 145 bases at one variant site
 per 10 bases and 1,235 at one per 3. A satellite can be kilobases long. Nothing here bounds either,
@@ -162,13 +180,13 @@ the program that called it, such as a filter between the stages that reorders re
   overlaps it. GENERIC segments are not checked, since they are not used.
 
 A chain distance that is not a whole number of 0 or more raises `ValueError` when the stream starts,
-as an out-of-range span limit does in `parse_vcf`. `True` and `False` are not whole numbers here.
+that is, at the first `next()`, as `parse_vcf` does for its span limit. `True` and `False` are not
+whole numbers here.
 
 ## The Python interface
 
-`pvc_eval.locus` holds `Locus`, and `pvc_eval.segments` holds `GenomeSegment`, both as `doc/spec.md`
-§4 gives them. Whichever session first needs a module writes it exactly as §4 gives it, in a commit
-of its own, and tells the other sessions.
+`pvc_eval.locus` holds `Locus`, and `pvc_eval.segments` holds `GenomeSegment` and `RegionType`,
+both exactly as `doc/spec.md` §4 gives them, fields included.
 
 `build_loci`, in `pvc_eval.loci`, yields the loci of the records of both files. Its signature is the
 one of `doc/spec.md` §4. `records_a` and `records_b` are in the order of `parse_vcf`. `segments` is
@@ -193,8 +211,9 @@ yields.
 
 `--regions` keeps a locus when it shares at least one position with a region, and skips it
 otherwise (`doc/spec.md` §3). A locus is the stretch from `start` to `end`; a record with no ALT
-whose REF reaches past it does not count. A locus at 100–120 is kept by a region at 110–200, with
-its records at 100–109, and is skipped by a region at 121–200, which only lies next to it.
+whose REF reaches past it does not count. A locus at 100–120 is kept by a region at 110–200, and
+compared whole, its records at 100–109 included. It is skipped by a region at 121–200, which only
+lies next to it.
 
 `read_regions` reads the BED whole, since BEDs such as GIAB's come sorted by contig name rather
 than in the `.fai`'s order. GIAB's benchmark regions for HG002 on GRCh38 hold about 300,000 lines.
@@ -322,14 +341,13 @@ BED naming 23 contigs the reference lacks. `read_str_regions` stops the run for 
 (`doc/spec.md` §4), but its BED is made for the reference, and these are not. The options:
 
 - *Skip and warn*: the lines on those contigs are skipped and counted in one warning that names the
-  contigs. The comparison runs on what is left. A BED written for another naming (`1` against
-  `chr1`) then skips every line, and every locus is skipped too; the warning then says that no line
-  was kept.
-- *Error*: the run stops, naming the first such line. The user filters the BED first.
+  contigs, for `--regions` and `--strata` alike. The comparison runs on what is left. When no line is
+  kept, as with a BED written for another naming (`1` against `chr1`), the run stops with an error
+  instead, since every locus would be skipped or `.`.
+- *Error*: the run stops at the first such line, naming it. The user filters the BED first.
 
-I recommend skipping with the warning, and an error only when no line is kept: it runs the common
-case of a cut reference, and still stops the run when the naming is wrong. Meanwhile the implementer
-does that.
+I recommend skipping with the warning: it runs the common case of a cut reference, and still
+stops the run when the naming is wrong. Until the owner decides, the implementer builds that.
 
 ## Not in this spec
 
