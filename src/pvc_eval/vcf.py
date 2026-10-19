@@ -130,8 +130,8 @@ def read_vcf_records(
     and the file is sorted by POS. A record whose span would reach further than that
     beyond its REF is given its REF as its span, and the number of those is logged as a
     warning at the end. A record whose REF differs from the reference is marked
-    ref_mismatch and given its REF as its span, since it cannot slide along a reference
-    it disagrees with.
+    ref_mismatch and given its trimmed REF as its span: such a record makes its locus
+    invalid for every sample of its file (§5.4), so its slide is not looked for.
 
     Raises PvcEvalInputError, when the stream reaches it, for a VCF record on a contig
     the reference lacks, for records out of the `.fai`'s contig order or out of position
