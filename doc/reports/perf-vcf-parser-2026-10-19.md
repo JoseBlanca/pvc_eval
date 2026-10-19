@@ -89,6 +89,36 @@ the held bytes fall from 540 to 317 MiB. It holds on real data too, since its ke
 include the phase set or the quality. Code: about the same, perhaps clearer. Expected to be
 accepted on time and memory both.
 
+*What P1 gave* (commit 6aa06a1, measured 19 October 2026 from 15:30 to 15:50). The code
+adds 28 lines and removes 8: `_parse_gt`, under `functools.lru_cache(maxsize=1024)`, gives
+the alleles and the phasing, or a sentinel, and `_parse_genotype` builds the `VcfGenotype`
+from it with the sample's own PS and GQ. One test checks that two samples with the same GT
+share one alleles tuple. The four digests equal the README's. On the 5 Mb GT:GQ:PS input,
+cProfile counts 24 calls of `_parse_gt`'s body, 44 of `_is_allele_index` instead of
+7,104,558, and 42.3 million calls in all instead of 85.5 million; the cache reports
+3,661,976 hits and 24 misses. Each input was timed in one hyperfine call that alternated
+base and P1, 10 runs (5 for the 64 Mb input), mean ± sd:
+
+| input | span limit | base | P1 | change |
+|---|---|---|---|---|
+| 5 Mb, GT:GQ:PS | 10 kb | 3.501 ± 0.016 s | 2.762 ± 0.021 s | −21.1% |
+| 5 Mb, GT:GQ:PS | none | 4.056 ± 0.024 s | 3.175 ± 0.087 s | −21.7% |
+| 5 Mb, GATK-like | 10 kb | 3.963 ± 0.029 s | 3.198 ± 0.106 s | −19.3% |
+| 5 Mb, GATK-like | none | 4.513 ± 0.026 s | 3.642 ± 0.046 s | −19.3% |
+| one sample | 10 kb | 767.1 ± 4.8 ms | 749.2 ± 4.1 ms | −2.3% |
+| one sample | none | 851.6 ± 4.9 ms | 831.4 ± 13.2 ms | −2.4% |
+| 64 Mb | 10 kb | 44.169 ± 0.394 s | 34.484 ± 0.075 s | −21.9% |
+
+The one-sample input, timed again, gave 759.6 and 747.1 ms (−1.7%): a gain below the noise,
+as expected where a record has one sample. Peak memory with no limit, the median of 3
+maximum resident set sizes (1 for the 64 Mb input): 615 MB to 383 MB on the 5 Mb GT:GQ:PS
+input (−38%), 610 MB to 380 MB on the GATK-like one (−38%), and 7,612 MB to 4,611 MB on
+the 64 Mb input (−39%), where the run also took 40.3 s instead of 51.5 s. At the default
+limit the peak is unchanged, 34 MB. The gain holds on the GATK-like input, whose samples
+have phase sets of their own. The one-minute load average was 1.25 to 1.90 during the small
+inputs, 1.59 to 3.18 during the 64 Mb input and the repeat, and 3.08 to 3.55 during the
+memory runs, when `mediaanalysisd` took one core.
+
 **P2. Share whole identical genotypes** (`vcf.py:310`). A bounded cache over all of
 `_parse_genotype`'s arguments returns one frozen `VcfGenotype` for every equal genotype.
 Simulated by the memory reviewer on the small input with no limit: 2.7 KB per held record
