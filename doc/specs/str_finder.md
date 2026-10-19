@@ -448,12 +448,13 @@ periods 2 to 6, copy floors (10, 5, 4, 3, 3, 3), bundle distance 50, `max_str_le
 **The whole-port check.** pvc_eval's STR regions and `pvc dev type-regions`'s are identical on the
 same sequences: same contig, start, end and type, and the same motif for each STR segment. During
 development it runs on small sequences, so that it takes minutes and can be run after every change
-to a step. It is one test, marked `slow`, over two inputs:
+to a step. It is a module of tests marked `slow`, over two inputs:
 
 - **Generated contigs.** 600 contigs, from a fixed seed, of random bases with planted repeats of
   periods 1 to 6, some impure, some near each other, some near a contig end, and some runs longer
-  than 100 bases. They are compared twice: at the defaults below, and with `--min-period 2
-  --max-period 5`, which tells periods scanned from periods admitted. The review of this spec ran
+  than 100 bases, and repeats near both of a contig's ends, so that step 2 is compared at each.
+  Both inputs are compared twice: at the defaults below, and with `--min-period 2 --max-period 5`,
+  which tells periods scanned from periods admitted. The review of this spec ran
   the spec's steps, written in Python, against pvc on 4,800 such contigs with no difference.
 - **Slices of GRCh38.** A few stretches of 1 to 2 Mb, each written as a contig of its own into a
   FASTA in `tmp_path`, chosen so that together they hold STR segments, STR bundles and satellites;
