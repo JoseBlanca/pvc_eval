@@ -33,7 +33,7 @@ Out:
 
 ## Milestones
 
-- [ ] 1. The segment contract and the candidates
+- [x] 1. The segment contract and the candidates
 
 **What it gives.** `pvc_eval.segments` with `RegionType`, `GenomeSegment` and `StrFinderParameters`,
 and step 1, the candidates of a sequence. The loci session can import the module.
@@ -60,10 +60,11 @@ and step 1, the candidates of a sequence. The loci session can import the module
   peak once, on CPython 3.15t, and writes it into the test's comment.
 
 **What could go wrong.** The ported tests check step 1's whole output, with no copy floor. The bound
-needs the copy floor applied as candidates are found. So step 1 takes the floors and the contig-end
-flank, and drops a candidate under them as soon as nothing needs it. `segment_contig` passes the
-parameters' floors and flank. With floors of 0 and a flank of 0 it gives pvc's `find_tandem_repeats`
-exactly, and the ported tests run it that way. A candidate under the floor still drops a longer-period one (the spec, step
+needs the copy floor applied as candidates are found. So step 1 takes the floors, and drops a
+candidate under them as soon as nothing needs it. `segment_contig` passes the parameters' floors.
+With floors of 0 it gives pvc's `find_tandem_repeats` exactly, and the ported tests run it that way.
+Step 2, the contig-end flank, only drops candidates, so it runs after step 1, in milestone 2
+(changed during milestone 1: it needs the cut of step 6's `minimal_trim`). A candidate under the floor still drops a longer-period one (the spec, step
 1, and "What it holds"), so dropping it too early gives more candidates than pvc, silently. The
 ported test `a_period_multiple_re_detection_is_dropped_by_geometry` and the brute-force tests guard
 it in part; on GRCh38, milestone 5 would show it as STR regions pvc does not have. pvc's brute-force Ruzzo–Tompa oracle may be slow in
