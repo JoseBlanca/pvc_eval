@@ -7,8 +7,8 @@ depends on `doc/spec.md` §2 (vocabulary), §4 (the segment contract, "What stag
 The STR finder is stage 1 of pvc_eval's pipeline. For one contig of the reference, it yields the
 segmented genome: consecutive, non-overlapping segments from the first base to the last, each a
 generic region, an STR segment, an STR bundle or a satellite. The loci (§5.3) are widened to its STR
-regions and `--strata pvc` (§5.7) reads their types, so a segment that is wrong moves loci and
-strata without any error to show it. It is a port of pvc's finder, rule for rule. This spec gives
+regions and `--strata pvc` (§5.7) reads their types. It is a port of pvc's finder, rule for rule.
+This spec gives
 the rules in pvc's order, with the file and function of pvc each comes from, and the parts of the
 interface that `doc/spec.md` §4 leaves open:
 
@@ -18,7 +18,21 @@ interface that `doc/spec.md` §4 leaves open:
 - the `pvc_eval str-regions` command and its BED.
 
 It also says how the port is checked against pvc. Where pvc's documents and its code disagree, the
-code is followed. Three points are open, in the list at the end.
+code is followed. `doc/specs/str_finder_tests.md` lists each of pvc's tests and what the port does
+with it, and `doc/port_provenance.md` records the commit of pvc and the function each step comes
+from.
+
+pvc finds its regions by two routes. Its **scanning route**, `region_typing::partition_resident_in`,
+scans a contig's bases. Its **catalogue route** reads a repeat catalogue instead, a Parquet file of
+candidates that `pvc repeat-catalog` builds once per reference. The catalogue route is what `pvc dev
+type-regions` runs, which is pvc's command that writes the regions as a BED. The two routes differ in
+one rule, step 2 below. pvc_eval ports the scanning route and adds that rule, so it gives what `dev
+type-regions` gives, and the **whole-port check** at the end of this spec compares the two over the
+GIAB benchmark regions of GRCh38.
+
+What is asked of the owner: approval of the spec, and the one open point at the end, whether 52 of
+pvc's tests are left out. Two sentences of `doc/spec.md` §5.1 differ from pvc's code and are
+reported before the end.
 
 ## Vocabulary
 
@@ -38,15 +52,15 @@ The terms of `doc/spec.md` §2 keep their meaning. These are added:
 | **repeat run** | a stretch covered by candidates that survive the copy floor, those that overlap or abut merged into one | "coverage run" |
 
 Every position below is 0-based, and every stretch is half-open, `[start, end)`, as in `doc/spec.md`
-§4. pvc gives its segments 1-based and inclusive. A pvc segment `[s, e]` is `[s - 1, e)` here, and
-pvc's BED rows already are.
+§4. pvc gives its segments 1-based and inclusive. A pvc segment `[s, e]` is `[s - 1, e)` here.
+pvc's BED rows are already 0-based and half-open.
 
 ## What the finder does
 
 `segment_contig` reads the contig's bases once, in upper case, and goes through these steps in
-order. The two places where pvc's documents mislead are step 2, which pvc's scanning route lacks,
-and step 5. In step 5, pvc's `typed_regions.md` §2.4 says that bundle members skip the copy floor,
-but its code applies the floor (step 3) before bundling.
+order. Two steps differ from what pvc's documents lead a reader to expect. Step 2 is not in pvc's
+scanning route. In step 5, pvc's `typed_regions.md` §2.4 says that bundle members skip the copy
+floor, but its code applies the floor (step 3) before bundling.
 
 **1. Find the candidates** (pvc `tandem_repeat.rs`, `find_tandem_repeats`,
 `maximal_scoring_subsequences`, `is_primitive_motif`). For each period *p* from the shortest to the
@@ -62,7 +76,8 @@ longest, and only when *p* is less than the contig's length:
   letters that are not A, C, G or T count as equal.
 - The kept candidates are sorted by period, then start. A candidate is then dropped when a kept
   candidate overlaps at least half its length (2 × overlap ≥ length) and has a shorter period that
-  divides its period, such as 1, 2 or 3 for a period of 6.
+  divides its period, such as 1, 2 or 3 for a period of 6. Only kept candidates drop others: a
+  candidate already dropped drops nothing.
 
 The candidates come out in that order, by period and then start. pvc's code describes the scoring
 from its own index, so that its score *k* is position *k + p*; the result is the same.
@@ -83,8 +98,8 @@ left are the ones the repeat runs of step 7 are made of.
 **4. The scope tests** (pvc `classify`, its loop before `split_bundles`). A candidate is dropped,
 in this order, when:
 
-- its period is outside the range;
-- its score is under the score floor (0, which drops nothing the scanner makes);
+- its period is outside `min_period` to `max_period`;
+- its score is under `min_score` (0, which drops nothing the scanner makes);
 - its detected span is shorter than its period;
 - its motif is compound (`is_compound`), that is, equal to itself shifted by a length that divides
   it.
@@ -103,11 +118,13 @@ neighbour all the same.
 **6. STR segments** (pvc `finish_locus`, `minimal_trim`, `recompute_purity`). A candidate alone in
 its cluster becomes an STR segment unless one of these rejects it:
 
-- **No cut.** The motif is *m* bases, and *t* is min(3*m*, length ÷ 2). The cut starts at the
-  first offset from 0 to *t* where two copies of the motif follow. It ends at the last offset from
-  the candidate's end back to *t* bases before it where two copies of the motif precede. When either does not exist, or the start is not
-  before the end, there is no cut. pvc's loop gives up as soon as the two copies would reach the
-  candidate's last base. So a candidate exactly two copies long has no cut.
+- **No cut.** Let *m* be the motif's length, *L* the candidate's length, and *t* = min(3*m*,
+  ⌊*L* / 2⌋). Offsets count from the candidate's first base. The cut starts at the smallest offset
+  *s*, from 0 to *t*, at which the 2*m* bases from *s* are two copies of the motif. The search for
+  *s* fails, before it compares, as soon as *s* + 2*m* ≥ *L*. The cut ends at the largest offset
+  *e*, from *L* down to *L* − *t*, at which the 2*m* bases before *e* are two copies of the motif.
+  The search for *e* fails as soon as *e* < 2*m*. There is no cut when either search fails, or when
+  *s* ≥ *e*. So a candidate exactly two copies long, *L* = 2*m*, has no cut.
 - **Copy floor on the cut.** The cut has fewer copies than the copy floor.
 - **Purity.** The cut's purity is under the minimum purity (0.8).
 - **Contig ends.** The cut starts on the contig's first base or ends on its last. After step 2,
@@ -119,7 +136,7 @@ own. Its bases end up in a generic region, unless step 7 covers them with someth
 **7. Satellites and bundles** (pvc `region_typing/mod.rs`, `resolve_features`, `absorb_into`,
 `merge_runs`, `coverage_runs`, `bundle_clusters`).
 
-- A repeat run longer than the longest STR segment (100 bases) is a satellite. The repeat runs are
+- A repeat run longer than `max_str_len` (100 bases) is a satellite. The repeat runs are
   made from the candidates of step 3, including those that step 4 drops and step 6 rejects.
 - **Absorption**, repeated until a pass changes nothing. Each bundle member, by its detected span,
   and each STR segment, by its cut, is tested against the satellites. A feature that overlaps a
@@ -130,7 +147,8 @@ own. Its bases end up in a generic region, unless step 7 covers them with someth
   `absorb_by_sweep`, which its property test holds equal to the fixed point.
 - The members left are grouped again by step 5's rule. A bundle's hull runs from its first
   member's start to the furthest end of any member, both detected spans.
-- A hull longer than the longest bundle (100 bases) is a satellite, and absorbs nothing more.
+- A hull longer than `max_bundle_len` (100 bases) is a satellite. Absorption is not run again
+  for it.
 - Otherwise, a hull that starts on the contig's first base or ends on its last is dropped, and its
   bases go to generic regions.
 - Otherwise the hull is an STR bundle.
@@ -249,31 +267,40 @@ What it holds, for the largest human contig (chr1 of GRCh38, 248,956,422 bases):
 - **Not all the candidates of step 1.** Every stretch of two or more equal bases is one candidate of
   period 1, which is about 3 positions in 16 of random sequence, or some 47 million on chr1. This is
   an estimate, not a count. So step 1 must not hold them all, and must still drop exactly what pvc
-  drops. A candidate under the copy floor is still needed at step 1 as long as it can drop a
-  candidate of a longer period. How to arrange that is the plan's.
+  drops. Step 3 drops most of them, but a candidate under the copy floor is used at step 1 first: it
+  can drop a candidate of a longer period that it covers by half. So step 1 keeps each candidate
+  until every longer-period candidate it could drop has been found, and no longer. How to arrange
+  that is the plan's.
 
 How long a contig takes, and how much memory at its peak, are measured after the code exists, with
 the `performance` skill. That measurement decides whether the finder needs numpy, which is a runtime
 dependency and the owner's decision (`doc/spec.md` §5.1).
 
-**`read_str_regions(path)`** reads a BED of STR regions: the one `str-regions` writes, or a user's.
-It skips blank lines and lines that start with `#`, `track` or `browser`. Each other line has the
-contig, start and end, 0-based and half-open, and may have two more columns. The fourth is the
-region type, `str`, `str-bundle` or `satellite`. The fifth is the motif, which is upper-case A, C,
-G and T for `str` and `.` for the others. It yields one `GenomeSegment` per line.
+**`read_str_regions(path, reference)`** reads a BED of STR regions: the one `str-regions` writes,
+or a user's. It skips blank lines and lines that start with `#`, `track` or `browser`. Each other
+line has the contig, start and end, 0-based and half-open, and may have two more columns. The
+fourth is the region type, `str`, `str-bundle` or `satellite`. The fifth is the motif, which is
+upper-case A, C, G and T for `str` and `.` for the others. It yields one `GenomeSegment` per line.
+A line of three columns gives `region_type` `None` and `motif` `None`, as `doc/spec.md` §4 says. A
+line of four columns with the type `str` has no motif, and is refused.
 
-It raises `PvcEvalInputError`, naming the file and line and how to put it right, for:
+The BED must be sorted as the reference is: contigs in the order of the `.fai`, and by start within
+each. `read_str_regions` reads it as a stream and does not sort it, because a BED of every STR
+region of GRCh38 holds millions of lines.
+
+It raises `PvcEvalInputError`, naming the file and the line and saying how to put it right, for:
 
 - a line with fewer than three columns;
 - a start or end that is not a whole number, or an end not after its start;
+- a contig the reference lacks, or an end past the contig's length;
 - an unknown region type, or a motif that does not fit its type;
-- a contig whose lines are not all together;
+- a contig whose lines are not all together, or that comes before a contig preceding it in the
+  `.fai`;
 - a line that starts before the end of the line before it on its contig.
 
-Overlapping STR regions are refused because the loci treat each STR region as one repeat, and
-`str-regions` never writes them. A user's BED of repeats that overlap can be merged first with
-`bedtools merge`, which keeps three columns. What a three-column BED yields, and how the contigs come
-in the `.fai`'s order, are **Open 2** and **Open 3**.
+These follow `doc/spec.md` §4, which refuses overlapping regions. `str-regions` never writes
+overlapping regions. A user's BED of repeats that overlap can be merged first with `bedtools merge`,
+which keeps three columns.
 
 ## The `str-regions` command
 
@@ -287,8 +314,8 @@ pvc_eval str-regions --reference ref.fa --output str.bed [--regions regions.bed]
 
 Each option sets the field of `StrFinderParameters` with the same meaning, with the same default.
 Where pvc's `dev type-regions` has the option, the name is pvc's, so that the two commands of the
-whole-port check read alike. The exception is `--bundle-distance`, which pvc calls `--flank-bp`.
-pvc has no option for the contig-end flank.
+whole-port check read alike. The exception is `--bundle-distance`, which pvc calls `--flank-bp`;
+in pvc that option moves the bundle distance only. pvc has no option for the contig-end flank.
 
 It segments every contig of the `.fai`, in its order. With `--regions`, it segments only the contigs
 the regions name, each still whole, because pvc gives the same segments whether or not it is given a
@@ -300,8 +327,8 @@ The BED:
 
 ```
 ##pvc_eval str-regions 0.1.0
-##min_copies: 5,5,4,4,4,3
-…                                  one ## line for each parameter
+##copy_floors: 5,5,4,4,4,3
+…                                  one ##field: value line for each field of StrFinderParameters
 #chrom	start	end	type	motif
 chr1	10432	10470	str	CA
 chr1	10519	10601	str-bundle	.
@@ -329,13 +356,14 @@ it once it is built.
 property tests. 90 of them test what is ported, and two more come from `repeat_catalog/row.rs`
 for step 2. The other 52 test what is not ported:
 
-- the windowed scan and the region scanner, with their options, 25 tests;
+- the windowed scan and the region scanner, pvc's other ways of running step 1, 25 tests;
 - pvc's BED reading and its region sets (`RegionSet`, `GenomeRegions`), one of them a property
   test, 9;
 - Rust types: the motif type and the segment record's own checks, 6;
-- the tallies of what admission turned down, 4;
+- the counts pvc keeps of the bases each test turned down, 4;
 - the comparison with pvc's old production code, 3;
-- `hand_satellites_to_the_generic_path`, 3;
+- the function that turns satellites back into generic regions for pvc's `--call-satellites`,
+  `hand_satellites_to_the_generic_path`, 3;
 - pvc's own default settings, 1;
 - the property test of the absorption sweep against the fixed point, 1, which compares a function
   with itself once only the fixed point is ported.
@@ -353,8 +381,8 @@ members of a bundle. `GenomeSegment` does not carry them.
 `golden.ssr_catalog.bed.gz` are copied into `tests/data/tandem_repeat/`, with a line each in
 `tests/data/README.md`. pvc's `the_resident_partition_reproduces_the_golden_catalog` compares the
 partition of `synthetic_ref.fa` with the 16 STRs of the golden catalogue, by overlap. It runs with
-periods 2 to 6, copy floors (10, 5, 4, 3, 3, 3), bundle distance 50, satellite cap 1000 and bundle
-cap 100.
+periods 2 to 6, copy floors (10, 5, 4, 3, 3, 3), bundle distance 50, `max_str_len` 1000 and
+`max_bundle_len` 100.
 
 **pvc_eval's own cases**, at `segment_contig`:
 
@@ -391,8 +419,8 @@ The catalogue in pvc's `benchmarks/giab` was built on 2 September 2026, before b
 binary in its `target/release` lacks `pvc dev`. So both are made again for the check: pvc built
 from `git archive bbcc9f4` into a scratch directory, and the catalogue built there with `pvc
 repeat-catalog --reference <link to the FASTA>`, beside links to the FASTA and its `.fai`. pvc's
-repository is not touched. pvc's `--threads` help says one thread builds the GRCh38 catalogue in
-under two minutes.
+repository is not touched. pvc's help for `repeat-catalog --threads` says that one thread builds the
+GRCh38 catalogue in under two minutes, without naming the machine.
 
 The test runs:
 
@@ -402,59 +430,32 @@ pvc_eval str-regions --reference $PVC_EVAL_GRCH38 --regions $PVC_EVAL_GIAB_BED \
                      --min-copies 8,6,6,6,5,4 --output pvc_eval.bed
 ```
 
-`dev type-regions` at its defaults has pvc's calling floors, 8, 6, 6, 6, 5, 4, and pvc_eval's other
-defaults. It writes `ssr_locus`, `ssr_bundle` and `satellite`, which are `str`, `str-bundle` and
+`dev type-regions` at its defaults has pvc's calling floors, 8, 6, 6, 6, 5, 4, the copy floors pvc
+uses when it calls genotypes (`doc/spec.md` §5.1), and pvc_eval's other defaults. It writes `ssr_locus`, `ssr_bundle` and `satellite`, which are `str`, `str-bundle` and
 `satellite` here. Its `generic` rows, cut to the regions, are not compared. How long pvc_eval takes
 over chromosomes 1 to 22 is not known before the measurement, so the check is run at the end of the
 build and when the finder changes, not with every commit.
 
-## Open points
+## Open point
 
-**Open 1. pvc's tests that test what is not ported.** The brief asks for every one of pvc's 142
+**Open 1. pvc's tests that test what is not ported.** The brief for this port asks for every one of pvc's 142
 tests to be rewritten. 52 test functions the port does not have, and the list is in
 `doc/specs/str_finder_tests.md`.
 
 - *Leave them out*, and say so there with the reason for each. The port keeps only what pvc_eval
   runs.
 - *Port the functions they test, to port the tests.* That means the windowed scan, the region
-  scanner, the tallies, pvc's BED normaliser and the absorption sweep, several hundred lines of code
+  scanner, the counts, pvc's BED normaliser and the absorption sweep, several hundred lines of code
   that pvc_eval would never call.
 
 I recommend leaving them out. Each of the 52 tests either has a subject that pvc_eval does not run,
 or, like the sweep property, compares a function with itself once only the fixed point is ported.
 Meanwhile the plan leaves them out.
 
-**Open 2. What a three-column `--str-regions` BED yields.** `doc/spec.md` §5.1 says a BED without
-the type column can still be used for loci. §4's `GenomeSegment` has no region type that says "not
-given".
-
-- *`region_type: RegionType | None`*, `None` when the BED gives no type. The loci use the region
-  as an STR region, and `--strata pvc` refuses it, as §5.1 says.
-- *A fifth `RegionType`, `UNTYPED`.* Same behaviour, but every `match` on the type must handle it.
-- *Refuse a BED without types.* A user's own repeat catalogue then needs a fourth column, `str`,
-  added before it can be used.
-
-I recommend `None`, which is the smallest change to §4 and keeps the four types §2 defines. The
-loci session builds against §4 too, so the change is to §4 and needs the owner. Meanwhile
-`read_str_regions` refuses a line without a type, naming the column it lacks.
-
-**Open 3. The contig order of `read_str_regions`.** §4 says it yields the regions "sorted by contig
-in the `.fai`'s order", but it takes only the BED's path, which does not hold that order.
-
-- *Take the reference*: `read_str_regions(path, reference: IndexedFasta)`. It can then check each
-  contig and each end against the `.fai`, and refuse contigs out of the `.fai`'s order, naming the
-  line.
-- *Keep the signature*, yield the contigs in the BED's order, and leave the check of the order to
-  the loci, which already hold the reference.
-
-I recommend taking the reference. A BED made on another assembly, such as `1` against `chr1`, then
-stops at its first line with a message, rather than finding no STR regions. Meanwhile the signature
-of §4 is kept and the contigs come in the BED's order.
-
 ## Reported, not changed here
 
-Two sentences of `doc/spec.md` §5.1 differ from pvc's code. This spec follows the code, and the
-owner decides whether §5.1 changes:
+Two sentences of `doc/spec.md` §5.1 differ from pvc's code. This spec follows the code, so the
+code is the same whichever way they are settled. The owner decides whether §5.1 is reworded:
 
 - Step 2 of §5.1 lists "lies within 15 bases of a contig end" among the tests of an STR segment.
   In `dev type-regions`, the route the whole-port check compares with, the rule drops the candidate
@@ -471,5 +472,5 @@ owner decides whether §5.1 changes:
   several threads.
 - **How `compare` uses the segments** without `--str-regions`, and which contigs it segments. That
   is `doc/spec.md` §4 and the loci's spec.
-- **pvc's tallies** of what admission turned down. pvc_eval reports segments, not counts.
+- **pvc's counts** of the bases each test turned down. pvc_eval reports segments, not counts.
 - **Bundle members** outside the private steps. The BED and `GenomeSegment` do not carry them.

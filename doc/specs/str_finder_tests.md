@@ -9,20 +9,23 @@ expected outputs. Its inline sequences are copied as they are. A 1-based inclusi
 the reason given here. The step functions are private functions of `pvc_eval.segments`, and the
 tests call them by the names their steps have in the spec.
 
-Three configurations recur:
+The names in backticks in the notes, such as `assert_agrees`, `brute_segments` or `params()`, are
+helpers of pvc's test modules, at the line given. Three configurations recur, written with the
+fields of `StrFinderParameters`:
 
 - **params**: pvc's `params()` (segment_criteria.rs 1516), `matched_params(0.8, 0, 5)`. Periods 2
-  to 6, copy floors (10, 5, 4, 3, 3, 3), purity 0.8, score floor 0, bundle distance 5.
-- **catalog**: pvc's `catalog_config()` (mod.rs 1824). Periods 2 to 6, copy floors
-  (10, 5, 4, 3, 3, 3), bundle distance 50, purity 0.8, score floor 0, satellite cap 1000, bundle
-  cap unbounded, scan 2/7/2.
+  to 6, `copy_floors` (10, 5, 4, 3, 3, 3), `min_purity` 0.8, `min_score` 0, `bundle_distance` 5.
+- **catalog**: pvc's `catalog_config()` (mod.rs 1824). Periods 2 to 6, `copy_floors`
+  (10, 5, 4, 3, 3, 3), `bundle_distance` 50, `min_purity` 0.8, `min_score` 0, `max_str_len` 1000,
+  `max_bundle_len` unbounded (pvc's `u64::MAX`; in Python `sys.maxsize`), scan 2/7/2.
 - **pvc-default**: what pvc's `Default` gives, which pvc_eval's defaults do not. Periods 1 to 6,
-  copy floors (8, 6, 6, 6, 5, 4), purity 0.8, score floor 0, bundle distance 15, satellite cap 100,
-  bundle cap 100, scan 2/7/2. A test marked with it passes these values explicitly.
+  `copy_floors` (8, 6, 6, 6, 5, 4), `min_purity` 0.8, `min_score` 0, `bundle_distance` 15,
+  `max_str_len` 100, `max_bundle_len` 100, scan 2/7/2. A test marked with it passes these values
+  explicitly.
 
 Every test of pvc's partition runs with a contig-end flank of 0, which is pvc's scanning route.
 The contig-end flank is a step of its own (step 2), not part of `classify`'s port. So the tests of
-`classify` with 5-base flanks are unchanged by it.
+`classify` whose repeat lies 5 bases from a contig end are unchanged by it.
 
 Class **A** is ported as is. Class **B** is ported with a change, given in the note. Class **C**
 is not ported (**Open 1** of the spec).
@@ -82,7 +85,7 @@ is not ported (**Open 1** of the spec).
 | classify_reports_the_trimmed_start_not_the_detected_one | 2358 | B | drop `assert_agrees` |
 | classify_keeps_an_imperfect_tract_above_the_floor_and_drops_one_below | 2396 | B | drop `assert_agrees_at`; params at purity 0.8, then 0.99 |
 | the_copy_floor_counts_the_trimmed_tract_not_the_detected_one | 2452 | A | params, then copy floors (10, 5, 4, 3, 2, 3) |
-| classify_applies_the_score_gate_when_the_floor_actually_bites | 2500 | B | drop `assert_agrees_at`; params with score floor 50 |
+| classify_applies_the_score_gate_when_the_floor_actually_bites | 2500 | B | drop `assert_agrees_at`; params with `min_score` 50 |
 | classify_at_default_never_rejects_a_score_the_scanner_can_emit | 2559 | B | pvc-default |
 | classify_rejects_a_zero_flank | 2930 | B | a bundle distance of 0 raises ValueError, where pvc panics |
 | classify_hands_back_the_bundle_members_it_sets_aside | 2952 | B | drop `assert_agrees_at`; `catalog_criteria()` (1525): params with bundle distance 50 |
@@ -111,9 +114,9 @@ is not ported (**Open 1** of the spec).
 
 | test | line | class | note |
 |---|---|---|---|
-| absorption_by_sweep_joins_satellites_that_abut_after_growing_at_radius_zero | 1591 | B | keep the fixed point's half: satellites 22–86 and 88–88 (1-based) and a member at 86–88 (0-based) give one satellite 22–88, the member absorbed; drop the sweep's half |
+| absorption_by_sweep_joins_satellites_that_abut_after_growing_at_radius_zero | 1591 | B | keep the fixed point's half: at bundle distance 0, satellites [21, 86) and [87, 88) and a member [86, 88) give one satellite [21, 88), the member absorbed; drop the sweep's half |
 | a_lone_tract_partitions_as_generic_locus_generic | 2037 | A | catalog |
-| a_long_array_is_one_satellite_and_swallows_the_locus_inside_it | 2081 | B | pvc-default, then satellite cap 10000 |
+| a_long_array_is_one_satellite_and_swallows_the_locus_inside_it | 2081 | B | pvc-default, then `max_str_len` 10000 |
 | abutting_coverage_runs_merge_into_one | 2140 | A | |
 | a_repeat_free_contig_is_one_generic_region | 2214 | B | pvc-default |
 | an_impure_tract_is_generic_when_its_pieces_fall_under_the_copy_floor | 2250 | A | catalog |
@@ -132,7 +135,7 @@ is not ported (**Open 1** of the spec).
 | a_tract_clear_of_a_bundle_is_still_admitted | 2881 | B | pvc-default |
 | a_low_copy_repeat_is_generic_not_a_bundle | 2917 | B | pvc-default |
 | bundle_clusters_regroups_exactly_what_the_split_set_aside | 2938 | A | |
-| the_resident_partition_reproduces_the_golden_catalog | 2977 | B | periods 2 to 6, floors (10, 5, 4, 3, 3, 3), bundle distance 50, purity 0.8, satellite cap 1000, bundle cap 100, scan 2/7/2; both fixtures |
+| the_resident_partition_reproduces_the_golden_catalog | 2977 | B | periods 2 to 6, floors (10, 5, 4, 3, 3, 3), `bundle_distance` 50, `min_purity` 0.8, `max_str_len` 1000, `max_bundle_len` 100, scan 2/7/2; both fixtures |
 | a_bed_returns_the_same_findings_the_whole_genome_run_does | 3120 | A | catalog; the requested spans are a list |
 | a_microsatellite_beside_a_satellite_is_absorbed_into_it | 3230 | B | pvc-default |
 | absorption_tracks_the_bundle_radius | 3316 | B | pvc-default with bundle distance 10, 15, 20 and 30 |
@@ -144,7 +147,7 @@ is not ported (**Open 1** of the spec).
 | two_spans_sharing_a_scan_span_do_not_leak_the_gap_between_them | 3750 | B | pvc-default |
 | absorption_by_sweep_is_the_iterations_fixed_point | 1551 | C | property test of the sweep against the fixed point; only the fixed point is ported |
 | from_normalized_spans_rebuilds_a_normalized_set_exactly, from_normalized_spans_refuses_what_this_pipeline_never_writes, from_normalized_spans_survives_a_span_ending_at_the_coordinate_ceiling, from_normalized_spans_accepts_every_normalized_set (property test), whole_contigs_covers_each_contig_end_to_end, the_seam_widens_but_does_not_rebase, a_zero_length_contig_is_dropped_before_a_consumer_sees_it, from_bed_path_parses_converts_and_coalesces, a_bad_bed_is_rejected_before_any_region_is_typed | 1636–1939, 3772 | C | pvc's region sets and BED reading |
-| overlapping_coverage_counts_a_shared_base_once, counts_start_at_zero, a_bundle_dropped_at_a_contig_end_is_charged_as_flank_clamped, counts_tally_the_regions_yielded | 1776, 1843, 2740, 3416 | C | the tallies |
+| overlapping_coverage_counts_a_shared_base_once, counts_start_at_zero, a_bundle_dropped_at_a_contig_end_is_charged_as_flank_clamped, counts_tally_the_regions_yielded | 1776, 1843, 2740, 3416 | C | the counts pvc keeps of what each test turned down |
 | default_config_is_the_short_read_settings | 1795 | C | pvc's own defaults |
 | a_satellite_merges_with_the_generic_ground_either_side, a_satellite_across_a_bed_edge_is_clipped_to_each_requested_span, ground_without_a_satellite_is_returned_unchanged | 3817–3873 | C | `hand_satellites_to_the_generic_path` |
 
