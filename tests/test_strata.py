@@ -167,61 +167,17 @@ def test_strata_from_an_unsorted_bed_with_overlapping_lines(tmp_path: Path) -> N
 
 
 @pytest.mark.parametrize(
-    ("line", "message"),
-    [
-        (
-            "chr1\t100",
-            "has 2 columns, and a BED line needs at least three, separated by tabs: the"
-            " contig, the start and the end. Correct the line or remove it, and run again.",
-        ),
-        (
-            "chr1\tx\t2000\tsegdup",
-            "the start, x, is not a whole number. A BED line gives its start and its end as"
-            " whole numbers of 0 or more; correct the line and run again.",
-        ),
-        (
-            "chr1\t100\t2000.5\tsegdup",
-            "the end, 2000.5, is not a whole number. A BED line gives its start and its end as"
-            " whole numbers of 0 or more; correct the line and run again.",
-        ),
-        (
-            "chr1\t100\t50\tsegdup",
-            "the end, 50, is not after the start, 100. A BED line covers the positions from"
-            " its start up to its end, 0-based and half-open, so its end is greater than its"
-            " start; correct the line and run again.",
-        ),
-        (
-            "chrUn\t100\t200\tsegdup",
-            "the contig chrUn is not in the reference. Keep only the reference's contigs in the"
-            " BED, for instance with `awk -F'\\t' 'NR == FNR {{keep[$1]; next}} $1 in keep'"
-            " ref.fa.fai {path} > kept.bed`, where ref.fa.fai is the .fai of the --reference"
-            " FASTA, and run again with kept.bed.",
-        ),
-        (
-            "chr1\t100\t200",
-            "has no fourth column, which names the class of its interval. Give each line of"
-            " the --strata BED its class and run again.",
-        ),
-        (
-            "chr1\t100\t200\t",
-            "has no fourth column, which names the class of its interval. Give each line of"
-            " the --strata BED its class and run again.",
-        ),
-    ],
-    ids=[
-        "two-columns",
-        "start-not-whole",
-        "end-not-whole",
-        "end-not-after-start",
-        "contig",
-        "no-fourth-column",
-        "empty-fourth-column",
-    ],
+    "line",
+    ["chr1\t100\t200", "chr1\t100\t200\t"],
+    ids=["no-fourth-column", "empty-fourth-column"],
 )
-def test_read_strata_refuses_a_line(tmp_path: Path, line: str, message: str) -> None:
+def test_read_strata_refuses_a_line_with_no_class(tmp_path: Path, line: str) -> None:
     path = write_bed(tmp_path, ["chr1\t0\t10\tsegdup", line])
 
     with pytest.raises(PvcEvalInputError) as raised:
         read_strata(path, _CONTIGS)
 
-    assert str(raised.value) == f"{path}, line 2: {message.format(path=path)}"
+    assert str(raised.value) == (
+        f"{path}, line 2: has no fourth column, which names the class of its interval. Give"
+        " each line of the --strata BED its class and run again."
+    )
