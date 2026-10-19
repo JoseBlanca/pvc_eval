@@ -110,3 +110,38 @@ For the owner: two cases pass unchecked, both only from a `Locus` built by hand.
 past the genotypes goes unseen at a locus where its file has no record. And a record with no
 ALT that does not overlap the locus at all is accepted; with a REF mismatch it would make its
 file's samples invalid at a locus it does not touch.
+
+## Milestone 4: evaluation and the row
+
+Done in 4df38de (`Kind`), 3c17c07 and 1c27a9b (`Outcome`, `OutcomeRow`, `evaluate_pair`,
+`make_outcome_rows`), and fixed in 24c6558 to f6b6903. Each sample pair's outcome, its reported
+genotypes and its row, every field filled.
+
+- `uv run pytest tests/test_evaluate.py` gives "37 passed": E1 to E14 of the spec's §5 with their
+  labels as ids, the other side of each rule, the reported pair where A's order and B's order
+  differ, and every field of the row. The whole suite gives "374 passed" on f6b6903.
+- The five checks pass on f6b6903.
+- `Kind` (4df38de), exactly as the loci spec gives it, was sent to the loci session through the
+  coordinating session.
+
+Changed in the spec and the plan: E14 joined §5 (149a54b), a case where A's genotypes taken first
+and B's taken first report different pairs; the plan checks E1 to E14 (f4eccdb).
+
+The review found no wrong outcome. A reviewer compared `evaluate_pair` with its own reading of §5
+over 4,225 combinations of sample results, both ploidies, every outcome reached, with no
+difference; another ran seven kinds of bad input through reconciliation and the rows and got the
+row §6 gives for each. It found one blocker: no case told the order of "the first such pair"
+from its reverse, so swapping two loops passed every test; E14 and two more cases now fail under
+it, confirmed by the reviewer's second look. It also found three rules no test could fail on
+(the first genotype reported for *different*, *only in B* and *missing in A*; the "holds one
+genotype" condition of *only in*; the QUAL and GQ of an invalid sample), each now tested, and a
+loop four levels deep, now one helper called once per rule. Not taken: checks in
+`OutcomeRow.__post_init__`, which depend on what the other evaluators' wrappers will fill; a
+check of its allele indices in `ReconciledLocus`, which only `reconcile` builds; and making
+`Kind` a `StrEnum`, which the loci spec owns. That last one was sent to the loci session as a
+suggestion: as a plain `Enum`, `Kind` formats as `Kind.SNP` where the other closed sets of a row
+format as their words, so the table writer must use `.value` or the loci spec change it.
+
+For the owner: across ploidies, only genotypes all REF count as equal, as you decided. So a
+haploid `1` against a diploid `0/1`, like a haploid `1` against `1/1`, is *same alleles, other
+genotype*, by the ALT sets alone.

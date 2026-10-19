@@ -111,7 +111,7 @@ Milestones 1 and 2 touch different files and can run side by side. The others ru
   the order of the assignments, which sets the order of the alleles (R7, the interleaved phase
   sets). Each is a case of §4.4, written as a literal. The reviewers are pointed at these.
 
-- [ ] **4. Evaluation and the row**
+- [x] **4. Evaluation and the row**
 
   What it gives: `evaluate_pair` and `make_outcome_rows`: each sample pair's outcome, its reported
   genotypes and its `OutcomeRow`, every field filled.
