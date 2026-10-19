@@ -112,7 +112,8 @@ def test_evaluate_pair_gives_outcome_and_reported_pair_of_spec_case(
 
 
 # The cases of §5 that the table of E cases leaves out: the other side of each rule with
-# a side, a missing sample against an invalid one, and §2's haploid 0 against 0/0.
+# a side, a missing sample against an invalid one, §2's haploid 0 against 0/0, and the
+# one genotype that only in A and only in B need.
 OTHER_SIDE_CASES: dict[str, tuple[SampleResult, SampleResult, PairEvaluation]] = {
     "too-complex-in-B": (INVALID, TOO_COMPLEX, PairEvaluation(Outcome.TOO_COMPLEX, None, None)),
     "invalid-in-B": (((0, 1),), INVALID, PairEvaluation(Outcome.INVALID_IN_B, None, None)),
@@ -136,6 +137,18 @@ OTHER_SIDE_CASES: dict[str, tuple[SampleResult, SampleResult, PairEvaluation]] =
         ((0,),),
         ((0, 0),),
         PairEvaluation(Outcome.REFERENCE_IN_BOTH, (0,), (0, 0)),
+    ),
+    # Only in A needs B to hold one genotype, all REF: a first genotype all REF among two
+    # is not enough. Likewise for only in B.
+    "not-only-in-A-when-B-holds-two": (
+        ((1, 1),),
+        ((0, 0), (1, 2)),
+        PairEvaluation(Outcome.DIFFERENT, (1, 1), (0, 0)),
+    ),
+    "not-only-in-B-when-A-holds-two": (
+        ((0, 0), (1, 2)),
+        ((1, 1),),
+        PairEvaluation(Outcome.DIFFERENT, (0, 0), (1, 1)),
     ),
 }
 
