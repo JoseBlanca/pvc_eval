@@ -29,8 +29,7 @@ type-regions` runs, which is pvc's command that writes the regions as a BED. The
 two places: the catalogue route drops the candidates near a contig end (step 2 below), and it always
 scans periods 1 to 6, whatever periods it then admits (step 1). pvc_eval ports the scanning route
 with both, so it gives what `dev type-regions` gives, under the conditions the **whole-port check**
-states at the end of this spec, where the two are compared over the GIAB benchmark regions of
-GRCh38.
+states at the end of this spec, where the two are compared.
 
 The owner approved the spec on 19 October 2026, and decided that 52 of pvc's tests are left out
 (the decided point at the end). Four sentences of `doc/spec.md` §5.1 differ from pvc's code and are
@@ -426,41 +425,35 @@ periods 2 to 6, copy floors (10, 5, 4, 3, 3, 3), bundle distance 50, `max_str_le
 - each error above, with its message;
 - each refusal of `read_str_regions`.
 
-**The whole-port check.** pvc_eval's STR regions and `pvc dev type-regions`'s, over the GIAB
-benchmark regions of GRCh38, are identical: same contig, start, end and type, and the same motif
-for each STR segment. It is one test, marked `slow`. It reads three paths from the environment:
+**The whole-port check.** pvc_eval's STR regions and `pvc dev type-regions`'s are identical on the
+same sequences: same contig, start, end and type, and the same motif for each STR segment. During
+development it runs on small sequences, so that it takes minutes and can be run after every change
+to a step. It is one test, marked `slow`, over two inputs:
 
-- `PVC_EVAL_PVC`, a pvc binary built at the provenance commit;
-- `PVC_EVAL_GRCH38`, the GRCh38 FASTA, with its `.fai` and pvc's catalogue,
-  `<fasta>.repeats.parquet`, beside it;
-- `PVC_EVAL_GIAB_BED`, the benchmark regions,
-  `HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed`, in pvc's `benchmarks/giab`.
+- **Generated contigs.** 600 contigs, from a fixed seed, of random bases with planted repeats of
+  periods 1 to 6, some impure, some near each other, some near a contig end, and some runs longer
+  than 100 bases. They are compared twice: at the defaults below, and with `--min-period 2
+  --max-period 5`, which tells periods scanned from periods admitted. The review of this spec ran
+  the spec's steps, written in Python, against pvc on 4,800 such contigs with no difference.
+- **Slices of GRCh38.** A few stretches of 1 to 2 Mb, each written as a contig of its own into a
+  FASTA in `tmp_path`, chosen so that together they hold STR segments, STR bundles and satellites;
+  the test asserts that each type appears. Their ends are the ends of the new contigs for both
+  programs alike.
 
-Where one is unset or its file is missing, including the catalogue, the test is skipped, with a
-message naming what is missing.
-
-The catalogue in pvc's `benchmarks/giab` was built on 2 September 2026, before bbcc9f4, and the pvc
-binary in its `target/release` lacks `pvc dev`. So both are made again for the check: pvc built
-from `git archive bbcc9f4` into a scratch directory, and the catalogue built there with `pvc
-repeat-catalog --reference <link to the FASTA>`, beside links to the FASTA and its `.fai`. pvc's
-repository is not touched. The review of this spec built it so with `--threads 4` in 43 s, at a
-peak of 22 GB, on this machine on 19 October 2026.
-
-The test runs:
+For each input, the test writes the FASTA and its `.fai`, builds pvc's catalogue beside it with `pvc
+repeat-catalog`, which takes seconds at this size, and runs, with no `--regions`:
 
 ```
-pvc dev type-regions --reference $PVC_EVAL_GRCH38 --output pvc.bed
-pvc_eval str-regions --reference $PVC_EVAL_GRCH38 --regions $PVC_EVAL_GIAB_BED \
-                     --min-copies 8,6,6,6,5,4 --output pvc_eval.bed
+pvc dev type-regions --reference input.fa --output pvc.bed [--min-period 2 --max-period 5]
+pvc_eval str-regions --reference input.fa --min-copies 8,6,6,6,5,4 --output pvc_eval.bed \
+                     [--min-period 2 --max-period 5]
 ```
 
-`dev type-regions` runs over the whole genome, and its rows that overlap a benchmark region by at
-least one base are kept. It is not given `--regions` because with them its catalogue reader loads
-only the rows within a reach of each region (`repeat_catalog/reader.rs`, `rows_for`), and a satellite
-longer than that reach comes back shorter. A 780-base chain of (CA) repeats was a satellite
-2000–2770 over the whole contig and 2567–2770 with a region at 2700–2750. Over the HG002 regions
-the two runs agreed on all 1,530,189 STR regions, so the check would pass either way today, but by
-luck of the data.
+It reads two paths from the environment: `PVC_EVAL_PVC`, a pvc binary built at the provenance
+commit, and `PVC_EVAL_GRCH38`, the GRCh38 FASTA with its `.fai`. Where one is unset or its file is
+missing, the part that needs it is skipped, with a message naming what is missing. The pvc binary in
+pvc's `target/release` lacks `pvc dev`, so pvc is built from `git archive bbcc9f4` into a scratch
+directory, and pvc's repository is not touched.
 
 `dev type-regions` at its defaults has pvc's calling floors, 8, 6, 6, 6, 5, 4, the copy floors pvc
 uses when it calls genotypes (`doc/spec.md` §5.1), and pvc_eval's other defaults. It writes
@@ -470,9 +463,21 @@ uses when it calls genotypes (`doc/spec.md` §5.1), and pvc_eval's other default
 pvc_eval equals `dev type-regions` only where both run the same rules: periods scanned 1 to 6, copy
 floors at or above the catalogue's 5, 5, 4, 4, 4, 3 (which pvc refuses to go under, `StrRepeatCriteria::
 serves`), the scan weights 2, 7, 2 the catalogue was built with, and a contig-end flank of 15. The
-check runs there. How long pvc_eval takes
-over chromosomes 1 to 22 is not known before the measurement, so the check is run at the end of the
-build and when the finder changes, not with every commit.
+check runs there.
+
+**The same check over GRCh38**, over the GIAB benchmark regions, is run once the code exists and its
+performance work is done, and is not part of the plan made from this spec (the owner, 19 October
+2026). Two facts for it, found by the review of this spec:
+
+- `dev type-regions` is run over the whole genome and its rows that overlap a benchmark region are
+  kept. With `--regions`, its catalogue reader loads only the rows within a reach of each region
+  (`repeat_catalog/reader.rs`, `rows_for`), and a satellite longer than that reach comes back
+  shorter: a 780-base chain of (CA) repeats was a satellite 2000–2770 over the whole contig and
+  2567–2770 with a region at 2700–2750. Over HG002's regions the two runs agreed on all 1,530,189
+  STR regions, by luck of the data.
+- The catalogue in pvc's `benchmarks/giab` was built on 2 September 2026, before bbcc9f4, so it is
+  built again beside links to the FASTA and its `.fai`. The review built it with `--threads 4` in
+  43 s, at a peak of 22 GB, on this machine on 19 October 2026.
 
 ## Decided point
 
@@ -506,7 +511,7 @@ code is the same whichever way they are settled. The owner decides whether §5.1
 Two more sentences of §5.1 are true of pvc_eval and not of pvc. §5.1 says pvc's two routes "give the
 same partition", and that pvc "gives the same answer whether or not a region list is given". The
 routes differ in step 2 and in the periods scanned (step 1), and `dev type-regions --regions` can
-give a shorter satellite (the whole-port check). pvc_eval segments whole contigs whatever region
+give a shorter satellite (the same check over GRCh38). pvc_eval segments whole contigs whatever region
 list it is given, so for pvc_eval the second sentence holds.
 
 ## Not in this spec
