@@ -300,6 +300,10 @@ def test_a_file_against_its_decomposition_gives_only_the_outcomes_of_itself(
         reconciled = reconcile(
             locus, get_locus_bases(reference, locus), sample_pairs, phasing_cap=phasing_cap
         )
+    # B has A's blocks and its haplotypes A's sequences, so each sample's result is A's, the
+    # same possible genotypes with the same indices or the same reason (§9): the outcome alone
+    # would let a B that lost phase assignments pass.
+    assert reconciled.results_b == reconciled.results_a, (lines_a, lines_b)
     rows = make_outcome_rows(reconciled, sample_pairs, kind=Kind.SNP, stratum=None)
     for sample_pair, row in zip(sample_pairs, rows, strict=True):
         assert row.outcome in _ALLOWED, (lines_a, lines_b, row)
