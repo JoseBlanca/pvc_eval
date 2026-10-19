@@ -37,9 +37,11 @@ is written once, in a commit of its own, which the others bring in with `git che
 
 - The branch `loci` holds `doc/specs/loci.md` approved, at `cc78799` or after.
 - `uv run python -c "import sys; print(sys._is_gil_enabled())"` prints `False`.
-- The four checks of `python.md` pass on the starting commit: on `cc78799` they gave "8 files
+- The four checks of `python.md` pass on the starting commit: `uv run ruff format --check`,
+  `uv run ruff check`, `uv run ty check` and `uv run pytest -q`. On `cc78799` they gave "8 files
   already formatted", "All checks passed!" twice, and "213 passed".
-- `git cherry-pick 90a3c39`, then the checks again: `tests/test_segments.py` runs and passes.
+- `git cherry-pick 90a3c39`, then the checks again: `tests/test_segments.py` runs and passes. A
+  conflict there is a stop, since the commit touches only files the loci branch lacks.
 
 ## Milestones
 
@@ -54,15 +56,17 @@ loci, what `build_loci` holds and what it checks) and "The Python interface" for
 
 **Deliverables.**
 
-- `pvc_eval.locus`, if the reconciliation session has not written it yet: `Locus` exactly as §4
-  gives it, in a commit of its own, sent to `reconciliation`. Check: `git show --stat` of that
-  commit touches only `src/pvc_eval/locus.py` and its test.
+- `pvc_eval.locus`. If the `git log --all` above finds it on another branch, that commit is
+  cherry-picked. Otherwise `Locus` is written exactly as §4 gives it, in a commit of its own, sent
+  to `reconciliation`. Check: `git show --stat` of that commit touches only `src/pvc_eval/locus.py`
+  and its test.
 - `tests/test_loci.py`, with records built as `VcfRecord` values whose spans are literals and STR
   regions as lists of `GenomeSegment`, holding the cases listed in the spec's "How it is verified"
   under "At `build_loci`, the cases of this spec", "the cases `doc/spec.md` §7.2 lists for loci"
   (by hand; their runs through `parse_vcf` are milestone 2), "What it reads", and "A property".
   Check: `uv run pytest tests/test_loci.py -q` ends with at least 50 passed and nothing skipped
-  or failed. On the starting commit it exits with 4, as the file does not exist.
+  or failed; the spec's lists name 50 cases, counting each row of a table and each `ValueError`
+  as one. On the starting commit it exits with 4, as the file does not exist.
 - The property test compares `build_loci` with a slow version of §5.3 written in the test from the
   rules alone, steps 1 to 4, on hypothesis's cases, and checks the invariants the spec lists. It
   is the check that guards the rules: a wrong rule gives plausible loci and no error. Check: it is
@@ -75,7 +79,8 @@ loci, what `build_loci` holds and what it checks) and "The Python interface" for
 is not changed.
 
 **What could go wrong.** The look-ahead is where the spec's two reviews found faults: the reach,
-which must be computed after the next record's segments are read; positions compared without
+the furthest position a later record can start at and still join the open locus (the spec's "What
+`build_loci` holds"), which must be computed after the next record's segments are read; positions compared without
 their contig; records with no ALT and STR regions in a gap of the open locus. The reviewers of
 the `spec` and `correctness` categories get these three. The spec's model of these rules, which
 agreed with a brute force of §5.3 on 20,000 random cases, is
@@ -106,7 +111,9 @@ and third cases of `doc/spec.md` §5.2 run through `parse_vcf`, and "With the ST
 
 **What could go wrong.** A span `parse_vcf` computes that differs from the one the spec's case
 assumes. That is a finding against `vcf.py` or the spec, not against the loci, and a stop: the
-handoff forbids changing `vcf.py` without the owner.
+owner's handoff forbids changing `vcf.py` without them. The session commits the tests that pass,
+leaves the failing case out of the commit with its output in the report, and asks the owner as the
+coding skill's "When to stop and ask" says; milestone 3 can go on meanwhile.
 
 - [ ] 3. Kind, stratum and regions
 
@@ -123,18 +130,20 @@ with their interfaces; `doc/spec.md` §5.6 and §5.7.
   commit of its own, and sent to `reconciliation`. `tests/test_kind.py` holds the four rows of the
   spec's table, an ALT equal to its REF left out, and one locus of each kind, one of them holding 14
   unphased heterozygous records, *too complex* for reconciliation, which still has a kind (§7.2).
-  Check: `uv run pytest tests/test_kind.py -q` ends with at least 9 passed.
+  Check: `uv run pytest tests/test_kind.py -q` ends with at least 9 passed, the cases this
+  deliverable lists.
 - `pvc_eval.strata` with `pvc_stratum`, `read_strata` and `Strata`. `tests/test_strata.py` holds
   the strata cases of `doc/spec.md` §7.2 at `pvc_stratum`, the untyped region that raises, the
   spec's `homopolymer,segdup` case and a locus under no interval (`.`), a BED read unsorted and
   with overlapping lines, and each refusal of `read_strata`, the contig the reference lacks among
   them, with its message. Check: `uv run pytest tests/test_strata.py -q` ends with at least 14
-  passed.
+  passed, the cases this deliverable lists, each refusal counted once.
 - `pvc_eval.regions` with `read_regions`, `Regions` and `select_loci`. `tests/test_regions.py`
   holds the spec's locus kept by a region that shares positions and skipped by one that lies next
   to it, every locus kept when `regions` is None, a BED read unsorted with overlapping and adjacent
   lines, and each refusal of `read_regions`, the contig the reference lacks among them, with its
-  message. Check: `uv run pytest tests/test_regions.py -q` ends with at least 9 passed.
+  message. Check: `uv run pytest tests/test_regions.py -q` ends with at least 9 passed, the cases this
+  deliverable lists, each refusal counted once.
 - The four checks of `python.md` pass.
 
 **What it stands on.** `pvc_eval.locus` from milestone 1, or from the reconciliation session;
