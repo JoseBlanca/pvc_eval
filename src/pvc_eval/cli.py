@@ -202,7 +202,7 @@ def _make_parser() -> argparse.ArgumentParser:
     defaults = StrFinderParameters()
     for finder_option in _FINDER_OPTIONS:
         default = getattr(defaults, finder_option.field)
-        shown = ",".join(map(str, default)) if isinstance(default, tuple) else str(default)
+        shown = _format_copy_floors(default) if isinstance(default, tuple) else str(default)
         str_regions.add_argument(
             finder_option.option,
             dest=finder_option.field,
@@ -230,14 +230,13 @@ def _make_finder_parameters(arguments: argparse.Namespace) -> StrFinderParameter
     try:
         return StrFinderParameters(**values)
     except ValueError as err:
-        message = str(err).replace(repr(values["copy_floors"]), _format_copy_floors(values))
+        copy_floors = arguments.copy_floors
+        message = str(err).replace(repr(copy_floors), _format_copy_floors(copy_floors))
         for finder_option in _FINDER_OPTIONS:
             message = re.sub(rf"\b{finder_option.field}\b", finder_option.option, message)
         raise PvcEvalInputError(f"{message}. Correct the option, and run again.") from err
 
 
-def _format_copy_floors(values: dict[str, object]) -> str:
-    """The copy floors as --min-copies takes them, 5,5,4,4,4,3."""
-    copy_floors = values["copy_floors"]
-    assert isinstance(copy_floors, tuple)  # _parse_copy_floors makes a tuple
+def _format_copy_floors(copy_floors: Sequence[int]) -> str:
+    """Copy floors as --min-copies takes them, 5,5,4,4,4,3."""
     return ",".join(map(str, copy_floors))

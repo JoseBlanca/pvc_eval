@@ -12,7 +12,7 @@ the BED of the `pvc_eval str-regions` command.
 
 import bisect
 from collections import deque
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, fields
 from enum import Enum
 from importlib.metadata import version
@@ -921,12 +921,13 @@ def read_str_regions(path: Path, reference: IndexedFasta) -> Iterator[GenomeSegm
     region type is unknown or a motif does not fit it, the BED is not sorted by contig in
     the order of the reference's `.fai` and then by start, or two regions overlap.
     """
+    contig_lengths = _get_contig_lengths(reference)
     contig_ranks = {contig: rank for rank, contig in enumerate(reference.contigs)}
     seen_contigs: set[str] = set()
     previous: tuple[int, GenomeSegment] | None = None
     for line_number, columns in _read_bed_lines(path):
         where = f"{path}, line {line_number}"
-        contig, start, end = _parse_bed_region(columns, where, reference)
+        contig, start, end = _parse_bed_region(columns, where, contig_lengths)
         region_type, motif = _parse_type_and_motif(columns[3:5], where)
         segment = GenomeSegment(contig, start, end, region_type, motif)
         if previous is not None:
@@ -990,11 +991,16 @@ def _split_bed_line(line_bytes: bytes, line_number: int, path: Path) -> list[str
     return columns
 
 
+def _get_contig_lengths(reference: IndexedFasta) -> dict[str, int]:
+    """The length of each contig of the reference, by name, in the order of the `.fai`."""
+    return {contig: reference.get_length(contig) for contig in reference.contigs}
+
+
 def _parse_bed_region(
-    columns: Sequence[str], where: str, reference: IndexedFasta
+    columns: Sequence[str], where: str, contig_lengths: Mapping[str, int]
 ) -> tuple[str, int, int]:
     """The contig, start and end of a BED line, 0-based and half-open, checked against
-    the reference. where names the file and the line, for the message.
+    the reference's contig_lengths. where names the file and the line, for the message.
 
     Raises PvcEvalInputError for fewer than three columns, a start or end that is not a
     whole number, an end not after its start, a contig not in the reference and an end
@@ -1014,12 +1020,12 @@ def _parse_bed_region(
             f"{where}: the end, {end}, is not after the start, {start}, and a region holds at"
             f" least one base.{_CORRECT_LINE}"
         )
-    if contig not in reference.contigs:
+    length = contig_lengths.get(contig)
+    if length is None:
         raise PvcEvalInputError(
             f"{where}: contig {contig} is not in the reference. Use the reference the BED was"
             f" made for, or remove the lines of {contig}, and run again."
         )
-    length = reference.get_length(contig)
     if end > length:
         raise PvcEvalInputError(
             f"{where}: the end, {end}, is past the end of {contig}, which has {length} bases in"
@@ -1085,40 +1091,42 @@ def _check_str_region_order(
     segment: GenomeSegment,
     where: str,
     path: Path,
-    seen_contigs: set[str],
+    seen_contigs: Collection[str],
     contig_ranks: Mapping[str, int],
 ) -> None:
     """Raise PvcEvalInputError unless a region of a --str-regions BED comes after the one
     before it: on a later contig of the `.fai` that has had no line yet, or on the same
     contig, starting at or after the end of the one before (doc/spec.md §4)."""
-    previous_line, before = previous
-    sort = (
+    previous_line, previous_segment = previous
+    sort_remedy = (
         " Sort it by contig, in the order of the reference's .fai, and by start, for example"
         f" with `bedtools sort -faidx <the reference's .fai> -i {path}`, and run again."
     )
-    if segment.contig != before.contig:
+    if segment.contig != previous_segment.contig:
         if segment.contig in seen_contigs:
             raise PvcEvalInputError(
                 f"{where}: the lines of {segment.contig} are not all together; this one comes"
-                f" after lines of {before.contig}.{sort}"
+                f" after lines of {previous_segment.contig}.{sort_remedy}"
             )
-        if contig_ranks[segment.contig] < contig_ranks[before.contig]:
+        if contig_ranks[segment.contig] < contig_ranks[previous_segment.contig]:
             raise PvcEvalInputError(
-                f"{where}: contig {segment.contig} comes after {before.contig}, and the"
-                f" reference's .fai puts {segment.contig} before it.{sort}"
+                f"{where}: contig {segment.contig} comes after {previous_segment.contig}, and the"
+                f" reference's .fai puts {segment.contig} before it.{sort_remedy}"
             )
         return
-    if segment.start < before.start:
+    if segment.start < previous_segment.start:
         raise PvcEvalInputError(
-            f"{where}: the start, {segment.start}, is before the start, {before.start}, of line"
-            f" {previous_line} on {segment.contig}.{sort}"
+            f"{where}: the start, {segment.start}, is before the start,"
+            f" {previous_segment.start}, of line {previous_line} on {segment.contig}."
+            f"{sort_remedy}"
         )
-    if segment.start < before.end:
+    if segment.start < previous_segment.end:
         raise PvcEvalInputError(
             f"{where}: the region {segment.contig} {segment.start} {segment.end} overlaps the"
-            f" one of line {previous_line}, {before.contig} {before.start} {before.end}, and"
-            f" STR regions must not overlap. Merge them with `bedtools merge -i {path}`, which"
-            " keeps three columns, and run again."
+            f" one of line {previous_line}, {previous_segment.contig}"
+            f" {previous_segment.start} {previous_segment.end}, and STR regions must not"
+            f" overlap. Merge them with `bedtools merge -i {path}`, which keeps three columns,"
+            " and run again."
         )
 
 
@@ -1130,9 +1138,11 @@ def _parse_requested_regions(path: Path, reference: IndexedFasta) -> dict[str, l
     Raises PvcEvalInputError, naming the file and the line, as _read_bed_lines and
     _parse_bed_region do.
     """
+    contig_lengths = _get_contig_lengths(reference)
     requested: dict[str, list[_Span]] = {}
     for line_number, columns in _read_bed_lines(path):
-        contig, start, end = _parse_bed_region(columns, f"{path}, line {line_number}", reference)
+        where = f"{path}, line {line_number}"
+        contig, start, end = _parse_bed_region(columns, where, contig_lengths)
         requested.setdefault(contig, []).append((start, end))
     return requested
 
@@ -1160,21 +1170,21 @@ def write_str_regions(
     length; for a byte of the FASTA that is not a letter; and, before any contig is
     segmented, for an output that is a directory or whose `.tmp` cannot be made.
     """
-    requested = None if regions is None else _parse_requested_regions(regions, reference)
+    if regions is None:
+        # Without --regions, each whole contig is the one span requested of it.
+        requested = {
+            contig: [(0, length)] for contig, length in _get_contig_lengths(reference).items()
+        }
+    else:
+        requested = _parse_requested_regions(regions, reference)
     temporary = Path(f"{output}.tmp")
     bed = _open_temporary_output(output, temporary)
     try:
         with bed:
             bed.writelines(_format_str_regions_header(parameters))
-            for contig in reference.contigs:
-                if requested is not None and contig not in requested:
-                    continue
-                # Without --regions, the whole contig is the one span requested.
-                spans = (
-                    [(0, reference.get_length(contig))] if requested is None else requested[contig]
-                )
+            for contig in [contig for contig in reference.contigs if contig in requested]:
                 segments = segment_contig(reference, contig, parameters)
-                str_regions = _find_requested_str_regions(segments, spans)
+                str_regions = _find_requested_str_regions(segments, requested[contig])
                 bed.writelines(_format_str_region(segment) for segment in str_regions)
         temporary.replace(output)
     except BaseException:
