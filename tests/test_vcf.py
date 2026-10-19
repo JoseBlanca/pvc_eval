@@ -183,6 +183,18 @@ def test_samples_with_the_same_gt_share_one_alleles_tuple(
     assert first.alleles is second.alleles
 
 
+def test_samples_with_the_same_genotype_share_one_genotype(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(tmp_path, "chr1\t4\t.\tA\tG\t.\tPASS\t.\tGT:GQ:PS\t0|1:30:4\t0|1:30:4\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    first, second = record.genotypes
+    assert first == VcfGenotype(alleles=(0, 1), phased=True, phase_set="4", quality=30)
+    assert first is second
+
+
 @pytest.mark.parametrize("gzipped", [False, True], ids=["plain", "bgzipped"])
 def test_records_are_read_with_0_based_starts(
     tmp_path: Path, reference: IndexedFasta, gzipped: bool
