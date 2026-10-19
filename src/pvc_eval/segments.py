@@ -9,7 +9,6 @@ StrFinderParameters, the parameters of the finder.
 """
 
 import bisect
-import math
 from collections import deque
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, fields
@@ -105,8 +104,9 @@ class StrFinderParameters:
         _check_copy_floors(self.copy_floors)
         purity = self.min_purity
         is_number = isinstance(purity, int | float) and not isinstance(purity, bool)
-        if not (is_number and math.isfinite(purity) and 0 <= purity <= 1):
-            raise ValueError(f"min_purity is {purity!r}; it must be a number from 0 to 1")
+        # The range alone refuses nan and the infinities, and compares any int exactly.
+        if not (is_number and 0 <= purity <= 1):
+            raise ValueError(f"min_purity is {purity!r}; it must be a float or int from 0 to 1")
 
 
 def _check_whole_number(name: str, value: object) -> None:

@@ -1,5 +1,6 @@
 import random
 import tracemalloc
+from fractions import Fraction
 
 import pytest
 from hypothesis import given, settings
@@ -95,6 +96,8 @@ _PAST_THE_LIMIT: list[tuple[str, dict[str, object], str]] = [
     ("min_purity_negative", {"min_purity": -0.01}, "min_purity"),
     ("min_purity_above_one", {"min_purity": 1.01}, "min_purity"),
     ("min_purity_nan", {"min_purity": float("nan")}, "min_purity"),
+    ("min_purity_huge_int", {"min_purity": 10**400}, "min_purity"),
+    ("min_purity_fraction", {"min_purity": Fraction(4, 5)}, "min_purity"),
     ("min_score_fraction", {"min_score": 0.5}, "min_score"),
     ("bundle_distance", {"bundle_distance": 0}, "bundle_distance"),
     ("contig_end_flank", {"contig_end_flank": -1}, "contig_end_flank"),
@@ -124,6 +127,13 @@ def test_a_parameter_past_its_limit_raises_naming_the_field(
     with pytest.raises(ValueError, match=rf"\b{field}\b") as raised:
         StrFinderParameters(**fields)  # ty: ignore[invalid-argument-type]  # values of the wrong type, on purpose
     assert repr(fields[field]) in str(raised.value)
+
+
+def test_min_purity_must_be_a_float_or_an_int() -> None:
+    with pytest.raises(
+        ValueError, match=r"^min_purity is Fraction\(4, 5\); it must be a float or int from 0 to 1$"
+    ):
+        StrFinderParameters(min_purity=Fraction(4, 5))  # ty: ignore[invalid-argument-type]  # a Fraction, on purpose
 
 
 # ---- Step 1, ported from pvc's tandem_repeat.rs at bbcc9f4 ----------------------------------
