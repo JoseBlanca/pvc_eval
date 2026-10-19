@@ -12,7 +12,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from pvc_eval.errors import PvcEvalInputError
-from pvc_eval.fasta import IndexedFasta
+from pvc_eval.fasta import BLOCK_BASES, FastaWindow, IndexedFasta
 
 # Lines of five bases, a last line shorter than the others, lower-case bases, a contig
 # whose last line has no line end. Its .fai is what `samtools faidx one.fa` (samtools
@@ -460,3 +460,190 @@ def test_closing_twice_leaves_a_file_opened_between_alone(one_fa: Path, tmp_path
         assert os.pread(other_fd, 10, 0) == b"other file"
     finally:
         os.close(other_fd)
+
+
+# The window. Its blocks are made a few bases long where the contigs are short, so that
+# the requests extend, jump and evict as they would over a genome.
+
+
+@pytest.fixture
+def window_fa(tmp_path: Path) -> Path:
+    # chr1 is 40 bases in lines of 7, chr2 is 9.
+    return write_fasta(
+        tmp_path,
+        "window.fa",
+        b">chr1\nACGTAAC\nCGGTTAc\ngtacgtN\nNNACCAG\nTGGTTTA\nCCAGG\n>chr2\nGGGAAAt\ntt\n",
+        "chr1\t40\t6\t7\t8\nchr2\t9\t58\t7\t8\n",
+    )
+
+
+CHR1 = "ACGTAACCGGTTACGTACGTNNNACCAGTGGTTTACCAGG"
+CHR2 = "GGGAAATTT"
+
+
+def test_a_window_extends_forward_and_backward_and_starts_again_far_away(window_fa: Path) -> None:
+    with IndexedFasta(window_fa) as indexed_fasta:
+        window = FastaWindow(indexed_fasta, block_bases=4)
+        steps = [
+            # request, its bases, then the region the window holds
+            (("chr1", 10, 12), "TT", ("chr1", 10, 14)),
+            # inside: a slice, nothing read
+            (("chr1", 11, 13), "TA", ("chr1", 10, 14)),
+            # one past the end: extends forward by a block
+            (("chr1", 13, 15), "CG", ("chr1", 10, 18)),
+            # before the start: extends backward by a block
+            (("chr1", 8, 11), "GGT", ("chr1", 6, 18)),
+            # overlapping both ends, within a block of each
+            (("chr1", 4, 20), "AACCGGTTACGTACGT", ("chr1", 2, 22)),
+            # more than a block past the end: a new buffer at the request
+            (("chr1", 27, 29), "GT", ("chr1", 27, 31)),
+            (("chr1", 31, 38), "TTTACCA", ("chr1", 27, 38)),
+            # a block's read stops at the end of the contig
+            (("chr1", 38, 39), "G", ("chr1", 27, 40)),
+            # more than a block before the start: a new buffer
+            (("chr1", 0, 3), "ACG", ("chr1", 0, 4)),
+            # another contig drops the buffer
+            (("chr2", 6, 9), "TTT", ("chr2", 6, 9)),
+            # back on chr1 after chr2: a new buffer
+            (("chr1", 22, 23), "N", ("chr1", 22, 26)),
+        ]
+        for request, expected_bases, expected_held in steps:
+            assert (window.bases(*request), window.held_region) == (expected_bases, expected_held)
+            assert window.resident_bases == expected_held[2] - expected_held[1]
+
+
+def test_an_empty_request_reads_nothing(window_fa: Path) -> None:
+    with IndexedFasta(window_fa) as indexed_fasta:
+        window = FastaWindow(indexed_fasta, block_bases=4)
+        assert window.bases("chr1", 5, 5) == ""
+        assert window.held_region is None
+        assert window.resident_bases == 0
+
+
+def test_evicted_bases_are_read_again_when_asked_for(window_fa: Path) -> None:
+    with IndexedFasta(window_fa) as indexed_fasta:
+        window = FastaWindow(indexed_fasta, block_bases=4)
+        assert window.bases("chr1", 10, 16) == "TTACGT"
+        assert window.held_region == ("chr1", 10, 16)
+        window.evict_before(14)
+        assert window.held_region == ("chr1", 14, 16)
+        window.evict_before(12)
+        assert window.held_region == ("chr1", 14, 16)
+        assert window.bases("chr1", 10, 16) == "TTACGT"
+        assert window.held_region == ("chr1", 10, 16)
+        window.evict_before(25)
+        assert window.held_region is None
+        assert window.resident_bases == 0
+        assert window.bases("chr1", 18, 21) == "GTN"
+
+
+def test_a_window_raises_for_a_region_outside_its_contig(window_fa: Path) -> None:
+    with IndexedFasta(window_fa) as indexed_fasta:
+        window = FastaWindow(indexed_fasta, block_bases=4)
+        with pytest.raises(ValueError, match=r"^end 41 is past the length of chr1, 40$"):
+            window.bases("chr1", 38, 41)
+        with pytest.raises(
+            ValueError, match=f"^{re.escape(f'contig chr9 is not in {window_fa}')}$"
+        ):
+            window.bases("chr9", 0, 1)
+
+
+@st.composite
+def window_requests(draw: st.DrawFn, lengths: dict[str, int]) -> list[tuple[str | None, int, int]]:
+    """Requests (contig, start, end) and evictions (None, position, position)."""
+    actions = []
+    for _ in range(draw(st.integers(min_value=1, max_value=30))):
+        contig = draw(st.sampled_from(sorted(lengths)))
+        start = draw(st.integers(min_value=0, max_value=lengths[contig]))
+        if draw(st.integers(min_value=0, max_value=3)) == 0:
+            actions.append((None, start, start))
+        else:
+            end = draw(st.integers(min_value=start, max_value=lengths[contig]))
+            actions.append((contig, start, end))
+    return actions
+
+
+@given(
+    sequences=st.lists(
+        st.text(alphabet="ACGTacgtN", min_size=1, max_size=60), min_size=1, max_size=3
+    ),
+    line_width=st.integers(min_value=1, max_value=12),
+    block_bases=st.integers(min_value=1, max_value=16),
+    data=st.data(),
+)
+def test_every_window_answer_is_the_slice_and_eviction_drops_what_it_says(
+    tmp_path_factory: pytest.TempPathFactory,
+    sequences: list[str],
+    line_width: int,
+    block_bases: int,
+    data: st.DataObject,
+) -> None:
+    contigs = {f"contig{i}": sequence for i, sequence in enumerate(sequences)}
+    fasta, fai = fasta_and_fai(contigs, line_width, "\n")
+    path = write_fasta(tmp_path_factory.mktemp("example"), "ref.fa", fasta, fai)
+    actions = data.draw(window_requests({name: len(seq) for name, seq in contigs.items()}))
+    with IndexedFasta(path) as indexed_fasta:
+        window = FastaWindow(indexed_fasta, block_bases=block_bases)
+        for contig, start, end in actions:
+            if contig is None:
+                window.evict_before(start)
+                held_region = window.held_region
+                assert held_region is None or held_region[1] >= start
+            else:
+                assert window.bases(contig, start, end) == contigs[contig][start:end].upper()
+            held_region = window.held_region
+            assert window.resident_bases == (
+                0 if held_region is None else held_region[2] - held_region[1]
+            )
+
+
+def test_a_forward_walk_with_eviction_holds_a_few_blocks(tmp_path: Path) -> None:
+    rng = random.Random(19)
+    length = 1_000_000
+    contigs = {"chr1": "".join(rng.choices("ACGT", k=length))}
+    fasta, fai = fasta_and_fai(contigs, 60, "\n")
+    path = write_fasta(tmp_path, "ref.fa", fasta, fai)
+    most_held = 0
+    with IndexedFasta(path) as indexed_fasta:
+        window = FastaWindow(indexed_fasta)
+        for start in range(0, length - 20, 10):
+            assert window.bases("chr1", start, start + 20) == contigs["chr1"][start : start + 20]
+            window.evict_before(start - 100)
+            most_held = max(most_held, window.resident_bases)
+    assert 0 < most_held <= 2 * BLOCK_BASES
+
+
+def test_threads_each_with_a_window_over_one_indexed_fasta_agree(tmp_path: Path) -> None:
+    rng = random.Random(20261019)
+    contigs = {
+        f"chr{i}": "".join(rng.choices("ACGTacgtN", k=rng.randint(2000, 5000))) for i in range(3)
+    }
+    fasta, fai = fasta_and_fai(contigs, 60, "\n")
+    path = write_fasta(tmp_path, "ref.fa", fasta, fai)
+    num_threads, requests_per_thread = 8, 200
+    walks = []
+    for _ in range(num_threads):
+        walk = []
+        for _ in range(requests_per_thread):
+            name = rng.choice(list(contigs))
+            start = rng.randint(0, len(contigs[name]))
+            end = rng.randint(start, min(start + 300, len(contigs[name])))
+            walk.append((name, start, end))
+        walks.append(walk)
+
+    def read_walk(indexed_fasta: IndexedFasta, walk: list[tuple[str, int, int]]) -> list[str]:
+        window = FastaWindow(indexed_fasta, block_bases=256)
+        answers = []
+        for name, start, end in walk:
+            answers.append(window.bases(name, start, end))
+            window.evict_before(start)
+        return answers
+
+    with IndexedFasta(path) as indexed_fasta:
+        one_thread = [read_walk(indexed_fasta, walk) for walk in walks]
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            several_threads = list(executor.map(lambda walk: read_walk(indexed_fasta, walk), walks))
+    assert several_threads == one_thread
+    assert one_thread == [
+        [contigs[name][start:end].upper() for name, start, end in walk] for walk in walks
+    ]
