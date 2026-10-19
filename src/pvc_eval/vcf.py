@@ -139,6 +139,8 @@ def read_vcf_records(path: Path, contigs: Sequence[str]) -> Iterator[VcfRecord]:
             if any(_is_symbolic(alt) for alt in alts):
                 num_symbolic += 1
                 continue
+            if pos_1based == 0:
+                raise _pos_error(fields[1], path, line_number)
             record, num_record_not_numbers = _parse_record(
                 fields, contig, pos_1based - 1, alts, line_number
             )
@@ -258,12 +260,18 @@ def _read_position(fields: list[str], path: Path, line_number: int) -> tuple[str
             " separated by tabs, correct the line or remove it, and run again."
         )
     pos = fields[1]
-    if not (pos.isascii() and pos.isdecimal() and int(pos) >= 1):
-        raise PvcEvalInputError(
-            f"{path}, line {line_number}: POS is '{pos}', and it must be a whole number"
-            " of 1 or more. Correct the line or remove it, and run again."
-        )
+    # VCF 4.3 writes a telomeric breakend at POS 0, so 0 is refused only once the record
+    # is known not to be symbolic.
+    if not (pos.isascii() and pos.isdecimal()):
+        raise _pos_error(pos, path, line_number)
     return fields[0], int(pos)
+
+
+def _pos_error(pos: str, path: Path, line_number: int) -> PvcEvalInputError:
+    return PvcEvalInputError(
+        f"{path}, line {line_number}: POS is '{pos}', and it must be a whole number"
+        " of 1 or more. Correct the line or remove it, and run again."
+    )
 
 
 def _read_alts(fields: list[str], path: Path, line_number: int) -> tuple[str, ...]:

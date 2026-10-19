@@ -375,3 +375,20 @@ def test_bgzipped_file_of_several_gzip_members_is_read_whole(tmp_path: Path) -> 
         (4, ("A", "T")),
         (6, ("A", "G")),
     ]
+
+
+def test_telomeric_breakend_at_pos_0_is_skipped_and_counted(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # VCF 4.3 writes a breakend before the first base of a contig at POS 0.
+    path = write_vcf(
+        tmp_path,
+        "chr1\t0\tbnd1\tN\t.[chr1:500[\t.\t.\t.\tGT\t0/1\t0/1\n"
+        "chr1\t7\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        records = list(read_vcf_records(path, CONTIGS))
+
+    assert [(record.start, record.alleles) for record in records] == [(6, ("A", "T"))]
+    assert "1 VCF records with symbolic alleles" in caplog.text
