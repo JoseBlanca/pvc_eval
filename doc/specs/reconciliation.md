@@ -570,8 +570,9 @@ a literal.
 - **A property**, with hypothesis, at `reconcile` and `make_outcome_rows`: file B is file A
   re-spelled, each record decomposed into records of one replaced base or one indel, phased,
   with a phase set of its own for each record of A so that no block is added (`doc/spec.md`
-  §7.4). A record is decomposed only where no edit of another record, on a haplotype that
-  carries it, touches it, as `doc/spec.md` §7.4 says: two records of one haplotype that touch
+  §7.4). A record is decomposed only where none of the edits a haplotype carries at it touches
+  an edit the same haplotype carries at another record, as `doc/spec.md` §7.4 says, edits as
+  §4.2 makes them, trimmed and where written: two records of one haplotype that touch
   can give a file and its decomposition different outcomes under the collision rules of §4.2,
   which judge edits as written. Reference `TAAC` with `3 AC G,AA 0/1` and `3 A G,AA 1/2` is
   invalid, and decomposed is not; reference `GTTT` with `2 TT GCTA 1/1` and `3 T G,TC 2/2` is
