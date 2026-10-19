@@ -284,6 +284,5 @@ def test_record_that_breaks_its_invariants_is_refused(
             qual=None,
             genotypes=(),
             line_number=1,
-            ref_mismatch=False,
             span=span,
         )

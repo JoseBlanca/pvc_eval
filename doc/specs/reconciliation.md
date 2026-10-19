@@ -148,17 +148,19 @@ A's in its header order and then file B's, each sample once however many pairs i
 in no pair is not reconciled and adds nothing to the locus alleles (decided here, since its rows
 are never written). The sample is given one sample result by the first of these that applies:
 
-1. **Invalid, `REF mismatch`**, when any VCF record of its file in the locus has a REF mismatch
-   (`doc/spec.md` §5.2), a record with no ALT among them, wherever its REF reaches.
-2. **Invalid, `malformed GT`**, when any of its VCF genotypes in the locus is `MALFORMED_GT`.
-3. **Invalid, `ploidy mismatch`**, when any is `OTHER_PLOIDY_GT`.
-4. **Too complex**, when its phase assignments would exceed the phasing cap (§4.1).
-5. **Invalid, `contradicting records`**, when no phase assignment gives a locus genotype (§4.2).
-6. Otherwise, **its possible genotypes**, one or more.
+1. **Invalid, `malformed GT`**, when any of its VCF genotypes in the locus is `MALFORMED_GT`.
+2. **Invalid, `ploidy mismatch`**, when any is `OTHER_PLOIDY_GT`.
+3. **Too complex**, when its phase assignments would exceed the phasing cap (§4.1).
+4. **Invalid, `contradicting records`**, when no phase assignment gives a locus genotype (§4.2).
+5. Otherwise, **its possible genotypes**, one or more.
+
+A REF that differs from the reference stops the run when the VCF is read (`doc/spec.md` §5.2,
+decided by the owner on 19 October 2026, over making its loci invalid), so no such record
+reaches reconciliation.
 
 The order is that of the invalid reasons in `doc/spec.md` §6, with the cap placed after the reasons that need no
 phase assignment. A malformed GT has no alleles, so its blocks could not be counted. And a sample
-whose records are wrong is invalid however many blocks it has.
+whose GTs are wrong is invalid however many blocks it has.
 
 ### 4.1 Phase assignments and the cap
 
@@ -333,10 +335,9 @@ records cannot tell which, and `doc/spec.md` §5.5 asks only whether the files c
 
 **R9. The cap and the order of reasons.** Fourteen unphased `0/1` SNPs in one locus: *too
 complex*; thirteen: reconciled. Fourteen `0|1` SNPs with one `PS`: reconciled, one assignment. A
-sample with a malformed GT in a file whose records include a REF mismatch: invalid, `REF
-mismatch`. A malformed GT, or a GT of another ploidy, in a sample with fourteen blocks: invalid, `malformed
-GT` or `ploidy mismatch`. A record with no ALT and a REF mismatch, starting before the locus and
-reaching into it: every sample of its file invalid, `REF mismatch`. `./.` read with ploidy 1, and
+sample with a malformed GT at one record and a GT of another ploidy at another: invalid,
+`malformed GT`. A malformed GT, or a GT of another ploidy, in a sample with fourteen blocks: invalid, `malformed
+GT` or `ploidy mismatch`. `./.` read with ploidy 1, and
 `.` with ploidy 2: missing.
 
 ## 5. Evaluation
@@ -466,7 +467,6 @@ class Outcome(StrEnum):
     DIFFERENT = "different"
 
 class InvalidReason(StrEnum):
-    REF_MISMATCH = "REF mismatch"
     MALFORMED_GT = "malformed GT"
     PLOIDY_MISMATCH = "ploidy mismatch"
     CONTRADICTING_RECORDS = "contradicting records"

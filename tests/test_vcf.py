@@ -118,8 +118,8 @@ def make_fasta(contigs: dict[str, str]) -> tuple[str, str]:
     return fasta, fai
 
 
-def get_placement(record: VcfRecord) -> tuple[int, tuple[str, ...], tuple[int, int], bool]:
-    return record.start, record.alleles, record.span, record.ref_mismatch
+def get_placement(record: VcfRecord) -> tuple[int, tuple[str, ...], tuple[int, int]]:
+    return record.start, record.alleles, record.span
 
 
 def write_vcf(tmp_path: Path, body: str, *, gzipped: bool = False) -> Path:
@@ -282,7 +282,7 @@ def test_unsorted_file_stops_the_run_naming_both_lines(
 ) -> None:
     path = write_vcf(
         tmp_path,
-        "chr1\t12\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t9\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+        "chr1\t12\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t9\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
     )
 
     with pytest.raises(
@@ -296,7 +296,7 @@ def test_contigs_out_of_the_reference_order_stop_the_run(
 ) -> None:
     path = write_vcf(
         tmp_path,
-        "chr2\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+        "chr2\t5\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
     )
 
     with pytest.raises(PvcEvalInputError, match="not sorted"):
@@ -336,6 +336,46 @@ def test_symbolic_alleles_are_skipped_and_counted(
 
     assert [(record.start, record.alleles) for record in records] == [(6, ("A", "T"))]
     assert "skipped 1 VCF record with symbolic alleles" in caplog.text
+
+
+# §5.2: two records with a symbolic allele whose REF the reference does not have, at chr1:5
+# (A in the reference) and reaching past the end of chr1's 16 bases.
+SYMBOLIC_LINES_THAT_DIFFER = (
+    "chr1\t5\t.\tC\t<DEL>\t.\t.\t.\tGT\t0/1\t0/1\n"
+    f"chr1\t6\t.\t{'G' * 20}\t<DEL>\t.\t.\t.\tGT\t0/1\t0/1\n"
+)
+
+
+def test_symbolic_record_whose_ref_differs_is_skipped_and_counted(
+    tmp_path: Path, reference: IndexedFasta, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = write_vcf(
+        tmp_path, SYMBOLIC_LINES_THAT_DIFFER + "chr1\t7\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n"
+    )
+
+    with caplog.at_level(logging.WARNING):
+        records = list(parse_vcf(path, reference))
+
+    assert [(record.start, record.alleles) for record in records] == [(6, ("A", "T"))]
+    assert "skipped 2 VCF records with symbolic alleles" in caplog.text
+
+
+def test_after_symbolic_records_the_first_plain_record_that_differs_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(
+        tmp_path, SYMBOLIC_LINES_THAT_DIFFER + "chr1\t7\t.\tC\tT\t.\t.\t.\tGT\t0/1\t0/1\n"
+    )
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == (
+        f"{path}, line 5: the REF of chr1:7 is 'C', and the reference, read in upper case, has"
+        " 'A' there. It is the file's first record with no symbolic allele, so the VCF looks"
+        " made on another reference: compare against the reference it was called on, and"
+        " run again."
+    )
 
 
 @pytest.mark.parametrize(
@@ -501,7 +541,7 @@ def test_lower_case_alleles_are_read_in_upper_case_and_normalise_alike(
 
     lower, upper = parse_vcf(path, reference)
 
-    assert get_placement(lower) == get_placement(upper) == (3, ("AA", "A"), (2, 5), False)
+    assert get_placement(lower) == get_placement(upper) == (3, ("AA", "A"), (2, 5))
 
 
 def test_file_that_is_not_utf8_text_stops_the_run(tmp_path: Path, reference: IndexedFasta) -> None:
@@ -652,8 +692,8 @@ def test_records_at_the_same_pos_both_come_out(tmp_path: Path, reference: Indexe
     records = list(parse_vcf(path, reference))
 
     assert [get_placement(record) for record in records] == [
-        (4, ("A", "T"), (4, 5), False),
-        (4, ("A", "AC"), (4, 6), False),
+        (4, ("A", "T"), (4, 5)),
+        (4, ("A", "AC"), (4, 6)),
     ]
 
 
@@ -718,19 +758,161 @@ def test_header_of_one_sample_is_named_in_the_singular(
         list(parse_vcf(path, reference))
 
 
-def test_ref_that_differs_from_the_reference_is_marked_and_spans_its_ref(
-    tmp_path: Path, reference: IndexedFasta
+@pytest.mark.parametrize("num_threads", [1, 4])
+def test_ref_that_differs_from_the_reference_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta, num_threads: int
 ) -> None:
-    # The reference has AG at 0-based 4 and 5, and the deletion CA -> C cannot be placed.
+    # The reference has AG at 0-based 4 and 5; the second line agrees with it.
     path = write_vcf(
         tmp_path,
-        "chr1\t5\t.\tCA\tC\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t5\t.\tAG\tA\t.\t.\t.\tGT\t0/1\t0/1\n",
+        "chr1\t5\t.\tCa\tC\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t5\t.\tAG\tA\t.\t.\t.\tGT\t0/1\t0/1\n",
+    )
+    records = parse_vcf(path, reference, num_threads=num_threads)
+    given: list[VcfRecord] = []
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        given.extend(records)
+
+    assert str(raised.value) == (
+        f"{path}, line 3: the REF of chr1:5 is 'Ca', and the reference, read in upper case,"
+        " has 'AG' there. It is"
+        " the file's first record with no symbolic allele, so the VCF looks made on another"
+        " reference: compare against the reference it was called on, and run again."
+    )
+    assert given == []
+
+
+@pytest.mark.parametrize(
+    ("reference_base", "ref"),
+    [
+        ("R", "A"),
+        ("R", "g"),
+        ("M", "C"),
+        ("n", "T"),
+        ("A", "N"),
+        ("G", "r"),
+        ("T", "U"),
+        ("K", "B"),
+    ],
+    ids=[
+        "reference_r_against_a",
+        "reference_r_against_lower_case_g",
+        "reference_m_against_c",
+        "reference_lower_case_n_against_t",
+        "ref_n_against_a",
+        "ref_lower_case_r_against_g",
+        "ref_u_against_t",
+        "two_codes_that_share_a_base",
+    ],
+)
+def test_iupac_codes_that_share_a_base_agree(
+    tmp_path: Path, make_reference: MakeReference, reference_base: str, ref: str
+) -> None:
+    path = write_vcf(tmp_path, f"chr1\t3\t.\t{ref}\t.\t.\t.\t.\tGT\t0/0\t0/0\n")
+    reference = make_reference(*make_fasta({"chr1": f"GG{reference_base}GG"}))
+
+    (record,) = parse_vcf(path, reference)
+
+    assert record.alleles == (ref.upper(),)
+
+
+@pytest.mark.parametrize(
+    ("reference_base", "ref", "found"),
+    [
+        ("A", "c", "is 'c', and the reference, read in upper case, has 'A' there."),
+        ("R", "C", "is 'C', and the reference, read in upper case, has 'R' there."),
+        (
+            "N",
+            "x",
+            "is 'x', and the reference, read in upper case, has 'N' there ('X' is no IUPAC code).",
+        ),
+        (
+            "x",
+            "X",
+            "is 'X', and the reference, read in upper case, has 'X' there ('X' is no IUPAC code).",
+        ),
+    ],
+    ids=["a_against_c", "reference_r_against_c", "no_code_against_n", "no_code_against_itself"],
+)
+def test_iupac_codes_that_share_no_base_differ(
+    tmp_path: Path, make_reference: MakeReference, reference_base: str, ref: str, found: str
+) -> None:
+    # A letter that is no IUPAC code stands for no base, so it agrees with nothing.
+    path = write_vcf(tmp_path, f"chr1\t3\t.\t{ref}\t.\t.\t.\t.\tGT\t0/0\t0/0\n")
+    reference = make_reference(*make_fasta({"chr1": f"GG{reference_base}GG"}))
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == (
+        f"{path}, line 3: the REF of chr1:3 {found} It is the file's first record with no"
+        " symbolic allele, so the VCF looks made on another reference: compare against the"
+        " reference it was called on, and run again."
     )
 
-    mismatch, match = parse_vcf(path, reference)
 
-    assert get_placement(mismatch) == (4, ("CA", "C"), (4, 6), True)
-    assert get_placement(match) == (4, ("AG", "A"), (4, 6), False)
+@pytest.mark.parametrize(
+    ("line", "found"),
+    [
+        ("chr1\t5\t.\tAC\tA", "is 'AC', and the reference, read in upper case, has 'AG' there."),
+        ("chr1\t5\t.\tAGC\tA", "is 'AGC', and the reference, read in upper case, has 'AGA' there."),
+    ],
+    ids=["second_of_two_bases", "third_of_three_bases"],
+)
+def test_ref_that_agrees_at_its_first_base_and_differs_later_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta, line: str, found: str
+) -> None:
+    # The reference has AGA at 1-based 5 to 7.
+    path = write_vcf(tmp_path, f"{line}\t.\t.\t.\tGT\t0/1\t0/1\n")
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == (
+        f"{path}, line 3: the REF of chr1:5 {found} It is the file's first record with no"
+        " symbolic allele, so the VCF looks made on another reference: compare against the"
+        " reference it was called on, and run again."
+    )
+
+
+# 20 bases of REF are written whole in the message, and one more only where they differ.
+LONG_REF_SEQUENCE = "G" + "ACGT" * 6 + "G"
+
+
+@pytest.mark.parametrize(
+    ("ref", "found"),
+    [
+        (
+            "ACGTACGTACGTACGTACGA",
+            "is 'ACGTACGTACGTACGTACGA', and the reference, read in upper case, has"
+            " 'ACGTACGTACGTACGTACGT' there.",
+        ),
+        (
+            "ACGTACGTACGTACGTACGAA",
+            "(21 bases) has 'A' at chr1:21, where the reference, read in upper case, has 'T'.",
+        ),
+        (
+            "ACGTACGTAXGTACGTACGTA",
+            "(21 bases) has 'X' at chr1:11, where the reference, read in upper case, has 'C'"
+            " ('X' is no IUPAC code).",
+        ),
+    ],
+    ids=["20_bases_written_whole", "21_bases_where_they_differ", "21_bases_no_code"],
+)
+def test_ref_of_more_than_20_bases_is_named_where_it_first_differs(
+    tmp_path: Path, make_reference: MakeReference, ref: str, found: str
+) -> None:
+    path = write_vcf(tmp_path, f"chr1\t2\t.\t{ref}\t.\t.\t.\t.\tGT\t0/0\t0/0\n")
+    reference = make_reference(*make_fasta({"chr1": LONG_REF_SEQUENCE}))
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == (
+        f"{path}, line 3: the REF of chr1:2 {found} It is the file's first record with no"
+        " symbolic allele, so the VCF looks made on another reference: compare against the"
+        " reference it was called on, and run again."
+    )
 
 
 def test_records_are_trimmed_and_never_moved(tmp_path: Path, reference: IndexedFasta) -> None:
@@ -740,7 +922,7 @@ def test_records_are_trimmed_and_never_moved(tmp_path: Path, reference: IndexedF
 
     (record,) = parse_vcf(path, reference)
 
-    assert get_placement(record) == (3, ("AA", "A"), (2, 5), False)
+    assert get_placement(record) == (3, ("AA", "A"), (2, 5))
 
 
 def test_records_come_out_in_order_of_span_start(
@@ -761,9 +943,9 @@ def test_records_come_out_in_order_of_span_start(
     records = parse_vcf(path, reference)
 
     assert [get_placement(record) for record in records] == [
-        (3, ("AA", "A"), (0, 5), False),
-        (3, ("A", "AA"), (0, 6), False),
-        (2, ("A", "T"), (2, 3), False),
+        (3, ("AA", "A"), (0, 5)),
+        (3, ("A", "AA"), (0, 6)),
+        (2, ("A", "T"), (2, 3)),
     ]
 
 
@@ -794,7 +976,7 @@ def test_record_comes_out_once_no_later_record_can_start_before_it(
 
     records = parse_vcf(path, make_reference(*LONG_REFERENCE), **limit)
 
-    assert get_placement(next(records)) == (99, ("C", "T"), (99, 100), False)
+    assert get_placement(next(records)) == (99, ("C", "T"), (99, 100))
 
 
 @pytest.mark.parametrize(
@@ -829,7 +1011,7 @@ def test_records_held_come_out_at_the_next_contig(
 
     records = parse_vcf(path, make_reference(*LONG_REFERENCE), **limit)
 
-    assert get_placement(next(records)) == (99, ("C", "T"), (99, 100), False)
+    assert get_placement(next(records)) == (99, ("C", "T"), (99, 100))
 
 
 def test_span_beyond_10_kb_is_the_ref_and_counted(
@@ -847,8 +1029,8 @@ def test_span_beyond_10_kb_is_the_ref_and_counted(
     with caplog.at_level(logging.WARNING):
         beyond, within = parse_vcf(path, make_reference(*reference))
 
-    assert get_placement(beyond) == (10001, ("AA", "A"), (10001, 10003), False)
-    assert get_placement(within) == (10000, ("AA", "A"), (0, 10002), False)
+    assert get_placement(beyond) == (10001, ("AA", "A"), (10001, 10003))
+    assert get_placement(within) == (10000, ("AA", "A"), (0, 10002))
     assert (
         "a.vcf: 1 VCF record, at line 3, could slide more than 10,000 bases along the"
         " reference and was given only its REF as its span;"
@@ -881,15 +1063,15 @@ def test_spans_beyond_10_kb_are_counted_in_one_warning_from_the_first(
     ("contig", "line", "expected"),
     [
         # An A inserted after the G slides right past 10001 As, to the T.
-        ("G" + "A" * 10001 + "T", "chr1\t1\t.\tG\tGA", (0, ("G", "GA"), (0, 1), False)),
-        ("G" + "A" * 9999 + "T", "chr1\t1\t.\tG\tGA", (0, ("G", "GA"), (0, 10001), False)),
+        ("G" + "A" * 10001 + "T", "chr1\t1\t.\tG\tGA", (0, ("G", "GA"), (0, 1))),
+        ("G" + "A" * 9999 + "T", "chr1\t1\t.\tG\tGA", (0, ("G", "GA"), (0, 10001))),
         # The A at 10003, deleted after two shared As, slides 10002 bases left to 1, and
         # its anchor, the G at 0, is 10001 bases left of the REF: a slide counted from
         # the REF's start, without the shared bases, would stop one base short of it.
         (
             "G" + "A" * 10003 + "CT",
             "chr1\t10002\t.\tAAAC\tAAC,TAAG",
-            (10001, ("AAAC", "AAC", "TAAG"), (10001, 10005), False),
+            (10001, ("AAAC", "AAC", "TAAG"), (10001, 10005)),
         ),
     ],
     ids=["insertion_beyond_10_kb", "insertion_at_10_kb", "deletion_beyond_10_kb_of_a_long_ref"],
@@ -925,9 +1107,9 @@ LIMIT_LINES = (
     "chr2\t107\t.\tAA\tA\t.\t.\t.\tGT\t0/1\t0/1\n"
 )
 UNCUT_PLACEMENTS = [
-    (105, ("AA", "A"), (100, 107), False),
-    (100, ("G", "GA"), (100, 109), False),
-    (106, ("AA", "A"), (100, 108), False),
+    (105, ("AA", "A"), (100, 107)),
+    (100, ("G", "GA"), (100, 109)),
+    (106, ("AA", "A"), (100, 108)),
 ]
 
 
@@ -951,9 +1133,9 @@ def test_span_beyond_a_limit_set_by_the_caller_is_the_ref(
         records = list(parse_vcf(path, make_reference(*LIMIT_REFERENCE), span_limit=5))
 
     assert [get_placement(record) for record in records] == [
-        (105, ("AA", "A"), (100, 107), False),
-        (100, ("G", "GA"), (100, 101), False),
-        (106, ("AA", "A"), (106, 108), False),
+        (105, ("AA", "A"), (100, 107)),
+        (100, ("G", "GA"), (100, 101)),
+        (106, ("AA", "A"), (106, 108)),
     ]
     assert (
         "a.vcf: 2 VCF records, the first at line 4, could slide more than 5 bases along the"
@@ -971,7 +1153,7 @@ def test_with_no_limit_a_span_is_never_cut(
     with caplog.at_level(logging.WARNING):
         (record,) = parse_vcf(path, make_reference(*reference), span_limit=None)
 
-    assert get_placement(record) == (20001, ("AA", "A"), (0, 20003), False)
+    assert get_placement(record) == (20001, ("AA", "A"), (0, 20003))
     assert not caplog.text
 
 
@@ -1018,7 +1200,7 @@ def test_deletion_that_slides_far_right_spans_its_whole_slide(
 
     (record,) = parse_vcf(path, make_reference(*LONG_SLIDE_REFERENCE), **limit)
 
-    assert get_placement(record) == (1, ("AA", "A"), (0, 201), False)
+    assert get_placement(record) == (1, ("AA", "A"), (0, 201))
 
 
 def test_span_reaching_one_base_beyond_a_limit_of_64_is_the_ref(
@@ -1030,7 +1212,7 @@ def test_span_reaching_one_base_beyond_a_limit_of_64_is_the_ref(
 
     (record,) = parse_vcf(path, make_reference(*LONG_SLIDE_REFERENCE), span_limit=64)
 
-    assert get_placement(record) == (1, ("AA", "A"), (1, 3), False)
+    assert get_placement(record) == (1, ("AA", "A"), (1, 3))
 
 
 def test_with_no_limit_an_insertion_slides_to_the_end_of_its_contig(
@@ -1042,7 +1224,7 @@ def test_with_no_limit_an_insertion_slides_to_the_end_of_its_contig(
 
     (record,) = parse_vcf(path, reference, span_limit=None)
 
-    assert get_placement(record) == (0, ("G", "GA"), (0, 101), False)
+    assert get_placement(record) == (0, ("G", "GA"), (0, 101))
     assert len(windows) == 1
 
 
@@ -1148,10 +1330,10 @@ def test_ref_on_the_last_base_of_its_contig_is_read(
 
     (record,) = parse_vcf(path, reference)
 
-    assert get_placement(record) == (6, ("GG", "G"), (0, 8), False)
+    assert get_placement(record) == (6, ("GG", "G"), (0, 8))
 
 
-def test_soft_masked_reference_gives_no_mismatch_and_the_same_spans(
+def test_soft_masked_reference_differs_from_no_ref_and_gives_the_same_spans(
     tmp_path: Path, make_reference: MakeReference
 ) -> None:
     # The window gives soft-masked bases in upper case; §5.2 compares REF without regard
@@ -1165,8 +1347,8 @@ def test_soft_masked_reference_gives_no_mismatch_and_the_same_spans(
     records = parse_vcf(path, reference)
 
     assert [get_placement(record) for record in records] == [
-        (3, ("AA", "A"), (2, 5), False),
-        (4, ("A", "T"), (4, 5), False),
+        (3, ("AA", "A"), (2, 5)),
+        (4, ("A", "T"), (4, 5)),
     ]
 
 
@@ -1372,9 +1554,9 @@ NUM_PLOIDY_LINES = 1000
 def test_two_streams_of_other_ploidies_read_together_keep_their_own_genotypes(
     tmp_path: Path, make_reference: MakeReference, num_threads: int
 ) -> None:
-    # The same GTs read with ploidy 1 and 2, the two streams taken in turns on this thread
-    # and their batches on the same pool threads, so a GT or genotype kept for one ploidy
-    # and given to the other would show here.
+    # The same GTs read with ploidy 1 and 2 by two streams open at once in one process,
+    # taken in turns on this thread, each with its own pool, so a GT or genotype kept for
+    # one ploidy in anything the streams share and given to the other would show here.
     lines = "".join(
         f"chr1\t{pos_1based}\t.\tC\tT\t.\t.\t.\tGT\t1\t0/1\n"
         if pos_1based % 2
@@ -1425,6 +1607,76 @@ def test_with_threads_an_error_comes_after_the_records_before_it(
     assert given[-1].line_number == NUM_THREADED_LINES + 1
 
 
+def make_snps_with_one_ref_wrong(index_wrong: int) -> tuple[tuple[str, str], str]:
+    """A reference of random bases, and a SNP every 10 bases on it, NUM_THREADED_LINES of
+    them, from 1-based 11; the REF of the SNP of 0-based index index_wrong is T where the
+    reference has A, and every other REF agrees with the reference."""
+    rng = random.Random(20261019)
+    sequence = [rng.choice("ACGT") for _ in range(NUM_THREADED_LINES * 10 + 20)]
+    lines = ""
+    for index in range(NUM_THREADED_LINES):
+        pos_1based = 11 + index * 10
+        if index == index_wrong:
+            sequence[pos_1based - 1] = "A"
+        ref = "T" if index == index_wrong else sequence[pos_1based - 1]
+        alt = "G" if ref != "G" else "C"
+        lines += f"chr1\t{pos_1based}\t.\t{ref}\t{alt}\t30\t.\t.\tGT\t0/1\t1/1\n"
+    return make_fasta({"chr1": "".join(sequence)}), lines
+
+
+@pytest.mark.parametrize("num_threads", [1, 4])
+@pytest.mark.parametrize(
+    "index_wrong",
+    [0, 1, 100, vcf._BATCH_SIZE - 1, vcf._BATCH_SIZE, 5 * vcf._BATCH_SIZE],
+    ids=[
+        "first_record",
+        "second_record",
+        "middle_of_a_batch",
+        "last_of_a_batch",
+        "first_of_a_batch",
+        "first_of_a_batch_past_the_first_of_each_thread",
+    ],
+)
+def test_ref_that_differs_comes_after_the_records_before_it(
+    tmp_path: Path, make_reference: MakeReference, index_wrong: int, num_threads: int
+) -> None:
+    fasta, lines = make_snps_with_one_ref_wrong(index_wrong)
+    path = write_vcf(tmp_path, lines)
+    records = parse_vcf(path, make_reference(*fasta), span_limit=5, num_threads=num_threads)
+    given: list[VcfRecord] = []
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        given.extend(records)
+
+    # The header takes two lines. Every record before the wrong one but the last comes out
+    # before the error: the record after it, 10 bases on, would show that no later record
+    # can start before it with a limit of 5, as for every other input error.
+    line_number = index_wrong + 3
+    pos_1based = 11 + index_wrong * 10
+    if index_wrong == 0:
+        remedy = (
+            "It is the file's first record with no symbolic allele, so the VCF looks made on"
+            " another reference: compare against the reference it was called on, and run"
+            " again."
+        )
+    elif index_wrong == 1:
+        remedy = (
+            "The 1 record before it with no symbolic allele agrees with the reference, so"
+            " this line looks damaged: correct it or remove it, and run again."
+        )
+    else:
+        remedy = (
+            f"The {index_wrong} records before it with no symbolic allele agree with the"
+            " reference, so this line looks damaged: correct it or remove it, and run again."
+        )
+    assert str(raised.value) == (
+        f"{path}, line {line_number}: the REF of chr1:{pos_1based} is 'T', and the"
+        f" reference, read in upper case, has 'A' there. {remedy}"
+    )
+    assert [record.line_number for record in given] == list(range(3, line_number - 1))
+    assert [record.start for record in given] == [10 + 10 * index for index in range(len(given))]
+
+
 @pytest.mark.parametrize(
     "num_threads",
     [0, -1, 257, 2**62, 1.5, "4", True],
@@ -1463,7 +1715,6 @@ def make_placed_line(gt: str, gq: int) -> vcf._PlacedLine:
         alleles=("A", "C"),
         qual=30.0,
         line_number=gq,
-        ref_mismatch=False,
         span=(0, 1),
         fields=fields,
     )
