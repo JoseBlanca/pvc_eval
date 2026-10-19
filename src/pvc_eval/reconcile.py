@@ -268,8 +268,6 @@ def _make_sample_result(
 ) -> SampleResult:
     """A sample's sample result: the first reason of doc/specs/reconciliation.md §4 that
     applies, or its possible genotypes, whose locus alleles are added to locus_alleles."""
-    if any(vcf_record.ref_mismatch for vcf_record in records):
-        return InvalidReason.REF_MISMATCH
     genotypes = [vcf_record.genotypes[sample_index] for vcf_record in records]
     if any(genotype is MALFORMED_GT for genotype in genotypes):
         return InvalidReason.MALFORMED_GT

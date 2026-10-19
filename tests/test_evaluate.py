@@ -120,7 +120,7 @@ OTHER_SIDE_CASES: dict[str, tuple[SampleResult, SampleResult, PairEvaluation]] =
     "too-complex-in-B": (INVALID, TOO_COMPLEX, PairEvaluation(Outcome.TOO_COMPLEX, None, None)),
     "invalid-in-B": (((0, 1),), INVALID, PairEvaluation(Outcome.INVALID_IN_B, None, None)),
     "invalid-in-both": (
-        InvalidReason.REF_MISMATCH,
+        InvalidReason.PLOIDY_MISMATCH,
         InvalidReason.CONTRADICTING_RECORDS,
         PairEvaluation(Outcome.INVALID_IN_BOTH, None, None),
     ),
@@ -385,13 +385,16 @@ def test_make_outcome_rows_gives_reason_and_partner_genotype_in_rows_too_complex
 
 
 def test_make_outcome_rows_fills_quality_and_gq_of_invalid_sample() -> None:
-    # Locus 10-11, A. A's record has a REF mismatch, and the sample is 0/1 there.
-    records_a = (make_record(10, ("A", "G"), 30.0, [make_genotype((0, 1), 20)], ref_mismatch=True),)
-    locus = Locus(CONTIG, 10, 11, records_a, (), ())
+    # Locus 10-13, ACG, A. Both records are 1/1 deletions, and both delete 12: they collide.
+    records_a = (
+        make_record(10, ("ACG", "A"), 30.0, [make_genotype((1, 1), 20)]),
+        make_record(11, ("CG", "C"), 40.0, [make_genotype((1, 1), 25)]),
+    )
+    locus = Locus(CONTIG, 10, 13, records_a, (), ())
     sample_pairs = (SamplePair(name_a="S0", index_a=0, name_b="T0", index_b=0),)
-    reconciled = reconcile(locus, "A", sample_pairs)
+    reconciled = reconcile(locus, "ACG", sample_pairs)
 
-    (row,) = make_outcome_rows(reconciled, sample_pairs, kind=Kind.SNP, stratum=None)
+    (row,) = make_outcome_rows(reconciled, sample_pairs, kind=Kind.INDEL, stratum=None)
 
     assert (
         row.outcome,
@@ -399,7 +402,7 @@ def test_make_outcome_rows_fills_quality_and_gq_of_invalid_sample() -> None:
         row.possible_a,
         row.quality_a,
         row.gq_a,
-    ) == (Outcome.INVALID_IN_A, InvalidReason.REF_MISMATCH, 0, 30.0, 20)
+    ) == (Outcome.INVALID_IN_A, InvalidReason.CONTRADICTING_RECORDS, 0, 30.0, 20)
 
 
 def test_make_outcome_rows_shows_reported_pair_not_first_genotypes() -> None:

@@ -515,17 +515,14 @@ def test_reconcile_gives_too_complex_over_a_phasing_cap_it_is_given(
 @pytest.mark.parametrize(
     ("lines", "reason"),
     [
-        # 44 is G in the reference.
-        ([*make_snp_lines(13, "0/1"), "43 C A 3/1", "44 A T 0/0"], InvalidReason.REF_MISMATCH),
         ([*make_snp_lines(14, "0/1"), "44 G T 3/1"], InvalidReason.MALFORMED_GT),
         ([*make_snp_lines(14, "0/1"), "44 G T 1"], InvalidReason.PLOIDY_MISMATCH),
         (["30 A C 3/1", "31 C A 1"], InvalidReason.MALFORMED_GT),
     ],
     ids=[
-        "R9-malformed-and-ref-mismatch-is-ref-mismatch",
         "R9-malformed-over-cap-is-malformed",
         "R9-other-ploidy-over-cap-is-ploidy-mismatch",
-        "malformed-before-ploidy-mismatch",
+        "R9-malformed-and-other-ploidy-is-malformed",
     ],
 )
 def test_reconcile_gives_the_first_reason_that_applies(
@@ -538,20 +535,6 @@ def test_reconcile_gives_the_first_reason_that_applies(
 
     assert reconciled.results_a == {0: reason}
     assert reconciled.alleles == (R9_BASES,)
-
-
-def test_reconcile_gives_ref_mismatch_to_every_sample_R9(case_files: CaseFiles) -> None:  # noqa: N802 -- the label of the case of §4.4 in the test's id
-    # 28-31 is NNAC in the reference; the record says GGAC from 28, before the locus.
-    reference = case_files.write_reference(30, R9_BASES)
-    records = case_files.write_and_parse_records(
-        reference, ["28 GGAC . 0/0 0/0", "31 C A 0/1 1/1"], num_samples=2
-    )
-    locus = make_locus((31, 31), records)
-
-    reconciled = reconcile(locus, get_locus_bases(reference, locus), pair_samples(2))
-
-    assert reconciled.results_a == {0: InvalidReason.REF_MISMATCH, 1: InvalidReason.REF_MISMATCH}
-    assert reconciled.alleles == ("C",)
 
 
 @pytest.mark.parametrize(

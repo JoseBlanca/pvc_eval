@@ -36,7 +36,6 @@ class Outcome(StrEnum):
 class InvalidReason(StrEnum):
     """Why a sample is invalid at a locus, in the words the table writes (doc/spec.md §6)."""
 
-    REF_MISMATCH = "REF mismatch"
     MALFORMED_GT = "malformed GT"
     PLOIDY_MISMATCH = "ploidy mismatch"
     CONTRADICTING_RECORDS = "contradicting records"
