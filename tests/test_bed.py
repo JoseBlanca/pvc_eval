@@ -139,3 +139,26 @@ def test_parse_bed_refuses_a_line_separated_by_spaces(tmp_path: Path) -> None:
         f" tabs. Convert it with `awk -v OFS='\\t' '{{$1 = $1}} 1' {path} > tabs.bed` and run"
         " again with tabs.bed."
     )
+
+
+def test_parse_bed_refuses_a_directory(tmp_path: Path) -> None:
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_bed(tmp_path, _CONTIGS))
+
+    assert str(raised.value) == (
+        f"{tmp_path} is a directory, not a BED file. Check its path and run again."
+    )
+
+
+def test_parse_bed_refuses_a_file_it_cannot_read(tmp_path: Path) -> None:
+    path = write_bed(tmp_path, ["chr1\t0\t10"])
+    path.chmod(0)
+    try:
+        with pytest.raises(PvcEvalInputError) as raised:
+            list(parse_bed(path, _CONTIGS))
+    finally:
+        path.chmod(0o644)
+
+    assert str(raised.value) == (
+        f"{path} cannot be read: permission denied. Allow reading it and run again."
+    )

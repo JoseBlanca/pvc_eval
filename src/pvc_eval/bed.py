@@ -36,9 +36,9 @@ def parse_bed(path: Path, contigs: Sequence[str]) -> Iterator[BedLine]:
     contigs: the reference's contig names.
 
     Raises PvcEvalInputError, naming the file and the line and how to put it right, for a
-    file that does not exist or is not UTF-8 text, a line with fewer than three columns, a
-    start or end that is not a whole number, an end not after its start, and a contig the
-    reference lacks.
+    file that does not exist, is a directory, cannot be read or is not UTF-8 text; a line
+    with fewer than three columns separated by tabs; a start or end that is not a whole
+    number, an end not after its start; and a contig the reference lacks.
     """
     reference_contigs = frozenset(contigs)
     line_number = 0
@@ -50,6 +50,14 @@ def parse_bed(path: Path, contigs: Sequence[str]) -> Iterator[BedLine]:
                 yield _parse_bed_line(line, path, line_number, reference_contigs)
     except FileNotFoundError:
         raise PvcEvalInputError(f"{path} does not exist. Check its path and run again.") from None
+    except IsADirectoryError:
+        raise PvcEvalInputError(
+            f"{path} is a directory, not a BED file. Check its path and run again."
+        ) from None
+    except PermissionError:
+        raise PvcEvalInputError(
+            f"{path} cannot be read: permission denied. Allow reading it and run again."
+        ) from None
     except UnicodeDecodeError as err:
         raise PvcEvalInputError(
             f"{path} is not UTF-8 text: a byte at or after line {line_number + 1} cannot be read"
