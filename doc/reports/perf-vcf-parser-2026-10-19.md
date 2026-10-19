@@ -207,7 +207,8 @@ threads.
 
 *What P4 gave* (commit f7a6d1f on branch `perf/threads`, measured 19 October 2026 from
 17:04 to 17:22, against d6631f8, which holds P1 to P3). The owner's to decide: it is not
-merged. `parse_vcf` takes `num_threads`, 1 by default, which makes no pool. The calling
+merged. `parse_vcf` takes `num_threads`, where 1 makes no pool; it was 1 by default when
+measured, and is 4 by the owner's choice of 19 October 2026. The calling
 thread reads the lines, checks them and gives them their spans. The sample columns of each
 batch of 64 lines are parsed on a `ThreadPoolExecutor`, with `map` and two batches per
 thread taken ahead, and the batches come back in the file's order. The two module-level
