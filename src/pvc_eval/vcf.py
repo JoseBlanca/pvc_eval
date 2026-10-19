@@ -40,10 +40,11 @@ MALFORMED_GT = sentinel("MALFORMED_GT")
 alleles: the sample is invalid at the locus, and the run goes on (§5.4)."""
 
 OTHER_PLOIDY_GT = sentinel("OTHER_PLOIDY_GT")
-"""A GT of `.` and allele indices whose number of alleles is not the ploidy the file is
-read with, such as `1` on chrX of a male sample in a file read as diploid: the sample is
-invalid at the locus with its own reason, `ploidy mismatch` (doc/specs/reconciliation.md
-§2)."""
+"""A GT whose alleles are each `.` or an index of one of the VCF record's alleles, not
+all `.`, and whose number of alleles is not the ploidy the file is read with, such as `1`
+on chrX of a male sample in a file read as diploid: the sample is invalid at the locus
+with its own reason, `ploidy mismatch` (doc/specs/reconciliation.md §2). A GT of only
+`.` is MISSING instead, whatever its number of alleles."""
 
 _SPANNING_DELETION = "*"
 _GZIP_MAGIC = b"\x1f\x8b"
