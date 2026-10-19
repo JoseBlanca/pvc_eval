@@ -221,9 +221,11 @@ def contig_and_indel(draw: st.DrawFn) -> tuple[str, str, int]:
     return contig, contig[:position] + contig[position + num_deleted :], -num_deleted
 
 
-def left_anchored_spellings(contig: str, indel_haplotype: str, size: int) -> list[VcfRecord]:
-    """By brute force: every record that writes the indel with one shared base on its left
-    and gives the haplotype."""
+def left_anchored_spellings(
+    contig: str, indel_haplotype: str, size: int
+) -> list[tuple[int, str, str]]:
+    """By brute force: the start, 0-based, REF and ALT of every record that writes the
+    indel with one shared base on its left and gives the haplotype."""
     spellings = []
     for start in range(len(contig)):
         if size < 0:
@@ -232,19 +234,7 @@ def left_anchored_spellings(contig: str, indel_haplotype: str, size: int) -> lis
             ref = contig[start]
             alt = ref + indel_haplotype[start + 1 : start + 1 + size]
         if len(ref) == 1 - min(size, 0) and haplotype(contig, start, ref, alt) == indel_haplotype:
-            spellings.append(
-                VcfRecord(
-                    contig="chr1",
-                    start=start,
-                    alleles=(ref, alt),
-                    qual=None,
-                    genotypes=(),
-                    line_number=1,
-                    ref_mismatch=False,
-                    span_start=start,
-                    span_end=start + len(ref),
-                )
-            )
+            spellings.append((start, ref, alt))
     return spellings
 
 
@@ -257,13 +247,12 @@ def test_every_spelling_of_one_indel_spans_from_the_first_to_the_last(
     # The span starts at the anchor of the leftmost spelling. It ends at the last base the
     # rightmost spelling deletes, or at the base after the rightmost insertion's anchor,
     # when the contig has one.
-    expected_start = spellings[0].start
+    expected_start = spellings[0][0]
+    last_start, last_ref, _ = spellings[-1]
     is_deletion = size < 0
-    expected_end = spellings[-1].end if is_deletion else min(spellings[-1].start + 2, len(contig))
+    expected_end = last_start + len(last_ref) if is_deletion else min(last_start + 2, len(contig))
 
-    spans = {
-        vcf_record_span(*trim(spelling.start, spelling.alleles), contig) for spelling in spellings
-    }
+    spans = {vcf_record_span(*trim(start, (ref, alt)), contig) for start, ref, alt in spellings}
 
     assert spans == {(expected_start, expected_end)}
 
@@ -290,6 +279,5 @@ def test_record_that_breaks_its_invariants_is_refused(
             genotypes=(),
             line_number=1,
             ref_mismatch=False,
-            span_start=span[0],
-            span_end=span[1],
+            span=span,
         )

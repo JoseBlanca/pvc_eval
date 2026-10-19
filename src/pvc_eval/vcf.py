@@ -76,8 +76,7 @@ class VcfRecord:
         keeps no GQ.
     line_number: the 1-based line of the file, for messages.
     ref_mismatch: REF, as written, differs from the reference (§5.2).
-    span_start, span_end: the record's span (§5.2), 0-based and half-open; it always
-        contains the REF.
+    span: the record's span (§5.2), 0-based and half-open; it always contains the REF.
     """
 
     contig: str
@@ -87,18 +86,17 @@ class VcfRecord:
     genotypes: tuple[VcfGenotype | MALFORMED_GT | HAPLOID_GT, ...]
     line_number: int
     ref_mismatch: bool
-    span_start: int
-    span_end: int
+    span: Span
 
     def __post_init__(self) -> None:
         if self.start < 0:
             raise ValueError(f"start must be 0 or more, not {self.start}")
         if not self.alleles or not self.alleles[0]:
             raise ValueError("a VCF record needs a REF of at least one base")
-        if self.span_start > self.start or self.span_end < self.end:
+        span_start, span_end = self.span
+        if span_start > self.start or span_end < self.end:
             raise ValueError(
-                f"span {self.span_start}-{self.span_end} must contain the REF,"
-                f" {self.start}-{self.end}"
+                f"span {span_start}-{span_end} must contain the REF, {self.start}-{self.end}"
             )
 
     @property
@@ -116,14 +114,14 @@ def read_samples(path: Path) -> tuple[str, ...]:
 
 
 def read_vcf_records(
-    path: Path, contigs: Sequence[str], contig_sequence: Callable[[str], str]
+    path: Path, contigs: Sequence[str], contig_sequence_of: Callable[[str], str]
 ) -> Iterator[VcfRecord]:
     """The VCF records of a file, plain or bgzipped, normalised and given their spans
     (§5.2), in order of span start, and in the file's order where two spans start at one
     position.
 
     contigs: the contig names of the reference, in the order of its `.fai`.
-    contig_sequence: the sequence of a contig of the reference, by name, in upper or
+    contig_sequence_of: gives the sequence of a contig of the reference, by its name, in upper or
         lower case; it is compared in upper case, so a soft-masked reference gives no
         REF mismatch (§5.2). It is called once for each contig that has a VCF record.
 
@@ -144,7 +142,7 @@ def read_vcf_records(
     QUAL or GQ that is not a number is taken as absent, and those are counted in a
     warning at the end too.
     """
-    with closing(_records_in_file_order(path, contigs, contig_sequence)) as records:
+    with closing(_records_in_file_order(path, contigs, contig_sequence_of)) as records:
         yield from _in_span_order(records)
 
 
@@ -163,7 +161,7 @@ def _in_span_order(records: Iterable[tuple[int, VcfRecord]]) -> Iterator[VcfReco
             while held:
                 yield heapq.heappop(held)[2]
             contig = vcf_record.contig
-        heapq.heappush(held, (vcf_record.span_start, place_in_file, vcf_record))
+        heapq.heappush(held, (vcf_record.span[0], place_in_file, vcf_record))
         # Every later record of the contig has its POS at pos or after, and its REF,
         # trimmed, too, so its span starts at pos - MAX_SPAN_REACH or after.
         while held and held[0][0] <= pos - MAX_SPAN_REACH:
@@ -173,7 +171,7 @@ def _in_span_order(records: Iterable[tuple[int, VcfRecord]]) -> Iterator[VcfReco
 
 
 def _records_in_file_order(
-    path: Path, contigs: Sequence[str], contig_sequence: Callable[[str], str]
+    path: Path, contigs: Sequence[str], contig_sequence_of: Callable[[str], str]
 ) -> Generator[tuple[int, VcfRecord]]:
     """The records of read_vcf_records in the file's order, each with the 0-based
     position of its POS."""
@@ -217,7 +215,7 @@ def _records_in_file_order(
             if pos_1based == 0:
                 raise _pos_error(fields[1], path, line_number)
             if contig != sequence_contig:
-                sequence_contig, sequence = contig, contig_sequence(contig).upper()
+                sequence_contig, sequence = contig, contig_sequence_of(contig).upper()
             record, num_record_not_numbers, is_beyond_reach = _parse_record(
                 fields, contig, pos_1based - 1, alts, line_number, sequence
             )
@@ -438,42 +436,55 @@ def _parse_record(
     is_beyond_reach = span is None
     if span is None:
         span = ref_span
-    genotypes: list[VcfGenotype | MALFORMED_GT | HAPLOID_GT] = []
     qual = _read_qual(fields[5])
-    num_not_numbers = _is_not_a_number(fields[5], qual)
-    if len(fields) > NUM_FIXED_COLUMNS:
-        keys = fields[8].split(":")
-        for sample_field in fields[NUM_FIXED_COLUMNS:]:
-            # VCF lets trailing sample fields be dropped, so a key may have no value.
-            values = dict(zip(keys, sample_field.split(":"), strict=False))
-            phase_set = values.get("PS")
-            if phase_set == ".":
-                phase_set = None
-            quality = _read_gq(values.get("GQ"))
-            num_not_numbers += _is_not_a_number(values.get("GQ"), quality)
-            if "GT" not in values:
-                genotypes.append(
-                    VcfGenotype(
-                        alleles=(MISSING,) * PLOIDY,
-                        phased=False,
-                        phase_set=phase_set,
-                        quality=quality,
-                    )
-                )
-                continue
-            genotypes.append(parse_genotype(values["GT"], len(alleles), phase_set, quality))
+    genotypes, num_gq_not_numbers = _read_genotypes(fields, len(alleles))
     record = VcfRecord(
         contig=contig,
         start=start,
         alleles=trimmed,
         qual=qual,
-        genotypes=tuple(genotypes),
+        genotypes=genotypes,
         line_number=line_number,
         ref_mismatch=ref_mismatch,
-        span_start=span[0],
-        span_end=span[1],
+        span=span,
     )
+    num_not_numbers = _is_not_a_number(fields[5], qual) + num_gq_not_numbers
     return record, num_not_numbers, is_beyond_reach
+
+
+def _read_genotypes(
+    fields: list[str], num_alleles: int
+) -> tuple[tuple[VcfGenotype | MALFORMED_GT | HAPLOID_GT, ...], int]:
+    """The genotypes of a line's sample columns, one per sample, and how many of their GQ
+    values were taken as absent for not being numbers.
+
+    num_alleles: how many VCF alleles the record has, REF included.
+    """
+    if len(fields) <= NUM_FIXED_COLUMNS:
+        return (), 0
+    genotypes: list[VcfGenotype | MALFORMED_GT | HAPLOID_GT] = []
+    num_not_numbers = 0
+    keys = fields[8].split(":")
+    for sample_field in fields[NUM_FIXED_COLUMNS:]:
+        # VCF lets trailing sample fields be dropped, so a key may have no value.
+        values = dict(zip(keys, sample_field.split(":"), strict=False))
+        phase_set = values.get("PS")
+        if phase_set == ".":
+            phase_set = None
+        quality = _read_gq(values.get("GQ"))
+        num_not_numbers += _is_not_a_number(values.get("GQ"), quality)
+        if "GT" not in values:
+            genotypes.append(
+                VcfGenotype(
+                    alleles=(MISSING,) * PLOIDY,
+                    phased=False,
+                    phase_set=phase_set,
+                    quality=quality,
+                )
+            )
+            continue
+        genotypes.append(parse_genotype(values["GT"], num_alleles, phase_set, quality))
+    return tuple(genotypes), num_not_numbers
 
 
 # QUAL and GQ only annotate a row of the table (§6), where an absent value is written `.`;

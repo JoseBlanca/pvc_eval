@@ -26,7 +26,7 @@ HEADER = (
 
 
 def placed(record: VcfRecord) -> tuple[int, tuple[str, ...], tuple[int, int], bool]:
-    return record.start, record.alleles, (record.span_start, record.span_end), record.ref_mismatch
+    return record.start, record.alleles, record.span, record.ref_mismatch
 
 
 def write_vcf(tmp_path: Path, body: str, *, gzipped: bool = False) -> Path:
@@ -98,7 +98,7 @@ def test_records_are_read_with_0_based_starts(tmp_path: Path, gzipped: bool) -> 
         11,
         ("CA", "C", "CAA"),
     )
-    assert (first.span_start, first.span_end) == (9, 12)
+    assert first.span == (9, 12)
     assert first.qual == 50.5
     assert first.genotypes == (
         VcfGenotype(alleles=(1, 2), phased=True, phase_set="7", quality=30),
@@ -587,10 +587,10 @@ def test_reference_is_asked_once_for_each_contig_with_records(tmp_path: Path) ->
     )
     contigs_asked: list[str] = []
 
-    def contig_sequence(contig: str) -> str:
+    def contig_sequence_of(contig: str) -> str:
         contigs_asked.append(contig)
         return REFERENCE[contig]
 
-    list(read_vcf_records(path, CONTIGS, contig_sequence))
+    list(read_vcf_records(path, CONTIGS, contig_sequence_of))
 
     assert contigs_asked == ["chr1", "chr2"]
