@@ -2,9 +2,11 @@ import gzip
 import itertools
 import logging
 import random
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from pathlib import Path
+from typing import TypedDict
 
 import pytest
 
@@ -31,6 +33,12 @@ HEADER = (
 )
 
 type MakeReference = Callable[[str, str], IndexedFasta]
+
+
+class SpanLimit(TypedDict, total=False):
+    """The span_limit a test gives parse_vcf; with none, parse_vcf takes its default."""
+
+    span_limit: int | None
 
 
 @pytest.fixture
@@ -165,15 +173,7 @@ def write_vcf(tmp_path: Path, body: str, *, gzipped: bool = False) -> Path:
 def test_gt_gives_its_alleles_or_its_case(
     gt: str, expected: VcfGenotype | MALFORMED_GT | HAPLOID_GT
 ) -> None:
-    assert _parse_genotype(gt, num_alleles=3, phase_set=None, quality=None) == expected
-
-
-@pytest.fixture(autouse=True)
-def clear_genotype_caches() -> None:
-    """Empties the module's caches of parsed GTs and genotypes before each test, so that no
-    test passes or fails on what an earlier one left in them."""
-    vcf._parse_gt.cache_clear()
-    vcf._parse_genotype.cache_clear()
+    assert _parse_genotype(gt, num_alleles=3, phase_set=None, quality=None, gts_seen={}) == expected
 
 
 def test_same_gt_with_other_number_of_alleles_is_parsed_again(
@@ -728,7 +728,7 @@ LONG_REFERENCE = make_fasta({"chr1": "C" * 20000, "chr2": "C" * 10})
     ids=["default_10_kb", "limit_5"],
 )
 def test_record_comes_out_once_no_later_record_can_start_before_it(
-    tmp_path: Path, make_reference: MakeReference, limit: dict[str, int], second_pos_1based: int
+    tmp_path: Path, make_reference: MakeReference, limit: SpanLimit, second_pos_1based: int
 ) -> None:
     # The SNP spans 99. A record at 0-based 10099 or after cannot span from before 99,
     # since a span reaches at most 10 kb left of its REF; with a limit of 5, one at 104.
@@ -750,7 +750,7 @@ def test_record_comes_out_once_no_later_record_can_start_before_it(
 def test_record_is_held_while_a_later_record_could_start_before_it(
     tmp_path: Path,
     make_reference: MakeReference,
-    limit: dict[str, int | None],
+    limit: SpanLimit,
     second_pos_1based: int,
 ) -> None:
     # A record at 0-based 10098 could span from 98, before the SNP's 99; with a limit of
@@ -768,7 +768,7 @@ def test_record_is_held_while_a_later_record_could_start_before_it(
 
 @pytest.mark.parametrize("limit", [{}, {"span_limit": None}], ids=["default_10_kb", "no_limit"])
 def test_records_held_come_out_at_the_next_contig(
-    tmp_path: Path, make_reference: MakeReference, limit: dict[str, None]
+    tmp_path: Path, make_reference: MakeReference, limit: SpanLimit
 ) -> None:
     path = write_vcf(tmp_path, make_snp_line("chr1", 100) + make_snp_line("chr2", 1) + NOT_A_RECORD)
 
@@ -878,7 +878,7 @@ UNCUT_PLACEMENTS = [
 
 @pytest.mark.parametrize("limit", [{}, {"span_limit": None}], ids=["default_10_kb", "no_limit"])
 def test_spans_within_the_limit_are_not_cut(
-    tmp_path: Path, make_reference: MakeReference, limit: dict[str, None]
+    tmp_path: Path, make_reference: MakeReference, limit: SpanLimit
 ) -> None:
     path = write_vcf(tmp_path, LIMIT_LINES)
 
@@ -957,7 +957,7 @@ LONG_SLIDE_LINE = "chr1\t2\t.\tAA\tA\t.\t.\t.\tGT\t0/1\t0/1\n"
 
 @pytest.mark.parametrize("limit", [{}, {"span_limit": None}], ids=["default_10_kb", "no_limit"])
 def test_deletion_that_slides_far_right_spans_its_whole_slide(
-    tmp_path: Path, make_reference: MakeReference, limit: dict[str, None]
+    tmp_path: Path, make_reference: MakeReference, limit: SpanLimit
 ) -> None:
     path = write_vcf(tmp_path, LONG_SLIDE_LINE)
 
@@ -1125,3 +1125,105 @@ def test_gt_with_an_index_the_record_lacks_or_one_allele_is_kept_as_its_case(
     (record,) = parse_vcf(path, reference)
 
     assert record.genotypes == (MALFORMED_GT, HAPLOID_GT)
+
+
+# More lines than 4 threads take in their first batches (2 each of vcf._BATCH_SIZE), and
+# more genotypes than one thread keeps (vcf._MAX_GENOTYPES_SEEN), so that every thread
+# parses several batches and the one thread starts its genotypes again.
+NUM_THREADED_LINES = 3000
+
+
+def make_threaded_input(rng: random.Random) -> tuple[tuple[str, str], str]:
+    """A reference of random bases, and VCF lines on it, one every 10 bases: SNPs,
+    insertions, deletions and records of two ALTs, a symbolic record every 97 lines, and
+    GTs of each kind of §5.4 with a GQ, sometimes not a number, and a PS."""
+    sequence = "".join(rng.choice("ACGT") for _ in range(NUM_THREADED_LINES * 10 + 20))
+    gts = ["0/0", "0/1", "1|0", "1/1", "./.", ".", "0/2", "1", "0/1/1"]
+    lines = ""
+    for index in range(NUM_THREADED_LINES):
+        pos_1based = 11 + index * 10
+        ref = sequence[pos_1based - 1]
+        other = "T" if ref != "T" else "G"
+        alt = [other, ref + "A", f"{other},{ref}C"][index % 3]
+        if index % 7 == 0:
+            ref, alt = sequence[pos_1based - 1 : pos_1based + 1], ref
+        if index % 97 == 0:
+            alt = "<DEL>"
+        samples = "\t".join(
+            f"{rng.choice(gts)}:{rng.choice([str(rng.randrange(100)), 'x', '.'])}:"
+            f"{rng.randrange(5)}"
+            for _ in range(2)
+        )
+        lines += f"chr1\t{pos_1based}\t.\t{ref}\t{alt}\t30\t.\t.\tGT:GQ:PS\t{samples}\n"
+    return make_fasta({"chr1": sequence}), lines
+
+
+def test_records_and_warnings_are_the_same_with_one_thread_or_several(
+    tmp_path: Path,
+    make_reference: MakeReference,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fasta, lines = make_threaded_input(random.Random(20261019))
+    path = write_vcf(tmp_path, lines)
+    reference = make_reference(*fasta)
+    # The thread that parsed each batch, by the number of threads.
+    batch_threads: dict[int, list[threading.Thread]] = {1: [], 4: []}
+    parse_batch = vcf._parse_batch
+
+    def record_thread(
+        placed_lines: list[vcf._PlacedLine], seen_by_thread: threading.local
+    ) -> tuple[list[tuple[int, VcfRecord]], int]:
+        batch_threads[num_threads].append(threading.current_thread())
+        return parse_batch(placed_lines, seen_by_thread)
+
+    monkeypatch.setattr(vcf, "_parse_batch", record_thread)
+    records: dict[int, list[VcfRecord]] = {}
+    warnings: dict[int, list[str]] = {}
+    for num_threads in (1, 4):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            records[num_threads] = list(parse_vcf(path, reference, num_threads=num_threads))
+        warnings[num_threads] = caplog.messages
+
+    assert records[4] == records[1]
+    assert warnings[4] == warnings[1]
+    assert len(records[1]) == NUM_THREADED_LINES - len(range(0, NUM_THREADED_LINES, 97))
+    assert len(warnings[1]) == 2
+    # One thread parses every batch itself; four leave every batch to the pool.
+    assert set(batch_threads[1]) == {threading.current_thread()}
+    assert threading.current_thread() not in batch_threads[4]
+    assert len(batch_threads[4]) > 4 * 4
+
+
+@pytest.mark.parametrize("num_threads", [1, 4])
+def test_with_threads_an_error_comes_after_the_records_before_it(
+    tmp_path: Path, make_reference: MakeReference, num_threads: int
+) -> None:
+    fasta, lines = make_threaded_input(random.Random(1))
+    path = write_vcf(tmp_path, lines + NOT_A_RECORD)
+    records = parse_vcf(path, make_reference(*fasta), span_limit=5, num_threads=num_threads)
+    given: list[VcfRecord] = []
+
+    with pytest.raises(PvcEvalInputError, match="POS is 'five'"):
+        given.extend(records)
+
+    # Every record but the last comes out before the error: the next record, 10 bases on,
+    # shows that no later record can start before it with a limit of 5. 31 lines are
+    # symbolic.
+    assert len(given) == NUM_THREADED_LINES - 31 - 1
+    assert given[-1].line_number == NUM_THREADED_LINES + 1
+
+
+@pytest.mark.parametrize(
+    "num_threads", [0, -1, 1.5, "4", True], ids=["zero", "negative", "fraction", "text", "bool"]
+)
+def test_a_num_threads_that_is_not_a_whole_number_of_1_or_more_is_a_value_error(
+    tmp_path: Path, reference: IndexedFasta, num_threads: object
+) -> None:
+    path = write_vcf(tmp_path, make_snp_line("chr1", 1))
+
+    with pytest.raises(
+        ValueError, match=rf"^num_threads must be a whole number of 1 or more, not {num_threads!r}$"
+    ):
+        list(parse_vcf(path, reference, num_threads=num_threads))  # ty: ignore[invalid-argument-type]  # a wrong type on purpose

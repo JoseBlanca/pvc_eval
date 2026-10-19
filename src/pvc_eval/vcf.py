@@ -19,7 +19,9 @@ import logging
 import math
 import re
 import sys
-from collections.abc import Generator, Iterable, Iterator, Sequence
+import threading
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -128,7 +130,11 @@ def parse_vcf_samples(path: Path) -> tuple[str, ...]:
 
 
 def parse_vcf(
-    path: Path, reference: IndexedFasta, *, span_limit: int | None = DEFAULT_SPAN_LIMIT
+    path: Path,
+    reference: IndexedFasta,
+    *,
+    span_limit: int | None = DEFAULT_SPAN_LIMIT,
+    num_threads: int = 1,
 ) -> Iterator[VcfRecord]:
     """The VCF records of a file, plain or bgzipped, normalised and given their spans
     (§5.2), in order of span start, and in the file's order where two spans start at one
@@ -140,6 +146,10 @@ def parse_vcf(
     span_limit: the most bases a span may reach beyond its REF on either side, a whole
         number of 1 or more, or None for no limit (§5.2). A record whose span would reach further is given its REF as
         its span, and the number of those is logged as a warning at the end.
+    num_threads: how many threads parse the sample columns, a whole number of 1 or more.
+        The calling thread reads the lines, checks them and gives them their spans; with 1
+        it parses the sample columns too, and no pool is made. The records are the same
+        whatever the number.
 
     With a limit, a record is held only until no later record of its contig can have a
     span that starts before its own: a span starts at most span_limit bases before its
@@ -163,16 +173,22 @@ def parse_vcf(
     skipped is logged as a warning at the end (§9). A QUAL or GQ that is not a number is
     taken as absent, and those are counted in a warning at the end too. Raises
     ValueError, when the stream starts, for a span_limit
-    that is neither None nor a whole number of 1 or more.
+    that is neither None nor a whole number of 1 or more, and for a num_threads that is not
+    a whole number of 1 or more.
     """
     # §5.2: a limit of 0 would cut every insertion, whose span holds the base after it.
-    is_whole = isinstance(span_limit, int) and not isinstance(span_limit, bool)
-    if span_limit is not None and not (is_whole and span_limit >= 1):
+    if span_limit is not None and not _is_whole_number_from_1(span_limit):
         raise ValueError(
             f"span_limit must be a whole number of 1 or more, or None, not {span_limit!r}"
         )
-    with closing(_parse_records_in_file_order(path, reference, span_limit)) as records:
+    if not _is_whole_number_from_1(num_threads):
+        raise ValueError(f"num_threads must be a whole number of 1 or more, not {num_threads!r}")
+    with closing(_parse_records_in_file_order(path, reference, span_limit, num_threads)) as records:
         yield from _sort_by_span_start(records, span_limit)
+
+
+def _is_whole_number_from_1(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
 
 
 def _sort_by_span_start(
@@ -204,11 +220,115 @@ def _sort_by_span_start(
         yield heapq.heappop(held)[2]
 
 
+# The sample columns of this many lines are parsed together, by one thread. With 8 threads
+# on the 5 Mb, 200-sample GATK-like benchmark input, batches of 64 lines took 0.45 s and
+# 64 MB, and of 256 lines 0.46 s and 108 MB.
+_BATCH_SIZE = 64
+
+
 def _parse_records_in_file_order(
-    path: Path, reference: IndexedFasta, span_limit: int | None
+    path: Path, reference: IndexedFasta, span_limit: int | None, num_threads: int
 ) -> Generator[tuple[int, VcfRecord]]:
     """The records of parse_vcf in the file's order, each with the 0-based
-    position of its POS."""
+    position of its POS.
+
+    This thread reads the lines, checks them and gives them their spans; the sample columns
+    of each batch of lines are parsed by one of num_threads threads, or by this one when
+    num_threads is 1, and the batches are taken back in the file's order.
+    """
+    status = _ReadStatus()
+    with (
+        closing(_place_lines(path, reference, span_limit, status)) as placed_lines,
+        closing(
+            # Each thread keeps what it has parsed in seen_by_thread, for this file alone.
+            _map_in_order(
+                functools.partial(_parse_batch, seen_by_thread=threading.local()),
+                _batch_lines(placed_lines, status),
+                num_threads,
+            )
+        ) as parsed_batches,
+    ):
+        for records, num_gq_not_numbers in parsed_batches:
+            # The batches are taken back in this thread, so only this thread changes status.
+            status.num_not_numbers += num_gq_not_numbers
+            yield from records
+    if status.error is not None:
+        raise status.error
+    _log_warnings(path, span_limit, status)
+
+
+def _batch_lines(
+    placed_lines: Iterator[_PlacedLine], status: _ReadStatus
+) -> Generator[list[_PlacedLine]]:
+    """The placed lines in batches of _BATCH_SIZE, the last one perhaps shorter.
+
+    An input error ends the batches with the lines before it, and is kept in status, so
+    that it is raised after their records, as it would be with no batches.
+    """
+    batch: list[_PlacedLine] = []
+    try:
+        for placed_line in placed_lines:
+            batch.append(placed_line)
+            if len(batch) == _BATCH_SIZE:
+                yield batch
+                batch = []
+    except PvcEvalInputError as err:
+        status.error = err
+    if batch:
+        yield batch
+
+
+def _map_in_order[T, R](
+    function: Callable[[T], R], items: Iterable[T], num_threads: int
+) -> Generator[R]:
+    """function over items, its results in the order of the items: in this thread when
+    num_threads is 1, or else on a pool of num_threads threads, which take at most two items
+    each ahead of the result given. items is read in this thread."""
+    if num_threads == 1:
+        yield from map(function, items)
+        return
+    with ThreadPoolExecutor(max_workers=num_threads) as pool:
+        yield from pool.map(function, items, buffersize=2 * num_threads)
+
+
+@dataclass(slots=True)
+class _ReadStatus:
+    """What the reader of a file warns about at its end, and the input error that stopped
+    it; changed only by the thread that reads the lines."""
+
+    num_symbolic: int = 0
+    num_not_numbers: int = 0
+    num_beyond_reach: int = 0
+    first_beyond_reach_line: int = 0
+    error: PvcEvalInputError | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _PlacedLine:
+    """A VCF line read, checked, normalised and given its span, whose sample columns are
+    left to parse.
+
+    pos: the 0-based position of POS. fields: the columns of the line. The others are the
+    VcfRecord's.
+    """
+
+    pos: int
+    contig: str
+    start: int
+    alleles: tuple[str, ...]
+    qual: float | None
+    line_number: int
+    ref_mismatch: bool
+    span: Span
+    fields: list[str]
+
+
+def _place_lines(
+    path: Path, reference: IndexedFasta, span_limit: int | None, status: _ReadStatus
+) -> Generator[_PlacedLine]:
+    """The lines of a VCF file that hold a record, in the file's order, checked, normalised
+    and given their spans, their sample columns left to parse; what is skipped and what is
+    taken as absent is added to status."""
     contig_rank = {contig: rank for rank, contig in enumerate(reference.contigs)}
     # A window of the stream's own, so that two streams over one reference do not drop
     # each other's buffer.
@@ -217,10 +337,6 @@ def _parse_records_in_file_order(
     # and where that record is, for the message.
     previous_order: tuple[int, int] | None = None
     previous_where = ""
-    num_symbolic = 0
-    num_not_numbers = 0
-    num_beyond_reach = 0
-    first_beyond_reach_line = 0
     with closing(_read_numbered_lines(path)) as numbered_lines:
         num_samples = len(_parse_samples(numbered_lines, path))
         for line_number, line in numbered_lines:
@@ -245,7 +361,7 @@ def _parse_records_in_file_order(
             previous_order, previous_where = order, where
             alts = _parse_alts(fields, path, line_number)
             if any(_is_symbolic(alt) for alt in alts):
-                num_symbolic += 1
+                status.num_symbolic += 1
                 continue
             if pos_1based == 0:
                 raise _make_pos_error(fields[1], path, line_number)
@@ -269,70 +385,49 @@ def _parse_records_in_file_order(
             # contig makes the window drop the buffer.
             evict_distance = BLOCK_BASES if span_limit is None else span_limit + 1
             reference_window.evict_before(pos - evict_distance)
-            record, num_record_not_numbers, is_beyond_reach = _parse_record(
+            placed_line, is_qual_absent, is_beyond_reach = _place_line(
                 fields, contig, pos, alts, line_number, reference_window, contig_length, span_limit
             )
-            num_not_numbers += num_record_not_numbers
+            status.num_not_numbers += is_qual_absent
             if is_beyond_reach:
-                num_beyond_reach += 1
-                first_beyond_reach_line = first_beyond_reach_line or line_number
-            yield pos, record
-    if num_symbolic:
+                status.num_beyond_reach += 1
+                status.first_beyond_reach_line = status.first_beyond_reach_line or line_number
+            yield placed_line
+
+
+def _log_warnings(path: Path, span_limit: int | None, status: _ReadStatus) -> None:
+    """The warnings of the end of a file, for what its reader skipped, took as absent or
+    cut."""
+    if status.num_symbolic:
         _logger.warning(
             "%s: skipped %s with symbolic alleles (<DEL>, breakends); pvc_eval does not"
             " compare structural variants.",
             path,
-            _format_count(num_symbolic, "VCF record"),
+            _format_count(status.num_symbolic, "VCF record"),
         )
-    if num_not_numbers:
+    if status.num_not_numbers:
         _logger.warning(
             "%s: took %s that could not be read as a number as absent, as `.` is, in the"
             " quality of the table.",
             path,
-            _format_count(num_not_numbers, "QUAL or GQ value"),
+            _format_count(status.num_not_numbers, "QUAL or GQ value"),
         )
-    if num_beyond_reach:
+    if status.num_beyond_reach:
         assert span_limit is not None, "only a limit cuts a span"
-        if num_beyond_reach == 1:
-            which, given = f"at line {first_beyond_reach_line}", "was given"
+        if status.num_beyond_reach == 1:
+            which, given = f"at line {status.first_beyond_reach_line}", "was given"
         else:
-            which, given = f"the first at line {first_beyond_reach_line}", "each was given"
+            which, given = f"the first at line {status.first_beyond_reach_line}", "each was given"
         _logger.warning(
             "%s: %s, %s, could slide more than %s along the reference and %s only"
             " its REF as its span; another spelling of the same event further along may"
             " fall into another locus and be compared apart.",
             path,
-            _format_count(num_beyond_reach, "VCF record"),
+            _format_count(status.num_beyond_reach, "VCF record"),
             which,
             f"{span_limit:,} {'base' if span_limit == 1 else 'bases'}",
             given,
         )
-
-
-# Whole genotypes repeat too, even with a phase set per sample: on the 5 Mb, 200-sample
-# GATK-like benchmark input, 3,174,116 of 3,625,400 genotypes hit a cache of 4,096 entries
-# (437,393 distinct, so an unbounded cache would miss only 13,891 fewer; 1,024 entries miss
-# 611,784). Equal genotypes then are one frozen object, which makes parse_vcf 25% faster on
-# that input and its peak memory with no span limit 141 MB instead of 381 MB. The cache is
-# bounded and holds only immutable values, and lru_cache is safe to share between threads.
-_GENOTYPE_CACHE_SIZE = 4096
-
-
-@functools.lru_cache(maxsize=_GENOTYPE_CACHE_SIZE)
-def _parse_genotype(
-    gt: str, num_alleles: int, phase_set: str | None, quality: int | None
-) -> VcfGenotype | MALFORMED_GT | HAPLOID_GT:
-    """A GT field as a VcfGenotype; HAPLOID_GT for one allele index, such as `1`; or
-    MALFORMED_GT when it cannot be either (§5.4).
-
-    num_alleles: how many VCF alleles the record has, REF included.
-    phase_set, quality: the sample's PS and GQ, kept in the VcfGenotype.
-    """
-    parsed_gt = _parse_gt(gt, num_alleles)
-    if parsed_gt is MALFORMED_GT or parsed_gt is HAPLOID_GT:
-        return parsed_gt
-    alleles, phased = parsed_gt
-    return VcfGenotype(alleles=alleles, phased=phased, phase_set=phase_set, quality=quality)
 
 
 type _ParsedGt = tuple[tuple[int | MISSING, ...], bool]
@@ -341,16 +436,36 @@ type _ParsedGt = tuple[tuple[int | MISSING, ...], bool]
 _PARSED_MISSING_GT: _ParsedGt = ((MISSING,) * PLOIDY, False)
 
 
-# GTs repeat, so each pair of GT and number of alleles is parsed once and the genotypes
-# with it share one alleles tuple. Only the genotype cache's misses reach this function,
-# 451,284 of 3,625,400 genotypes on the 5 Mb, 200-sample GATK-like benchmark input, and
-# there this cache still makes parse_vcf 8.9% faster (1.469 s against 1.601 s) and its peak
-# memory with no span limit 132.6 MiB instead of 160.4 MiB. The cache is bounded and holds
-# only immutable values, and lru_cache is safe to share between threads.
-_GT_CACHE_SIZE = 1024
+type _Genotype = VcfGenotype | MALFORMED_GT | HAPLOID_GT
+"""What a sample's GT parses to."""
+
+type _GenotypesSeen = dict[tuple[str, int, str | None, int | None], _Genotype]
+"""The genotypes parsed, by GT, number of alleles, PS and GQ."""
+
+type _GtsSeen = dict[tuple[str, int], _ParsedGt | MALFORMED_GT | HAPLOID_GT]
+"""What _parse_gt gave, by GT and number of alleles."""
 
 
-@functools.lru_cache(maxsize=_GT_CACHE_SIZE)
+def _parse_genotype(
+    gt: str, num_alleles: int, phase_set: str | None, quality: int | None, gts_seen: _GtsSeen
+) -> _Genotype:
+    """A GT field as a VcfGenotype; HAPLOID_GT for one allele index, such as `1`; or
+    MALFORMED_GT when it cannot be either (§5.4).
+
+    num_alleles: how many VCF alleles the record has, REF included.
+    phase_set, quality: the sample's PS and GQ, kept in the VcfGenotype.
+    gts_seen: the GTs parsed so far, which this adds to.
+    """
+    gt_key = (gt, num_alleles)
+    parsed_gt = gts_seen.get(gt_key)
+    if parsed_gt is None:
+        parsed_gt = gts_seen[gt_key] = _parse_gt(gt, num_alleles)
+    if parsed_gt is MALFORMED_GT or parsed_gt is HAPLOID_GT:
+        return parsed_gt
+    alleles, phased = parsed_gt
+    return VcfGenotype(alleles=alleles, phased=phased, phase_set=phase_set, quality=quality)
+
+
 def _parse_gt(gt: str, num_alleles: int) -> _ParsedGt | MALFORMED_GT | HAPLOID_GT:
     """What a GT field says whatever the sample's PS and GQ: its alleles and whether it is
     phased, HAPLOID_GT or MALFORMED_GT (§5.4).
@@ -500,7 +615,7 @@ def _is_symbolic(alt: str) -> bool:
     return alt.startswith("<") or "[" in alt or "]" in alt or is_single_breakend
 
 
-def _parse_record(
+def _place_line(
     fields: list[str],
     contig: str,
     pos: int,
@@ -509,10 +624,10 @@ def _parse_record(
     reference_window: FastaWindow,
     contig_length: int,
     span_limit: int | None,
-) -> tuple[VcfRecord, int, bool]:
-    """The VCF record of a line, normalised and with its span; how many of its QUAL and
-    GQ values were taken as absent for not being numbers; and whether its span was cut
-    to its REF for reaching more than span_limit beyond it.
+) -> tuple[_PlacedLine, bool, bool]:
+    """A line normalised and with its span, its sample columns left to parse; whether its
+    QUAL was taken as absent for not being a number; and whether its span was cut to its
+    REF for reaching more than span_limit beyond it.
 
     pos: the 0-based position of POS; the REF lies within the contig.
     """
@@ -533,19 +648,66 @@ def _parse_record(
     if span is None:
         span = ref_span
     qual = _parse_qual(fields[5])
-    genotypes, num_gq_not_numbers = _parse_genotypes(fields, len(alleles))
-    record = VcfRecord(
+    placed_line = _PlacedLine(
+        pos=pos,
         contig=contig,
         start=start,
         alleles=trimmed,
         qual=qual,
-        genotypes=genotypes,
         line_number=line_number,
         ref_mismatch=ref_mismatch,
         span=span,
+        fields=fields,
     )
-    num_not_numbers = _is_taken_as_absent(fields[5], qual) + num_gq_not_numbers
-    return record, num_not_numbers, is_beyond_reach
+    return placed_line, _is_taken_as_absent(fields[5], qual), is_beyond_reach
+
+
+# GTs and whole genotypes repeat, even with a phase set per sample, so each thread keeps
+# those it has parsed: equal genotypes then are one frozen object, and genotypes with one GT
+# share one alleles tuple. On the 5 Mb, 200-sample GATK-like benchmark input, of 3,625,400
+# genotypes one thread builds 515,559 and eight threads 604,124; a cache shared by the
+# threads, functools.lru_cache, would take a lock on every sample.
+# A thread starts them again once it holds more than this many genotypes, which bounds
+# them; a GT is kept only beside a genotype, so the GTs are bounded too.
+_MAX_GENOTYPES_SEEN = 4096
+
+
+def _parse_batch(
+    placed_lines: Iterable[_PlacedLine], seen_by_thread: threading.local
+) -> tuple[list[tuple[int, VcfRecord]], int]:
+    """The VCF records of a batch of placed lines, each with the 0-based position of its
+    POS, and how many of their GQ values were taken as absent for not being numbers.
+
+    seen_by_thread: where the thread that runs this keeps the genotypes and the GTs it has
+        parsed, as `genotypes` and `gts`, so that no two threads share them.
+    """
+    if (
+        not hasattr(seen_by_thread, "genotypes")
+        or len(seen_by_thread.genotypes) > _MAX_GENOTYPES_SEEN
+    ):
+        seen_by_thread.genotypes = {}
+        seen_by_thread.gts = {}
+    genotypes_seen: _GenotypesSeen = seen_by_thread.genotypes
+    gts_seen: _GtsSeen = seen_by_thread.gts
+    records: list[tuple[int, VcfRecord]] = []
+    num_not_numbers = 0
+    for line in placed_lines:
+        genotypes, num_line_not_numbers = _parse_genotypes(
+            line.fields, len(line.alleles), genotypes_seen, gts_seen
+        )
+        num_not_numbers += num_line_not_numbers
+        record = VcfRecord(
+            contig=line.contig,
+            start=line.start,
+            alleles=line.alleles,
+            qual=line.qual,
+            genotypes=genotypes,
+            line_number=line.line_number,
+            ref_mismatch=line.ref_mismatch,
+            span=line.span,
+        )
+        records.append((line.pos, record))
+    return records, num_not_numbers
 
 
 # An index past the end of every sample field, for a key that FORMAT lacks.
@@ -553,16 +715,17 @@ _ABSENT_KEY_INDEX = sys.maxsize
 
 
 def _parse_genotypes(
-    fields: list[str], num_alleles: int
-) -> tuple[tuple[VcfGenotype | MALFORMED_GT | HAPLOID_GT, ...], int]:
+    fields: list[str], num_alleles: int, genotypes_seen: _GenotypesSeen, gts_seen: _GtsSeen
+) -> tuple[tuple[_Genotype, ...], int]:
     """The genotypes of a line's sample columns, one per sample, and how many of their GQ
     values were taken as absent for not being numbers.
 
     num_alleles: how many VCF alleles the record has, REF included.
+    genotypes_seen, gts_seen: the genotypes and GTs parsed so far, which this adds to.
     """
     if len(fields) <= _NUM_FIXED_COLUMNS:
         return (), 0
-    genotypes: list[VcfGenotype | MALFORMED_GT | HAPLOID_GT] = []
+    genotypes: list[_Genotype] = []
     num_not_numbers = 0
     keys = fields[8].split(":")
     # The keys are found once per record and each sample read by position, rather than
@@ -588,7 +751,15 @@ def _parse_genotypes(
             phase_set = None
         quality = _parse_gq(gq)
         num_not_numbers += _is_taken_as_absent(gq, quality)
-        genotypes.append(_parse_genotype(gt, num_alleles, phase_set, quality))
+        # A genotype seen before is looked up here, and not in _parse_genotype, to save a
+        # call per sample: most samples are seen before.
+        genotype_key = (gt, num_alleles, phase_set, quality)
+        genotype = genotypes_seen.get(genotype_key)
+        if genotype is None:
+            genotype = genotypes_seen[genotype_key] = _parse_genotype(
+                gt, num_alleles, phase_set, quality, gts_seen
+            )
+        genotypes.append(genotype)
     return tuple(genotypes), num_not_numbers
 
 
