@@ -129,24 +129,46 @@ Each review writes its baseline, its noise, its profiles and its experiments in 
 report, `doc/reports/perf-<scope>-<date>.md`. The baseline of the first review is below,
 so that the next one can compare against it.
 
-The first baseline was taken on 19 October 2026, on commit ac58b60. The code of
-pvc_eval is the same at 6f8865c, which adds only these scripts. The machine was an Apple
-M5 Pro (18 cores, 64 GB) running CPython 3.15.0 free-threaded with the GIL off, and
-hyperfine 2.0.0. Three other processes each kept one core busy during the whole
-measurement: two pytest runs of another worktree and a macOS media service.
+The baseline was measured on 19 October 2026 between 15:02 and 15:26, at commit df41b16,
+whose code of pvc_eval is that of ac58b60. The machine was an Apple M5 Pro (18 cores,
+64 GB) running CPython 3.15.0 free-threaded with the GIL off, and hyperfine 2.0.0. The
+wall time is the mean ± sd of 5 runs, and the peak RSS the median of 3. The spec-size
+input with no limit was run 3 times for the wall time and once for the peak.
 
-| input | span limit | wall time, mean ± sd of 5 | peak RSS, median of 3 |
+| input | span limit | wall time | peak RSS |
 |---|---|---|---|
-| small | 10,000 | 3.777 s ± 0.024 s | 36.0 MB |
-| small | none | 4.312 s ± 0.037 s | 614.9 MB |
-| spec size | 10,000 | 47.666 s ± 0.313 s | 36.6 MB |
-| spec size | none | 59.388 s ± 3.205 s | 7,612.0 MB |
+| small | 10,000 | 3.540 s ± 0.141 s | 36.0 MB |
+| small | none | 4.013 s ± 0.013 s | 614.9 MB |
+| small, GATK-like | 10,000 | 3.947 s ± 0.017 s | 35.8 MB |
+| small, GATK-like | none | 4.517 s ± 0.024 s | 610.1 MB |
+| one sample | 10,000 | 767.1 ms ± 2.4 ms | 34.0 MB |
+| one sample | none | 861.5 ms ± 15.2 ms | 128.8 MB |
+| spec size | 10,000 | 44.280 s ± 0.479 s | 36.7 MB |
+| spec size | none | 53.102 s ± 1.283 s | 7,611.9 MB |
 
-The GATK-like and one-sample inputs were made after this baseline and have not been
-timed yet.
+The noise is each input at the default limit timed again, 10 to 12 minutes after the
+first time:
 
-The noise: the small input at the default limit, timed again after the other runs, gave
-3.675 s ± 0.031 s. That is 0.102 s, or 2.7%, less than the first time.
+| input | first | second | difference |
+|---|---|---|---|
+| small | 3.540 s ± 0.141 s | 3.372 s ± 0.023 s | −0.168 s, −4.7% |
+| small, GATK-like | 3.947 s ± 0.017 s | 3.833 s ± 0.034 s | −0.114 s, −2.9% |
+| one sample | 767.1 ms ± 2.4 ms | 734.0 ms ± 3.9 ms | −33.1 ms, −4.3% |
+| spec size | 44.280 s ± 0.479 s | 44.608 s ± 0.312 s | +0.328 s, +0.7% |
+
+All three small inputs ran faster the second time, by 3% to 5%. The first run of the
+small input includes one run of 3.79 s among four between 3.45 s and 3.50 s. So an
+experiment on the small inputs claims a gain only above about 5%, and only when it is
+timed in one hyperfine call that alternates it with the baseline.
+
+The one-minute load average was 1.69 before the first run, between 0.75 and 2.42
+during the measurements, and 0.78 after the last. Before and after each run, no
+process used more than 50% of a core.
+
+An earlier baseline, at ac58b60 between 14:13 and 14:30, ran while three other
+processes each kept one core busy. It gave 3.777 s ± 0.024 s for the small input and
+47.666 s ± 0.313 s for the spec-size one at the default limit, 7% to 8% slower than the one
+above. Its peak RSS was the same.
 
 Python with `pvc_eval.vcf` imported and nothing read takes 27.4 MB of RSS. tracemalloc
 traced a peak of 3.6 MiB on the small input at the default limit.

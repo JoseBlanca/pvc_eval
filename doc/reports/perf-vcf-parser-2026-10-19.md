@@ -133,3 +133,46 @@ The window and the span search cost little: the span is searched in a stretch th
 from 64 bases, the window keeps one buffer, and both together take about 0.1 s of 3.8 on the
 small input. At the default limit the parser's memory does not grow with the input: 36.0 MB
 for 5 Mb, 36.6 MB for 64 Mb.
+
+## Baseline, measured again
+
+The baseline above was taken while two stuck test runs each held a core. It was measured
+again on 19 October 2026 between 15:02 and 15:26, at commit df41b16, whose code of
+pvc_eval is that of ac58b60, on the four inputs `benchmarks/README.md` lists. Two of the
+inputs are new: the 5 Mb region with a GATK-like genotype column (GT:AD:DP:GQ:PL:PS, a
+phase set per sample, an INFO of about 250 bytes), and all of chromosome 20 with one
+sample and a record about every 650 bases. Wall times are the mean ± sd of 5 hyperfine runs
+(3 for the 64 Mb input with no limit), and peak memory the median of 3 maximum resident set
+sizes (1 for that input).
+
+| input | records | span limit | wall time | peak memory |
+|---|---|---|---|---|
+| chr20:1-5,000,000, GT:GQ:PS | 18,310 | 10 kb | 3.540 ± 0.141 s | 36.0 MB |
+| chr20:1-5,000,000, GT:GQ:PS | 18,310 | none | 4.013 ± 0.013 s | 614.9 MB |
+| chr20:1-5,000,000, GATK-like | 18,127 | 10 kb | 3.947 ± 0.017 s | 35.8 MB |
+| chr20:1-5,000,000, GATK-like | 18,127 | none | 4.517 ± 0.024 s | 610.1 MB |
+| chr20, one sample, GATK-like | 98,149 | 10 kb | 767.1 ± 2.4 ms | 34.0 MB |
+| chr20, one sample, GATK-like | 98,149 | none | 861.5 ± 15.2 ms | 128.8 MB |
+| chr20, 64 Mb, GT:GQ:PS | 234,998 | 10 kb | 44.280 ± 0.479 s | 36.7 MB |
+| chr20, 64 Mb, GT:GQ:PS | 234,998 | none | 53.102 ± 1.283 s | 7,611.9 MB |
+
+The noise, each input at the default limit timed again 10 to 12 minutes after the first:
+
+| input | first | second | difference |
+|---|---|---|---|
+| 5 Mb, GT:GQ:PS | 3.540 ± 0.141 s | 3.372 ± 0.023 s | −4.7% |
+| 5 Mb, GATK-like | 3.947 ± 0.017 s | 3.833 ± 0.034 s | −2.9% |
+| one sample | 767.1 ± 2.4 ms | 734.0 ± 3.9 ms | −4.3% |
+| 64 Mb | 44.280 ± 0.479 s | 44.608 ± 0.312 s | +0.7% |
+
+The three small inputs all ran 3% to 5% faster the second time. The first run of the
+5 Mb GT:GQ:PS input includes one run of 3.79 s among four between 3.45 and 3.50 s. So on
+the small inputs a candidate claims a gain only above about 5%, and only when it is timed
+against its baseline in one hyperfine call that alternates them, as item 4 of the
+measurement plan says. On the 64 Mb input the two measurements differ by 0.7%.
+
+The machine was quiet this time. The one-minute load average was 1.69 before the first
+run, between 0.75 and 2.42 during the measurements, and 0.78 after the last. Before and
+after each run, no process used more than 50% of a core. Against the first baseline, the
+5 Mb input at the default limit is 6.3% faster (3.540 s against 3.777 s) and the 64 Mb
+input 7.1% faster (44.280 s against 47.666 s). The peak memory is unchanged.
