@@ -1326,3 +1326,45 @@ def test_genotypes_and_gts_a_thread_keeps_are_bounded() -> None:
     assert most_held == 4096 + batch_size
     assert len(seen_by_thread.genotypes) < 4096
     assert set(seen_by_thread.gts) == {("0/1", 2)}
+
+
+# More digits than Python's int() reads from text by default (4,300).
+TOO_MANY_DIGITS = "1" * 5000
+
+
+def test_pos_of_more_digits_than_python_reads_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(tmp_path, f"chr1\t{TOO_MANY_DIGITS}\t.\tA\tG\t.\t.\t.\tGT\t0/1\t0/1\n")
+
+    with pytest.raises(
+        PvcEvalInputError, match=r"a\.vcf, line 3: POS has 5,000 digits, which is past the end"
+    ):
+        list(parse_vcf(path, reference))
+
+
+def test_allele_index_of_more_digits_than_python_reads_is_malformed(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(
+        tmp_path, f"chr1\t4\t.\tA\tG\t.\t.\t.\tGT\t0/{TOO_MANY_DIGITS}\t{TOO_MANY_DIGITS}\n"
+    )
+
+    (record,) = parse_vcf(path, reference)
+
+    assert record.genotypes == (MALFORMED_GT, MALFORMED_GT)
+
+
+def test_gq_of_more_digits_than_python_reads_is_absent_and_counted(
+    tmp_path: Path, reference: IndexedFasta, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = write_vcf(tmp_path, f"chr1\t4\t.\tA\tG\t.\t.\t.\tGT:GQ\t0/1:{TOO_MANY_DIGITS}\t0/1:20\n")
+
+    with caplog.at_level(logging.WARNING):
+        (record,) = parse_vcf(path, reference)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(0, 1), phased=False, phase_set=None, quality=None),
+        VcfGenotype(alleles=(0, 1), phased=False, phase_set=None, quality=20),
+    )
+    assert "took 1 QUAL or GQ value that could not be read as a number as absent" in caplog.text

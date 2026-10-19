@@ -512,7 +512,29 @@ def _parse_gt(gt: str, num_alleles: int) -> _ParsedGt | MALFORMED_GT | HAPLOID_G
 
 
 def _is_allele_index(part: str, num_alleles: int) -> bool:
-    return part.isascii() and part.isdecimal() and int(part) < num_alleles
+    index = _parse_decimal(part)
+    return index is not None and index < num_alleles
+
+
+# int() reads from text every number of fewer digits than this, whatever
+# sys.set_int_max_str_digits sets, so only longer text is checked against its limit.
+_DIGITS_ALWAYS_READ = sys.int_info.str_digits_check_threshold
+
+
+def _parse_decimal(text: str) -> int | None:
+    """The whole number text writes in ASCII decimal digits, or None when it is not one or
+    has more digits than int() reads from text (4,300 by default)."""
+    if not (text.isascii() and text.isdecimal()):
+        return None
+    if len(text) >= _DIGITS_ALWAYS_READ and _has_too_many_digits(text):
+        return None
+    return int(text)
+
+
+def _has_too_many_digits(text: str) -> bool:
+    """text has more digits than int() reads (sys.get_int_max_str_digits(), 0 for none)."""
+    max_digits = sys.get_int_max_str_digits()
+    return max_digits != 0 and len(text) > max_digits
 
 
 def _read_numbered_lines(path: Path) -> Generator[tuple[int, str]]:
@@ -621,7 +643,13 @@ def _parse_position(fields: list[str], path: Path, line_number: int) -> tuple[st
     # is known not to be symbolic.
     if not (pos.isascii() and pos.isdecimal()):
         raise _make_pos_error(pos, path, line_number)
-    return fields[0], int(pos)
+    pos_1based = _parse_decimal(pos)
+    if pos_1based is None:
+        raise PvcEvalInputError(
+            f"{path}, line {line_number}: POS has {len(pos):,} digits, which is past the end of"
+            " any contig. Correct the line or remove it, and run again."
+        )
+    return fields[0], pos_1based
 
 
 def _format_count(number: int, noun: str) -> str:
@@ -824,7 +852,10 @@ def _parse_qual(field: str) -> float | None:
 
 
 def _parse_gq(field: str | None) -> int | None:
+    # _parse_decimal's body, written out since this runs once per sample.
     if field is None or not field.isascii() or not field.isdecimal():
+        return None
+    if len(field) >= _DIGITS_ALWAYS_READ and _has_too_many_digits(field):
         return None
     return int(field)
 
