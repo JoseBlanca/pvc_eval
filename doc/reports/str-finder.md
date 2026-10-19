@@ -1,7 +1,39 @@
 # Report: the STR finder
 
-*19 October 2026. Under way. The work of `doc/plans/str-finder.md`, which builds
-`doc/specs/str_finder.md`, on the branch `str-finder`.*
+*19 October 2026. Done. The work of `doc/plans/str-finder.md`, which builds
+`doc/specs/str_finder.md`, on the branch `str-finder`; nothing is merged into main or pushed.*
+
+**pvc_eval has an STR finder, ported from pvc at bbcc9f4, and it gives pvc's STR regions.** On 600
+generated contigs and three 1 Mb slices of GRCh38, at pvc's defaults and with periods 2 to 5, its STR
+regions are identical, row for row, to those of `pvc dev type-regions`: 4,407 STR regions compared,
+no difference (milestone 5).
+
+What exists now that did not:
+- `pvc_eval.segments`: `segment_contig`, which yields the segmented genome of a contig;
+  `read_str_regions`; `StrFinderParameters`; `write_str_regions`; and the contract types of
+  `doc/spec.md` §4, which the loci on main already build on.
+- `pvc_eval str-regions`, pvc_eval's first command line, with its `pvc_eval` entry point.
+- 92 of pvc's tests rewritten in Python (90 of the finder's, 2 of the catalogue's flank rule), pvc's
+  two fixtures, and the tests of the port's own: 680 tests pass on the branch, main merged in.
+- The whole-port check against pvc, `tests/test_whole_port.py`, which runs in 10 s with a pvc binary
+  and GRCh38 named by two environment variables, and is skipped without them.
+- `doc/port_provenance.md`.
+
+What is asked of the owner:
+- **The merge** of `str-finder` into main. Main was merged into the branch at d06e02c, so the merge
+  holds no conflict beyond what d06e02c resolved; the loci's test of `build_loci` on
+  `segment_contig`, skipped on main, runs and passes on the branch.
+- **The four sentences of `doc/spec.md` §5.1** that the spec reports as differing from pvc's code
+  (`doc/specs/str_finder.md`, "Reported, not changed here"), still unanswered.
+
+What is left open:
+- How long the finder takes on GRCh38, and whether it needs numpy: the next step, with the
+  `performance` skill. Two costs are known already (milestone 3): absorption is the plain fixed point
+  the brief asked for, which pvc measured at 9.3 billion comparisons on GRCh38 before it moved to a
+  sweep; and step 1 holds a queue that grows on long runs of one base (milestone 1).
+- The check over GRCh38 as a whole, after the performance work.
+- `pvc_eval.bed.parse_bed` refuses a BED that starts with a byte-order mark; the loci fixed it on
+  their branch (16eff9f), not yet on main.
 
 The plan started from commit bec2800, on which `uv sync --locked`, `ruff format --check`,
 `ruff check` and `ty check` pass and `pytest -q` gives "213 passed in 1.38s".
@@ -178,3 +210,75 @@ refuses one, made the two commands agree.
 - A `--regions` BED that starts with a byte-order mark is refused, and the remedy the message gives
   would drop its first region. The fault is in `pvc_eval.bed.parse_bed`, the loci's shared reader;
   it was reported to the loci session on 19 October 2026 and not changed here.
+
+## Milestone 5: the whole-port check against pvc
+
+Commits c86be13 to 2f02a47. `tests/test_whole_port.py`, marked `slow`.
+
+- pvc built at bbcc9f4 from `git archive` into a scratch directory; pvc's repository unchanged (its
+  one untracked file, `scratch.md`, dates from 18 October).
+- The check compares pvc_eval's STR regions with `pvc dev type-regions`'s, row for row, on 600
+  generated contigs (412 kb) and on three 1 Mb slices of GRCh38 (chr1:0–1 Mb, with the telomere and
+  160,000 N; chr1:10–11 Mb; chr20:1–2 Mb), each at pvc's defaults and with periods 2 to 5:
+
+  | STR regions compared (segments / bundles / satellites) | defaults | periods 2 to 5 |
+  |---|---|---|
+  | generated contigs | 726 / 62 / 309 | 457 / 20 / 294 |
+  | GRCh38 slices | 1,928 / 138 / 23 | 291 / 16 / 23 |
+
+  **Identical in all four comparisons.** No difference to trace; no code of the finder changed.
+- The generated contigs drop 76 candidates at step 2 near a contig's start and 41 near its end; each
+  of four mutants of step 2 fails the comparison.
+- It takes 10.0 s (Apple M5 Pro, CPython 3.15t). With `PVC_EVAL_PVC` or `PVC_EVAL_GRCH38` unset,
+  each part is skipped with a message naming what is missing.
+- Checks on 2f02a47: ruff and ty clean, `pytest -q` "680 passed, 4 skipped" (the four are the
+  comparisons, skipped without pvc).
+
+**What the review found and is fixed.** No blocker. The generator put its right flank before the
+last planted repeat, so every contig ended in a repeat and the start-side boundary of step 2 was
+compared on about 11 cases: a mutant there passed (found by two reviewers independently). pvc's
+error output was swallowed when pvc failed. Helper names, and the one assertion the check rests on
+hidden in a helper.
+
+**What the owner should know.** Nothing checks that `PVC_EVAL_PVC` was built at bbcc9f4: `pvc
+--version` gives `0.1.0`, which names no commit, and a binary's hash differs between builds. The
+check over GRCh38 as a whole, after the performance work, is outside this plan (the spec, "The same
+check over GRCh38").
+
+## For whoever next revises the skills
+
+The owner can stop here. What follows is what the work says about the skills and the size of plans.
+
+- **Tests that cannot fail were the commonest finding.** Every milestone's tests reviewer found rules
+  that a mutant could break with every test passing: tests that took their expected value from the
+  code under test (milestone 1), single-candidate cases that could not show an order (milestone 2),
+  a hull test whose last member also reached furthest (milestone 3), regions listed in the `.fai`'s
+  own order (milestone 4), a generator that never put a repeat near a contig's start (milestone 5).
+  From milestone 2 on, the implementer's prompt asked it to break each rule on purpose and show a
+  test fail; the reviewers still found survivors each time, fewer. `python.md` says "a test has to be
+  able to fail"; a sentence asking for one mutant per rule of the spec, run before the review, would
+  make it a step rather than a hope.
+- **Expected values from a transcription of pvc.** Where pvc's own tests gave no literal, reviewers
+  wrote line-by-line Python transcriptions of pvc's functions and the implementers took values from
+  them; the pvc binary was used where a whole contig was the unit. The spec skill does not say which
+  is acceptable; the binary is the stronger source and was cheap here (a build in a few minutes).
+- **A restructuring in a fix round can undo a test.** In milestone 2 a design fix changed how the
+  motif is read, and a test written in the same round to pin an order could no longer fail. The
+  second look caught it. The coding skill's second look is scoped to blockers; this one was a
+  should-fix, and it was looked at only because it shared a round with a blocker.
+- **Shared code from another session changed the spec mid-milestone.** The loci brought a BED reader
+  into main during milestone 4; adopting it reversed a rule written an hour before. A plan that runs
+  beside other sessions could say which of its files another session may also write.
+- **Tokens per milestone**, from the `Agent` results, rounded (implementation and fixes are one
+  subagent, counted cumulatively):
+
+  | milestone | implementation and fixes | five reviews and second looks |
+  |---|---|---|
+  | 1 | 216k | 322k |
+  | 2 | 268k | 483k |
+  | 3 | 282k | 514k |
+  | 4 | 230k | 394k (with the first-reader) |
+  | 5 | 131k | 221k (four reviews) |
+
+  The reviews cost about one and a half to two times the implementation. Milestones 2 and 3, the
+  core of the port, were the largest; none ran out of context.

@@ -1,6 +1,6 @@
 # Plan: the STR finder
 
-*19 October 2026. Approved by the owner on 19 October 2026; under way. It builds `doc/specs/str_finder.md`, approved by
+*19 October 2026. Approved by the owner on 19 October 2026; done. It builds `doc/specs/str_finder.md`, approved by
 the owner on 19 October 2026, on the branch `str-finder`. Its report will be
 `doc/reports/str-finder.md`.*
 
@@ -148,7 +148,7 @@ turns each into a `PvcEvalInputError` with its remedy, or the user sees a traceb
 reviews of milestones 2 and 3). The filter of STR regions by requested spans exists already, from
 milestone 3, and takes `GenomeSegment`.
 
-- [ ] 5. The whole-port check against pvc
+- [x] 5. The whole-port check against pvc
 
 **What it gives.** The check of `doc/specs/str_finder.md`, "The whole-port check", on generated
 contigs and slices of GRCh38, and its first run.
