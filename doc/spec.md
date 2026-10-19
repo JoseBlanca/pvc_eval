@@ -280,7 +280,11 @@ Every spelling of one indel has the same span, so they always share a locus and 
 **Order.** A span can start before the record's POS, by as much as the deletion or insertion can
 slide left, so the stream holds VCF records until the reader is further right than the longest
 such distance and emits them in order of span start. A record whose span would reach more than
-10 kb beyond its REF is given its trimmed REF as its span and reported in a warning.
+the span limit beyond its REF is given its trimmed REF as its span and reported in a warning. The
+span limit is 10 kb unless the caller of the Python API sets another, or none (decided by the
+owner on 19 October 2026). With no limit no span is cut, and since no distance then bounds how far
+left a later record can start, the stream holds the records of a contig until the next contig
+begins.
 
 **Three cases.** The first is valid, and would be made invalid by moving its deletion; the other
 two are one haplotype written twice, which only the span puts in one locus.
