@@ -8,8 +8,8 @@ converted here, and nowhere else.
 
 Public: parse_vcf, which gives the VCF records; parse_vcf_samples, which gives the sample
 names; VcfRecord and VcfGenotype; Span, the type of VcfRecord.span; the sentinels a
-genotype is compared with, MISSING, MALFORMED_GT and HAPLOID_GT; and the constants PLOIDY
-and DEFAULT_SPAN_LIMIT.
+genotype is compared with, MISSING, MALFORMED_GT and OTHER_PLOIDY_GT; and the constants
+DEFAULT_PLOIDY and DEFAULT_SPAN_LIMIT.
 """
 
 import gzip
@@ -28,18 +28,22 @@ from pvc_eval.fasta import BLOCK_BASES, FastaWindow, IndexedFasta
 
 _logger = logging.getLogger(__name__)
 
-PLOIDY = 2  # doc/spec.md §2: a global constant
+# doc/specs/reconciliation.md §2: the ploidy a file is read with when the user gives none,
+# decided by the owner on 19 October 2026.
+DEFAULT_PLOIDY = 2
 
 MISSING = sentinel("MISSING")
 """A haplotype the VCF genotype says nothing about, written `.` (doc/spec.md §2)."""
 
 MALFORMED_GT = sentinel("MALFORMED_GT")
-"""A GT with a number of alleles other than the ploidy, or an allele index the VCF
-record lacks: the sample is invalid at the locus, and the run goes on (§5.4)."""
+"""A GT with an allele that is neither `.` nor an index of one of the VCF record's
+alleles: the sample is invalid at the locus, and the run goes on (§5.4)."""
 
-HAPLOID_GT = sentinel("HAPLOID_GT")
-"""A GT of one allele index, such as `1` on chrX of a male sample: the sample is invalid
-at the locus with its own reason, `haploid GT` (§5.4, §6, Open 1)."""
+OTHER_PLOIDY_GT = sentinel("OTHER_PLOIDY_GT")
+"""A GT of `.` and allele indices whose number of alleles is not the ploidy the file is
+read with, such as `1` on chrX of a male sample in a file read as diploid: the sample is
+invalid at the locus with its own reason, `ploidy mismatch` (doc/specs/reconciliation.md
+§2)."""
 
 _SPANNING_DELETION = "*"
 _GZIP_MAGIC = b"\x1f\x8b"
@@ -84,7 +88,7 @@ class VcfRecord:
     alleles: REF first, then the ALTs, in upper case and trimmed (§5.2); `*` is a
         spanning deletion.
     qual: QUAL, or None for `.`.
-    genotypes: one per sample, in the order of the header; a MALFORMED_GT or HAPLOID_GT
+    genotypes: one per sample, in the order of the header; a MALFORMED_GT or OTHER_PLOIDY_GT
         keeps no GQ.
     line_number: the 1-based line of the file, for messages.
     ref_mismatch: REF, as written, differs from the reference (§5.2).
@@ -95,7 +99,7 @@ class VcfRecord:
     start: int
     alleles: tuple[str, ...]
     qual: float | None
-    genotypes: tuple[VcfGenotype | MALFORMED_GT | HAPLOID_GT, ...]
+    genotypes: tuple[VcfGenotype | MALFORMED_GT | OTHER_PLOIDY_GT, ...]
     line_number: int
     ref_mismatch: bool
     span: Span
@@ -126,7 +130,11 @@ def parse_vcf_samples(path: Path) -> tuple[str, ...]:
 
 
 def parse_vcf(
-    path: Path, reference: IndexedFasta, *, span_limit: int | None = DEFAULT_SPAN_LIMIT
+    path: Path,
+    reference: IndexedFasta,
+    *,
+    span_limit: int | None = DEFAULT_SPAN_LIMIT,
+    ploidy: int = DEFAULT_PLOIDY,
 ) -> Iterator[VcfRecord]:
     """The VCF records of a file, plain or bgzipped, normalised and given their spans
     (§5.2), in order of span start, and in the file's order where two spans start at one
@@ -138,6 +146,9 @@ def parse_vcf(
     span_limit: the most bases a span may reach beyond its REF on either side, a whole
         number of 1 or more, or None for no limit (§5.2). A record whose span would reach further is given its REF as
         its span, and the number of those is logged as a warning at the end.
+    ploidy: how many haplotypes each sample has, a whole number of 1 or more
+        (doc/specs/reconciliation.md §2). A GT with another number of alleles is
+        OTHER_PLOIDY_GT, and one of only `.` is MISSING on every haplotype.
 
     With a limit, a record is held only until no later record of its contig can have a
     span that starts before its own: a span starts at most span_limit bases before its
@@ -161,7 +172,8 @@ def parse_vcf(
     skipped is logged as a warning at the end (§9). A QUAL or GQ that is not a number is
     taken as absent, and those are counted in a warning at the end too. Raises
     ValueError, when the stream starts, for a span_limit
-    that is neither None nor a whole number of 1 or more.
+    that is neither None nor a whole number of 1 or more, and for a ploidy that is not a
+    whole number of 1 or more.
     """
     # §5.2: a limit of 0 would cut every insertion, whose span holds the base after it.
     is_whole = isinstance(span_limit, int) and not isinstance(span_limit, bool)
@@ -169,7 +181,10 @@ def parse_vcf(
         raise ValueError(
             f"span_limit must be a whole number of 1 or more, or None, not {span_limit!r}"
         )
-    with closing(_parse_records_in_file_order(path, reference, span_limit)) as records:
+    if not (isinstance(ploidy, int) and not isinstance(ploidy, bool) and ploidy >= 1):
+        raise ValueError(f"ploidy must be a whole number of 1 or more, not {ploidy!r}")
+    records_in_file_order = _parse_records_in_file_order(path, reference, span_limit, ploidy)
+    with closing(records_in_file_order) as records:
         yield from _sort_by_span_start(records, span_limit)
 
 
@@ -203,7 +218,7 @@ def _sort_by_span_start(
 
 
 def _parse_records_in_file_order(
-    path: Path, reference: IndexedFasta, span_limit: int | None
+    path: Path, reference: IndexedFasta, span_limit: int | None, ploidy: int
 ) -> Generator[tuple[int, VcfRecord]]:
     """The records of parse_vcf in the file's order, each with the 0-based
     position of its POS."""
@@ -268,7 +283,15 @@ def _parse_records_in_file_order(
             evict_distance = BLOCK_BASES if span_limit is None else span_limit + 1
             reference_window.evict_before(pos - evict_distance)
             record, num_record_not_numbers, is_beyond_reach = _parse_record(
-                fields, contig, pos, alts, line_number, reference_window, contig_length, span_limit
+                fields,
+                contig,
+                pos,
+                alts,
+                line_number,
+                reference_window,
+                contig_length,
+                span_limit,
+                ploidy,
             )
             num_not_numbers += num_record_not_numbers
             if is_beyond_reach:
@@ -308,25 +331,20 @@ def _parse_records_in_file_order(
 
 
 def _parse_genotype(
-    gt: str, num_alleles: int, phase_set: str | None, quality: int | None
-) -> VcfGenotype | MALFORMED_GT | HAPLOID_GT:
-    """A GT field as a VcfGenotype; HAPLOID_GT for one allele index, such as `1`; or
-    MALFORMED_GT when it cannot be either (§5.4).
+    gt: str, num_alleles: int, ploidy: int, phase_set: str | None, quality: int | None
+) -> VcfGenotype | MALFORMED_GT | OTHER_PLOIDY_GT:
+    """A GT field as a VcfGenotype; MALFORMED_GT when an allele is neither `.` nor an
+    index of one of the record's VCF alleles; or OTHER_PLOIDY_GT when its number of
+    alleles is not the ploidy (doc/specs/reconciliation.md §2).
 
-    A single `.` says nothing about either haplotype, and is both MISSING.
+    A GT of only `.`, such as `.` or `./.`, says nothing about any haplotype, and is
+    MISSING on every one of them, whatever its number of alleles.
 
     num_alleles: how many VCF alleles the record has, REF included.
+    ploidy: how many haplotypes the sample has.
     phase_set, quality: the sample's PS and GQ, kept in the VcfGenotype.
     """
-    if gt == ".":
-        return VcfGenotype(
-            alleles=(MISSING,) * PLOIDY, phased=False, phase_set=phase_set, quality=quality
-        )
     parts = gt.replace("|", "/").split("/")
-    if len(parts) == 1 and _is_allele_index(gt, num_alleles):
-        return HAPLOID_GT
-    if len(parts) != PLOIDY:
-        return MALFORMED_GT
     alleles: list[int | MISSING] = []
     for part in parts:
         if part == ".":
@@ -335,6 +353,10 @@ def _parse_genotype(
             alleles.append(int(part))
         else:
             return MALFORMED_GT
+    if all(allele is MISSING for allele in alleles):
+        alleles = [MISSING] * ploidy
+    elif len(alleles) != ploidy:
+        return OTHER_PLOIDY_GT
     return VcfGenotype(
         alleles=tuple(alleles), phased="|" in gt, phase_set=phase_set, quality=quality
     )
@@ -474,6 +496,7 @@ def _parse_record(
     reference_window: FastaWindow,
     contig_length: int,
     span_limit: int | None,
+    ploidy: int,
 ) -> tuple[VcfRecord, int, bool]:
     """The VCF record of a line, normalised and with its span; how many of its QUAL and
     GQ values were taken as absent for not being numbers; and whether its span was cut
@@ -498,7 +521,7 @@ def _parse_record(
     if span is None:
         span = ref_span
     qual = _parse_qual(fields[5])
-    genotypes, num_gq_not_numbers = _parse_genotypes(fields, len(alleles))
+    genotypes, num_gq_not_numbers = _parse_genotypes(fields, len(alleles), ploidy)
     record = VcfRecord(
         contig=contig,
         start=start,
@@ -514,8 +537,8 @@ def _parse_record(
 
 
 def _parse_genotypes(
-    fields: list[str], num_alleles: int
-) -> tuple[tuple[VcfGenotype | MALFORMED_GT | HAPLOID_GT, ...], int]:
+    fields: list[str], num_alleles: int, ploidy: int
+) -> tuple[tuple[VcfGenotype | MALFORMED_GT | OTHER_PLOIDY_GT, ...], int]:
     """The genotypes of a line's sample columns, one per sample, and how many of their GQ
     values were taken as absent for not being numbers.
 
@@ -523,7 +546,7 @@ def _parse_genotypes(
     """
     if len(fields) <= _NUM_FIXED_COLUMNS:
         return (), 0
-    genotypes: list[VcfGenotype | MALFORMED_GT | HAPLOID_GT] = []
+    genotypes: list[VcfGenotype | MALFORMED_GT | OTHER_PLOIDY_GT] = []
     num_not_numbers = 0
     keys = fields[8].split(":")
     for sample_field in fields[_NUM_FIXED_COLUMNS:]:
@@ -534,17 +557,9 @@ def _parse_genotypes(
             phase_set = None
         quality = _parse_gq(values.get("GQ"))
         num_not_numbers += _is_taken_as_absent(values.get("GQ"), quality)
-        if "GT" not in values:
-            genotypes.append(
-                VcfGenotype(
-                    alleles=(MISSING,) * PLOIDY,
-                    phased=False,
-                    phase_set=phase_set,
-                    quality=quality,
-                )
-            )
-            continue
-        genotypes.append(_parse_genotype(values["GT"], num_alleles, phase_set, quality))
+        # A sample with no GT is MISSING on every haplotype, as a GT of `.` is (§2).
+        gt = values.get("GT", ".")
+        genotypes.append(_parse_genotype(gt, num_alleles, ploidy, phase_set, quality))
     return tuple(genotypes), num_not_numbers
 
 
