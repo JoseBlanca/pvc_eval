@@ -84,6 +84,7 @@ So the VCF reader takes the ploidy:
 - A GT whose alleles are all `.`, a single `.` or `./.` in a file of either ploidy, is `MISSING`
   on every haplotype, ploidy times (decided here: it says nothing about any haplotype, and
   callers write `./.` for a no-call in haploid files too).
+- A sample with no GT in a record's FORMAT is `MISSING` on every haplotype, ploidy times, as now.
 - `PLOIDY` becomes `DEFAULT_PLOIDY = 2`.
 
 Reconciliation handles ploidy 1 and 2. A ploidy of 1 has no phase to choose: each sample has one
