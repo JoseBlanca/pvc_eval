@@ -388,10 +388,13 @@ has no genotype. Its partner, when it is reconciled, shows its first possible ge
 | 11 | `(0,)` | `(0, 0)`, `(1, 2)` | same genotype | `(0,)`, `(0, 0)` |
 | 12 | `(0, 1)` | `(2, 3)` | different | `(0, 1)`, `(2, 3)` |
 | 13 | `(0, 1)` | `(1, 2)` | different | `(0, 1)`, `(1, 2)` |
+| 14 | `(0, 1)`, `(0, 2)` | `(2, 2)`, `(1, 1)` | same alleles, other genotype | `(0, 1)`, `(1, 1)` |
 
 E3 is the owner's `./1` against `./1` (`doc/spec.md` §5.5). E10 is R8's sample, in file B, against a file A
 with no records there. E11 is the same across two ploidies. In E13 both carry
-locus allele 1, on one haplotype each, but B carries a second ALT, so the ALT sets differ.
+locus allele 1, on one haplotype each, but B carries a second ALT, so the ALT sets differ. In E14 both `(0, 1)` with `(1, 1)` and `(0, 2)` with
+`(2, 2)` share their ALT set; A's order decides, so the pair is `(0, 1)` and `(1, 1)`, where
+taking B's genotypes first would give `(0, 2)` and `(2, 2)`.
 
 ## 6. The row of the table
 
@@ -557,7 +560,7 @@ a literal.
   order of the locus alleles across two samples and two files; a sample in no pair, which adds
   nothing; a file with no record in the locus, all REF; a record with no ALT whose REF reaches
   past the locus, `0/0` (all REF) and `./.` (missing); and ploidy 1, with a `1` and a `0`.
-- **At `evaluate_pair`**: every case E1 to E13 of §5.
+- **At `evaluate_pair`**: every case E1 to E14 of §5.
 - **At `make_outcome_rows`**: every field of §6 on one locus with two pairs, one of them sharing a
   sample; the partner's genotype in a row *invalid in A*; the reason in a row *too complex*;
   `quality` and `gq` with a QUAL absent, and with a `*`.
