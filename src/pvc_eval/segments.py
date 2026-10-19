@@ -858,14 +858,20 @@ def _make_segments(features: Iterable[_Segment], length: int) -> list[_Segment]:
 
 
 def _find_requested_str_regions(
-    segments: Iterable[_Segment], requested: Sequence[_Span]
-) -> Iterator[_Segment]:
-    """The STR regions of one contig's segments that overlap a requested span by at least
-    one base, each whole, as `str-regions --regions` writes them (doc/specs/str_finder.md,
-    "The str-regions command"; pvc region_typing/mod.rs, emit_into). Positions are 0-based
-    and half-open."""
+    segments: Iterable[GenomeSegment], requested: Iterable[_Span]
+) -> Iterator[GenomeSegment]:
+    """The STR regions of one contig's segments, given in position order, that overlap one
+    of the contig's requested spans by at least one base, each whole, as `str-regions
+    --regions` writes them (doc/specs/str_finder.md, "The str-regions command"; pvc
+    region_typing/mod.rs, emit_into). Positions are 0-based and half-open."""
+    # The spans joined and sorted, so that one pointer walks them as the segments advance:
+    # a span that ends at or before a segment's start overlaps no later segment.
+    spans = _make_runs(requested)
+    index = 0
     for segment in segments:
         if segment.region_type is RegionType.GENERIC:
             continue
-        if any(start < segment.end and segment.start < end for start, end in requested):
+        while index < len(spans) and spans[index][1] <= segment.start:
+            index += 1
+        if index < len(spans) and spans[index][0] < segment.end:
             yield segment

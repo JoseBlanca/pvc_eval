@@ -1425,7 +1425,9 @@ def _get_types(segments: Iterable[_Segment]) -> list[str]:
     return [segment.region_type.value for segment in segments]
 
 
-def _get_of_type(segments: Iterable[_Segment], region_type: RegionType) -> list[_Segment]:
+def _get_of_type[S: (_Segment, GenomeSegment)](
+    segments: Iterable[S], region_type: RegionType
+) -> list[S]:
     return [segment for segment in segments if segment.region_type is region_type]
 
 
@@ -1745,11 +1747,20 @@ def _make_chained_cluster(span: int, length: int) -> str:
     return _make_contig_with_tracts_at(range(1000, 1000 + span - 20 + 1, 50), length)
 
 
-def _find_requested(bases: str, requested: list[tuple[int, int]]) -> list[_Segment]:
+def _make_genome_segments(segments: Iterable[_Segment]) -> list[GenomeSegment]:
+    """The segments as segment_contig yields them, on a contig named chr1."""
+    return [
+        GenomeSegment("chr1", segment.start, segment.end, segment.region_type, segment.motif)
+        for segment in segments
+    ]
+
+
+def _find_requested(bases: str, requested: list[tuple[int, int]]) -> list[GenomeSegment]:
     """pvc's walk_bed: the STR regions of the whole contig that overlap the requested
     spans, which are pvc's, 1-based and inclusive."""
     spans = [(start - 1, end) for start, end in requested]
-    return list(_find_requested_str_regions(_find_segments(bases, _PVC_DEFAULT_CONFIG), spans))
+    segments = _make_genome_segments(_find_segments(bases, _PVC_DEFAULT_CONFIG))
+    return list(_find_requested_str_regions(segments, spans))
 
 
 def test_a_bed_returns_the_same_findings_the_whole_genome_run_does() -> None:
@@ -1761,8 +1772,8 @@ def test_a_bed_returns_the_same_findings_the_whole_genome_run_does() -> None:
     whole = _partition(bases, _CATALOG_CONFIG)
     (truth,) = _get_of_type(whole, RegionType.SATELLITE)
     assert truth.end - truth.start > 3000
-    got = list(_find_requested_str_regions(whole, [(1099, 1300)]))
-    assert _get_of_type(got, RegionType.SATELLITE) == [truth]
+    got = list(_find_requested_str_regions(_make_genome_segments(whole), [(1099, 1300)]))
+    assert _get_of_type(got, RegionType.SATELLITE) == _make_genome_segments([truth])
 
     bases = _make_chained_cluster(1500, 6000)
     whole = _partition(bases, _CATALOG_CONFIG)
@@ -1770,8 +1781,8 @@ def test_a_bed_returns_the_same_findings_the_whole_genome_run_does() -> None:
     assert truth.end - truth.start > 1400
     assert len(truth.members) >= 25
     assert not _get_of_type(whole, RegionType.SATELLITE)
-    got = list(_find_requested_str_regions(whole, [(899, 1200)]))
-    assert _get_of_type(got, RegionType.STR_BUNDLE) == [truth]
+    got = list(_find_requested_str_regions(_make_genome_segments(whole), [(899, 1200)]))
+    assert _get_of_type(got, RegionType.STR_BUNDLE) == _make_genome_segments([truth])
 
 
 def _make_micro_near_satellite(micro_left: bool, gap: int) -> str:
@@ -1860,7 +1871,9 @@ def test_a_bed_does_not_change_what_things_are(requested: tuple[int, int]) -> No
                 (truth,) = [other for other in whole if other.start <= position < other.end]
                 assert truth.region_type is segment.region_type
 
-    def find_starting_inside(segments: list[_Segment]) -> list[tuple[int, int]]:
+    def find_starting_inside(
+        segments: Sequence[_Segment] | Sequence[GenomeSegment],
+    ) -> list[tuple[int, int]]:
         return [
             (segment.start, segment.end)
             for segment in segments
@@ -1894,11 +1907,13 @@ def test_generic_clips_at_the_edge_and_findings_come_back_whole() -> None:
     assert satellite.end > 4800
     assert satellite.end - satellite.start > 1000
     whole = _partition(bases, _PVC_DEFAULT_CONFIG)
-    assert _get_of_type(whole, RegionType.SATELLITE) == [satellite]
+    assert _make_genome_segments(_get_of_type(whole, RegionType.SATELLITE)) == [satellite]
 
     (bundle,) = _get_of_type(_find_requested(bases, [(1995, 2100)]), RegionType.STR_BUNDLE)
     assert bundle.start < 1994
-    assert all(bundle.start <= m.start and m.end <= bundle.end for m in bundle.members)
+    # The members are the whole contig's bundle's: GenomeSegment does not carry them.
+    (members,) = [other.members for other in whole if other.start == bundle.start]
+    assert all(bundle.start <= m.start and m.end <= bundle.end for m in members)
 
 
 def test_a_locus_straddling_the_bed_edge_is_emitted_whole() -> None:
@@ -1906,7 +1921,7 @@ def test_a_locus_straddling_the_bed_edge_is_emitted_whole() -> None:
     (locus,) = _get_of_type(_find_requested(bases, [(900, 1000)]), RegionType.STR)
     assert locus.end > 1000
     whole = _partition(bases, _PVC_DEFAULT_CONFIG)
-    assert [other for other in whole if other.start == locus.start] == [locus]
+    assert [o for o in _make_genome_segments(whole) if o.start == locus.start] == [locus]
 
 
 def test_two_spans_sharing_a_scan_span_do_not_leak_the_gap_between_them() -> None:
@@ -2141,14 +2156,28 @@ def test_a_repeat_run_longer_than_max_str_len_is_a_satellite_unless_step_2_drops
 def test_a_requested_span_keeps_an_str_region_it_overlaps_by_one_base(
     requested: tuple[int, int], is_kept: bool
 ) -> None:
-    str_segment = _Segment(start=10, end=20, region_type=RegionType.STR, motif="CA")
+    str_segment = GenomeSegment("chr1", 10, 20, RegionType.STR, "CA")
     segments = [
-        _Segment(start=0, end=10, region_type=RegionType.GENERIC),
+        GenomeSegment("chr1", 0, 10, RegionType.GENERIC, None),
         str_segment,
-        _Segment(start=20, end=30, region_type=RegionType.GENERIC),
+        GenomeSegment("chr1", 20, 30, RegionType.GENERIC, None),
     ]
     got = list(_find_requested_str_regions(segments, [requested]))
     assert got == ([str_segment] if is_kept else [])
+
+
+def test_requested_spans_in_any_order_keep_the_str_regions_they_overlap() -> None:
+    str_segment = GenomeSegment("chr1", 10, 20, RegionType.STR, "CA")
+    bundle = GenomeSegment("chr1", 22, 30, RegionType.STR_BUNDLE, None)
+    segments = [
+        GenomeSegment("chr1", 0, 10, RegionType.GENERIC, None),
+        str_segment,
+        GenomeSegment("chr1", 20, 22, RegionType.GENERIC, None),
+        bundle,
+        GenomeSegment("chr1", 30, 40, RegionType.GENERIC, None),
+    ]
+    requested = [(35, 40), (0, 11), (5, 8), (29, 31)]
+    assert list(_find_requested_str_regions(segments, requested)) == [str_segment, bundle]
 
 
 # The hull ends at the furthest end of any member, not at the end of the member listed
