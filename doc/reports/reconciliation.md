@@ -79,8 +79,7 @@ that `doc/spec.md` §5.4 still describes a haploid GT, which is not so on this b
 
 For the owner: the reader gives `MALFORMED_GT` for a GT with a phase mark before its first
 allele, `|1`, which VCF 4.4 allows for a phased haploid call. pvc_eval reads VCF 4.2 and 4.3,
-where it is not allowed; it is later work if 4.4 files are to be compared. Both faults were passed to the session working on the parser, which fixed them on its branch
-`perf/threads` (eee0046).
+where it is not allowed; it is later work if 4.4 files are to be compared.
 
 ## Changes to the plan before milestone 3
 
@@ -114,7 +113,9 @@ inside a map line splits the line; Windows line ends read correctly, and nothing
 
 For the owner: a VCF that does not exist stops the run with a traceback in `vcf.py`, which the
 sample pairs meet first since they read the headers; and a `#CHROM` line that ends in a tab gives
-a sample named "". Both are older than this plan and belong to the VCF reader.
+a sample named "". Both are older than this plan and belong to the VCF reader. At the owner's request
+they were passed to the session working on the parser, which fixed them on its branch
+`perf/threads` (eee0046).
 
 Changed in the plan: milestone 3 stands on milestone 2 too, since `reconcile` takes the `SamplePair`
 of milestone 2; the plan first named milestone 1 alone, and milestone 3's implementer found it.
