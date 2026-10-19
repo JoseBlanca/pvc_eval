@@ -78,19 +78,21 @@ def test_pvc_stratum(locus: Locus, stratum: str) -> None:
     [
         (GenomeSegment("chr1", 10, 20, None, None),),
         (GenomeSegment("chr1", 10, 20, None, None), _SATELLITE),
+        (_SATELLITE, GenomeSegment("chr1", 400, 410, None, None)),
     ],
-    ids=["alone", "beside-a-satellite"],
+    ids=["alone", "before-a-satellite", "after-a-satellite"],
 )
 def test_pvc_stratum_raises_for_an_str_region_with_no_type(
     str_regions: tuple[GenomeSegment, ...],
 ) -> None:
     locus = make_locus(9, str_regions[-1].end, str_regions)
+    untyped = next(region for region in str_regions if region.region_type is None)
 
     with pytest.raises(PvcEvalInputError) as raised:
         pvc_stratum(locus)
 
     assert str(raised.value) == (
-        "The STR region chr1:11-20 has no region type, since the --str-regions BED has no"
+        f"The STR region chr1:{untyped.start + 1}-{untyped.end} has no region type, since the --str-regions BED has no"
         " fourth column there, and --strata pvc needs the type of every STR region. Give"
         " --str-regions a BED written by `pvc_eval str-regions`, which has the types, or"
         " leave --str-regions out so that the STR finder runs, and run again."
@@ -111,6 +113,19 @@ def test_strata_gives_a_dot_for_a_locus_under_no_interval(tmp_path: Path) -> Non
     strata = read_strata(write_bed(tmp_path, lines), _CONTIGS)
 
     assert strata.stratum(Locus("chr1", 99, 120, (), (), ())) == "."
+
+
+def test_strata_sorts_the_classes_and_gives_each_once(tmp_path: Path) -> None:
+    lines = ["chr1\t0\t10\tzeta", "chr1\t20\t30\talpha", "chr1\t40\t50\tzeta"]
+    strata = read_strata(write_bed(tmp_path, lines), _CONTIGS)
+
+    assert strata.stratum(Locus("chr1", 0, 50, (), (), ())) == "alpha,zeta"
+
+
+def test_strata_gives_a_dot_on_a_contig_with_no_bed_line(tmp_path: Path) -> None:
+    strata = read_strata(write_bed(tmp_path, ["chr1\t0\t10\tzeta"]), _CONTIGS)
+
+    assert strata.stratum(Locus("chr2", 0, 50, (), (), ())) == "."
 
 
 def test_strata_from_an_unsorted_bed_with_overlapping_lines(tmp_path: Path) -> None:

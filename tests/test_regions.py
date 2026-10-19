@@ -14,6 +14,7 @@ import pytest
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.locus import Locus
 from pvc_eval.regions import read_regions, select_loci
+from pvc_eval.vcf import VcfGenotype, VcfRecord
 
 _CONTIGS = ("chr1", "chr2")
 
@@ -41,6 +42,26 @@ def test_region_next_to_the_locus_skips_it(tmp_path: Path) -> None:
     assert list(select_loci(iter([make_locus("chr1", 99, 120)]), regions)) == []
 
 
+def test_record_with_no_alt_reaching_past_the_locus_does_not_count(tmp_path: Path) -> None:
+    # The locus at 100 to 120 holds a record with no ALT whose REF covers 100 to 130; the
+    # region at 125 to 200 shares positions with that REF only.
+    regions = read_regions(write_bed(tmp_path, ["chr1\t124\t200"]), _CONTIGS)
+    genotype = VcfGenotype(alleles=(0, 0), phased=False, phase_set=None, quality=None)
+    no_alt = VcfRecord(
+        contig="chr1",
+        start=99,
+        alleles=("A" * 31,),
+        qual=None,
+        genotypes=(genotype,),
+        line_number=3,
+        ref_mismatch=False,
+        span=(99, 130),
+    )
+    locus = Locus("chr1", 99, 120, (no_alt,), (), ())
+
+    assert list(select_loci(iter([locus]), regions)) == []
+
+
 def test_no_regions_keeps_every_locus() -> None:
     loci = [make_locus("chr1", 99, 120), make_locus("chr2", 5, 6)]
 
@@ -57,6 +78,18 @@ def test_select_loci_keeps_the_order_of_the_loci(tmp_path: Path) -> None:
     ]
 
     assert list(select_loci(iter(loci), regions)) == [loci[0], loci[2], loci[3]]
+
+
+def test_region_nested_inside_another(tmp_path: Path) -> None:
+    regions = read_regions(write_bed(tmp_path, ["chr1\t100\t300", "chr1\t150\t160"]), _CONTIGS)
+
+    assert regions.overlaps("chr1", 200, 210) is True
+
+
+def test_contig_with_no_bed_line_has_no_region(tmp_path: Path) -> None:
+    regions = read_regions(write_bed(tmp_path, ["chr1\t0\t10"]), _CONTIGS)
+
+    assert regions.overlaps("chr2", 0, 50) is False
 
 
 def test_unsorted_bed_with_overlapping_and_adjacent_lines(tmp_path: Path) -> None:
@@ -113,6 +146,11 @@ def test_unsorted_bed_with_overlapping_and_adjacent_lines(tmp_path: Path) -> Non
             " whole numbers of 0 or more; correct the line and run again.",
         ),
         (
+            "chr1\t\u00b2\t2000",
+            "the start, \u00b2, is not a whole number. A BED line gives its start and its end as"
+            " whole numbers of 0 or more; correct the line and run again.",
+        ),
+        (
             "chr1\t100\t-20",
             "the end, -20, is not a whole number. A BED line gives its start and its end as"
             " whole numbers of 0 or more; correct the line and run again.",
@@ -131,7 +169,14 @@ def test_unsorted_bed_with_overlapping_and_adjacent_lines(tmp_path: Path) -> Non
             " FASTA, and run again with kept.bed.",
         ),
     ],
-    ids=["two-columns", "start-not-whole", "end-not-whole", "end-not-after-start", "contig"],
+    ids=[
+        "two-columns",
+        "start-not-whole",
+        "start-superscript",
+        "end-not-whole",
+        "end-not-after-start",
+        "contig",
+    ],
 )
 def test_read_regions_refuses_a_line(tmp_path: Path, line: str, message: str) -> None:
     path = write_bed(tmp_path, ["chr1\t0\t10", line])

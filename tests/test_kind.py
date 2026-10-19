@@ -90,6 +90,15 @@ def test_locus_of_snps_of_both_files_is_snp() -> None:
     assert locus_kind(locus) is Kind.SNP
 
 
+def test_record_of_file_b_changes_the_kind() -> None:
+    # 10 A G in file A is a SNP; 11 CA C in file B deletes A.
+    locus = make_locus(
+        9, 12, (make_record(9, ("A", "G"), (9, 10)),), (make_record(10, ("CA", "C"), (10, 12)),)
+    )
+
+    assert locus_kind(locus) is Kind.COMPLEX
+
+
 def test_locus_of_insertions_and_deletions_is_indel() -> None:
     # 10 A AT,ATT inserts; 14 GCC G in file B deletes two bases.
     locus = make_locus(
