@@ -115,7 +115,7 @@ def parse_vcf_samples(path: Path) -> tuple[str, ...]:
     Raises PvcEvalInputError when the file has no #CHROM line after its ## lines.
     """
     with closing(_read_numbered_lines(path)) as numbered_lines:
-        return _parse_header(numbered_lines, path)
+        return _parse_samples(numbered_lines, path)
 
 
 def parse_vcf(
@@ -192,7 +192,7 @@ def _parse_records_in_file_order(
     sequence_contig = ""
     sequence = ""
     with closing(_read_numbered_lines(path)) as numbered_lines:
-        num_samples = len(_parse_header(numbered_lines, path))
+        num_samples = len(_parse_samples(numbered_lines, path))
         for line_number, line in numbered_lines:
             if line.startswith("#") or not line.strip():
                 continue
@@ -332,7 +332,7 @@ def _open_text(path: Path) -> TextIO:
     return path.open(encoding="utf-8")
 
 
-def _parse_header(numbered_lines: Iterator[tuple[int, str]], path: Path) -> tuple[str, ...]:
+def _parse_samples(numbered_lines: Iterator[tuple[int, str]], path: Path) -> tuple[str, ...]:
     """The sample names of the #CHROM line, read up to it and no further."""
     for line_number, line in numbered_lines:
         if line.startswith("##") or not line.strip():
@@ -453,7 +453,7 @@ def _parse_record(
         ref_mismatch=ref_mismatch,
         span=span,
     )
-    num_not_numbers = _is_not_a_number(fields[5], qual) + num_gq_not_numbers
+    num_not_numbers = _is_taken_as_absent(fields[5], qual) + num_gq_not_numbers
     return record, num_not_numbers, is_beyond_reach
 
 
@@ -477,7 +477,7 @@ def _parse_genotypes(
         if phase_set == ".":
             phase_set = None
         quality = _parse_gq(values.get("GQ"))
-        num_not_numbers += _is_not_a_number(values.get("GQ"), quality)
+        num_not_numbers += _is_taken_as_absent(values.get("GQ"), quality)
         if "GT" not in values:
             genotypes.append(
                 VcfGenotype(
@@ -509,7 +509,7 @@ def _parse_gq(field: str | None) -> int | None:
     return int(field)
 
 
-def _is_not_a_number(field: str | None, number: float | None) -> bool:
+def _is_taken_as_absent(field: str | None, number: float | None) -> bool:
     """A QUAL or GQ was written, and not as `.`, but taken as absent."""
     return number is None and field not in (None, ".")
 

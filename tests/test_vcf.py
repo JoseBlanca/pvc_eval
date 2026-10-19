@@ -77,7 +77,9 @@ def write_vcf(tmp_path: Path, body: str, *, gzipped: bool = False) -> Path:
         "haploid_not_a_number",
     ],
 )
-def test_parse_genotype(gt: str, expected: VcfGenotype | MALFORMED_GT | HAPLOID_GT) -> None:
+def test_gt_gives_its_alleles_or_its_case(
+    gt: str, expected: VcfGenotype | MALFORMED_GT | HAPLOID_GT
+) -> None:
     assert _parse_genotype(gt, num_alleles=3, phase_set=None, quality=None) == expected
 
 
