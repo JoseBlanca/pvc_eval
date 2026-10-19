@@ -26,15 +26,8 @@ What is asked of the owner:
   branch's version stands) and one line of `pyproject.toml`. The loci's test of `build_loci` on
   `segment_contig` is skipped on main because main has no `segment_contig` yet; it runs and passes
   on the branch.
-- **Whether to reword four sentences of `doc/spec.md` §5.1**, which differ from pvc's code. The code
-  follows pvc either way, so they need not be settled before the merge
-  (`doc/specs/str_finder.md`, "Reported, not changed here"):
-  - step 2 lists "lies within 15 bases of a contig end" among the tests of an STR segment, where
-    pvc drops such a candidate before the copy floor and bundling;
-  - "within 15 bases" means "with fewer than 15 bases between them" in pvc's code;
-  - "two ways that give the same partition" and "the same answer whether or not a region list is
-    given" are true of pvc_eval and not of pvc, whose routes differ in two rules and whose
-    `dev type-regions --regions` can return a shorter satellite.
+- Four sentences of `doc/spec.md` §5.1, and §2's definition of an STR bundle, which differed from
+  pvc's code, were amended to follow it by the owner's order on 19 October 2026, before the merge.
 
 Two behaviours a user meets that the spec changed during the build: an empty `--regions` BED stops
 the run, as it does for `compare`, because `str-regions` now reads it with the loci's shared reader;

@@ -51,7 +51,7 @@ use for it.
 |---|---|---|
 | **segmented genome** | each contig of the reference cut by the STR finder (§5.1) into consecutive, non-overlapping regions, each a generic region or an STR region | |
 | **generic region** | a stretch of the segmented genome that holds no tandem repeat the STR finder admits; pvc's `generic` | "ordinary sequence" |
-| **STR region** | a stretch the STR finder (§5.1) reports as a tandem repeat: an **STR segment** (one repeat), an **STR bundle** (two or more repeats within 15 bases of each other) or a **satellite** (a repeat run longer than 100 bases). pvc's terms. | "tract", "STR locus", "repeat locus" |
+| **STR region** | a stretch the STR finder (§5.1) reports as a tandem repeat: an **STR segment** (one repeat), an **STR bundle** (two or more repeats with fewer than 15 bases between each and the next) or a **satellite** (a repeat run longer than 100 bases). pvc's terms. | "tract", "STR locus", "repeat locus" |
 | **region type** | which of the four a region of the segmented genome is: `generic`, `str` (an STR segment), `str-bundle` or `satellite` | "kind", which is §5.6's |
 
 **Building what is compared**
@@ -244,22 +244,27 @@ the port is checked.
    candidate of a shorter period that divides its period covers at least half of it.
 2. **Filter, bundle, then admit STR segments** (pvc `region_typing/segment_criteria.rs`:
    `prefilter`, the classification before `split_bundles`, then `finish_locus`). In this order:
+   - A candidate with fewer than 15 bases between it and either end of the contig, measured on its
+     whole-motif cut or, when it has none, on its detected span, is dropped (pvc's catalogue route,
+     `repeat_catalog/row.rs` `row_for_interval`). It bundles nothing and counts towards no
+     satellite.
    - A candidate is dropped if its period is outside the range, its score is under the floor, it
      has fewer copies than the floor for its period as detected, or its motif is compound.
-   - Of the candidates left, one with another within 15 bases on either side is an STR bundle
-     member. The bundle is the hull of its members' detected spans. Members go through none of
+   - Of the candidates left, one with fewer than 15 bases between it and another, on either side,
+     is an STR bundle member. The bundle is the hull of its members' detected spans. Members go through none of
      the tests below.
    - Any other candidate is admitted as an **STR segment**, trimmed to whole motifs, unless it has
      no clean whole-motif cut at both ends, fewer copies than the floor after the cut, purity after
-     the cut below the minimum, or lies within 15 bases of a contig end.
+     the cut below the minimum, or a cut that starts on the contig's first base or ends on its
+     last.
 
    A dropped or rejected candidate is no STR segment and no bundle member, but it still counts
    towards satellites (step 3): pvc builds satellites from the runs of every candidate that passed
    the copy floor as detected (`region_typing/mod.rs`, `coverage_runs`), whatever later tests
    rejected it. Its bases are in a generic region only if no satellite covers them.
 3. **Satellites** (pvc `region_typing::resolve_features`). A run of repeat longer than 100 bases is a
-   satellite, and swallows every STR segment or bundle member within 15 bases of it, growing to cover
-   them. A bundle whose span exceeds 100 bases becomes a satellite. A bundle touching a contig end is
+   satellite, and swallows every STR segment or bundle member that overlaps it or has fewer than 15
+   bases between them, growing to cover them. A bundle whose span exceeds 100 bases becomes a satellite. A bundle touching a contig end is
    dropped.
 
 The result is the segmented genome: pvc's partition of the contig into STR segments, STR bundles,
@@ -291,10 +296,12 @@ region and more have kind STR (§5.6); it changes no outcome of a locus that was
 parameter can be set on the command line; the check against pvc (below) is run
 with pvc's calling floors, to compare like with like.
 
-**What is ported, and from where.** pvc runs the finder in two ways that give the same partition:
-from a stored catalogue (a Parquet file built once per reference), and by scanning the sequence
-directly (`region_typing::partition_resident_in`). pvc_eval ports the second, which needs no catalogue
-file, plus the catalogue route's one extra rule: nothing within 15 bases of a contig end. About 900
+**What is ported, and from where.** pvc runs the finder in two ways: from a stored catalogue (a
+Parquet file built once per reference), which `pvc dev type-regions` reads, and by scanning the
+sequence directly (`region_typing::partition_resident_in`). They differ in two rules: the catalogue
+route drops candidates near a contig end (step 2), and it always scans periods 1 to 6, whatever
+periods it then admits. pvc_eval ports the scanning route, which needs no catalogue file, with both
+of the catalogue route's rules, so that it gives what `dev type-regions` gives. About 900
 lines of pvc's Rust do this: the candidate finder, the admission rules with their helpers
 (`minimal_trim`, `recompute_purity`, `is_compound`, `split_bundles`), and the satellite and bundle
 resolution (ported from its plain fixed-point form, `absorb_into`, which pvc's tests show equal to the
@@ -308,9 +315,10 @@ benchmark comparison. So:
   each region's type, `str`, `str-bundle` or `satellite`, which `--strata pvc` and the
   `str_regions` column (§6) read; its fifth is the motif of an STR segment, `.` for the other two.
   A `--str-regions` BED without those columns can be used for loci, and with `--strata pvc` it is
-  an error; its regions are written in the `str_regions` column (§6) as `start-end` alone. pvc gives the same answer whether or not a region list is given (its `typed_regions.md`
-  §2.5), because it always scans whole contigs; the port does the same, and a region list only
-  limits what is written.
+  an error; its regions are written in the `str_regions` column (§6) as `start-end` alone. The port always segments whole contigs,
+  so a region list only limits what is written and never changes a region; pvc's
+  `dev type-regions --regions` can return a shorter satellite than a whole-genome run
+  (`doc/specs/str_finder.md`, "The same check over GRCh38").
 - Without `--str-regions`, `compare` runs the finder itself over the contigs its VCFs touch.
 
 How long the port takes on GRCh38 is measured first, before deciding whether the finder needs

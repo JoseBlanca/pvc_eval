@@ -32,8 +32,8 @@ with both, so it gives what `dev type-regions` gives, under the conditions the *
 states at the end of this spec, where the two are compared.
 
 The owner approved the spec on 19 October 2026, and decided that 52 of pvc's tests are left out
-(the decided point at the end). Four sentences of `doc/spec.md` §5.1 differ from pvc's code and are
-reported before the end.
+(the decided point at the end). Four sentences of `doc/spec.md` §5.1 that differed from pvc's code were
+amended by the owner's order the same day (the section before the end).
 
 ## Vocabulary
 
@@ -516,24 +516,13 @@ tests to be rewritten. 52 test functions the port does not have, and the list is
 I recommend leaving them out. Each of the 52 tests either has a subject that pvc_eval does not run,
 or, like the sweep property, compares a function with itself once only the fixed point is ported.
 
-## Reported, not changed here
+## Sentences of `doc/spec.md` amended
 
-Two sentences of `doc/spec.md` §5.1 differ from pvc's code. This spec follows the code, so the
-code is the same whichever way they are settled. The owner decides whether §5.1 is reworded:
-
-- Step 2 of §5.1 lists "lies within 15 bases of a contig end" among the tests of an STR segment.
-  In `dev type-regions`, the route the whole-port check compares with, the rule drops the candidate
-  before the copy floor and bundling (step 2 above, and the `near_end` case). §5.1's reading would
-  bundle the six A's with the (CA) repeat there.
-- "Within 15 bases", in steps 2 and 3 of §5.1 and in §2's STR bundle, means "with fewer than 15
-  bases between them" in pvc's code (`joins_cluster`, `absorb_into`). Two candidates with exactly
-  15 bases between them do not bundle.
-
-Two more sentences of §5.1 are true of pvc_eval and not of pvc. §5.1 says pvc's two routes "give the
-same partition", and that pvc "gives the same answer whether or not a region list is given". The
-routes differ in step 2 and in the periods scanned (step 1), and `dev type-regions --regions` can
-give a shorter satellite (the same check over GRCh38). pvc_eval segments whole contigs whatever region
-list it is given, so for pvc_eval the second sentence holds.
+Four sentences of `doc/spec.md` §5.1, and the definition of an STR bundle in §2, differed from pvc's
+code: the contig-end rule placed among the tests of an STR segment, where pvc drops the candidate
+before the copy floor and bundling; "within 15 bases" where pvc's code means "with fewer than 15
+bases between them"; and pvc's two routes said to give the same partition, with or without a region
+list. The owner had them amended to follow the code on 19 October 2026.
 
 ## Not in this spec
 
