@@ -214,8 +214,8 @@ the program that called it, such as a filter between the stages that reorders re
   GENERIC segments are checked too: the reading of segments stops at the first one past a record,
   of any type, so a GENERIC segment out of order would stop it before an STR region the record
   touches, and the locus would come out too narrow with no error;
-- an STR region that overlaps the STR region read before it. A GENERIC segment may overlap an STR
-  region, since a `--str-regions` BED has none and the finder's are not used;
+- an STR region that overlaps the STR region read before it. GENERIC segments are not checked
+  for overlap, since none of them becomes part of a locus;
 - a contig named twice in `contigs`, when the stream starts.
 
 A chain distance that is not a whole number of 0 or more raises `ValueError` when the stream starts,
