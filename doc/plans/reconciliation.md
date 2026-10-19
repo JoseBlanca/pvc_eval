@@ -38,7 +38,7 @@ On commit 76d14dc, on 19 October 2026, with CPython 3.15 free-threaded (`.python
 
 Milestones 1 and 2 touch different files and can run side by side. The others run in order.
 
-- [ ] **1. Ploidy in the VCF reader**
+- [x] **1. Ploidy in the VCF reader**
 
   What it gives: `parse_vcf` reads a file with a ploidy, 1 or more, 2 by default; a GT with
   another number of alleles is `OTHER_PLOIDY_GT`, and a GT of only `.` is `MISSING` on every
