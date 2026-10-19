@@ -811,6 +811,30 @@ def test_iupac_codes_that_share_no_base_differ(
     )
 
 
+@pytest.mark.parametrize(
+    ("line", "found"),
+    [
+        ("chr1\t5\t.\tAC\tA", "is 'AC', and the reference, read in upper case, has 'AG' there."),
+        ("chr1\t5\t.\tAGC\tA", "is 'AGC', and the reference, read in upper case, has 'AGA' there."),
+    ],
+    ids=["second_of_two_bases", "third_of_three_bases"],
+)
+def test_ref_that_agrees_at_its_first_base_and_differs_later_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta, line: str, found: str
+) -> None:
+    # The reference has AGA at 1-based 5 to 7.
+    path = write_vcf(tmp_path, f"{line}\t.\t.\t.\tGT\t0/1\t0/1\n")
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == (
+        f"{path}, line 3: the REF of chr1:5 {found} It is the file's first record with no"
+        " symbolic allele, so the VCF looks made on another reference: compare against the"
+        " reference it was called on, and run again."
+    )
+
+
 # 20 bases of REF are written whole in the message, and one more only where they differ.
 LONG_REF_SEQUENCE = "G" + "ACGT" * 6 + "G"
 
