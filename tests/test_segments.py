@@ -2176,6 +2176,38 @@ def test_a_bundles_hull_ends_at_its_furthest_member_end(tmp_path: Path) -> None:
     )
 
 
+# Two bundles of two (AT)x10 repeats, the detected spans of the first ending at 110 and of
+# the second starting at 126: 16 bases between them. The segments are what `pvc dev
+# type-regions --min-copies 5,5,4,4,4,3 --flank-bp 16` (and `--flank-bp 17`) gave, pvc at
+# bbcc9f4.
+@pytest.mark.parametrize(
+    ("bundle_distance", "expected"),
+    [
+        (
+            16,
+            [
+                (0, 59, "generic", None),
+                (59, 110, "str-bundle", None),
+                (110, 126, "generic", None),
+                (126, 177, "str-bundle", None),
+                (177, 270, "generic", None),
+            ],
+        ),
+        (
+            17,
+            [(0, 59, "generic", None), (59, 177, "satellite", None), (177, 270, "generic", None)],
+        ),
+    ],
+    ids=["16", "17"],
+)
+def test_bundles_the_bundle_distance_apart_stay_two(
+    bundle_distance: int, expected: list[tuple[int, int, str, str | None]], tmp_path: Path
+) -> None:
+    bases = _make_contig_with_tracts_at([60, 90, 126, 156], 270)
+    parameters = StrFinderParameters(bundle_distance=bundle_distance)
+    assert _find_segments_in_fasta("pairs", bases, parameters, tmp_path) == expected
+
+
 def test_an_empty_contig_has_no_segments(tmp_path: Path) -> None:
     with IndexedFasta(_write_fasta(tmp_path, {"empty": "", "chr1": "ACGT"})) as reference:
         assert list(segment_contig(reference, "empty")) == []
