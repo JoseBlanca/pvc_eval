@@ -433,25 +433,28 @@ Both files give `CTA`, in one locus because A's insertion spans the base after i
 **Building a locus.** Starting from the leftmost VCF record not yet in a locus, of either file:
 
 1. The locus is that record's span (§5.2).
-2. Add every VCF record, of either file, whose span overlaps the locus or has at most the chain
-   distance of reference positions between it and the locus (default 10, so spans that touch
-   always chain), and widen the locus to cover its span. Repeat until no record is added. Chaining
-   is transitive: if A chains with B and B with C, all three are in the locus, whichever files they
-   come from.
+2. Add every VCF record not yet in a locus, of either file, whose span overlaps the locus or has
+   at most the chain distance of reference positions between it and the locus (default 10, so
+   spans that touch always chain), and widen the locus to cover its span. Repeat until no record
+   is added. Chaining is transitive: if A chains with B and B with C, all three are in the locus,
+   whichever files they come from.
 3. Widen the locus to cover every STR region a VCF record in it **touches** — overlaps or lies
    immediately next to. Go back to step 2, since the wider locus may now overlap more records. Stop
    when neither step adds anything.
+4. If the locus has at most the chain distance of reference positions between it and the locus
+   before it on the contig, the two are one locus, covering both. This can happen only when an STR
+   region has widened the locus to the left.
 
 A locus is a run of reference positions, written 1-based and inclusive, as in VCF.
 
-Step 2 can reach records already in a locus. When an STR region widens a locus to the left, to
-within the chain distance of the locus before it, step 2 takes in that locus's records and the two
-are one locus. With a SNP at 100, a satellite at 105–3000 that it does not touch, and a record at
-2990 inside the satellite, the locus is 100–3000 (decided by the owner on 19 October 2026, over
-keeping 100 and 105–3000 apart, which would lose the chain distance next to STR regions; the
-look-ahead then holds a locus until the reading has passed every STR region that starts within
-the chain distance after it). The loci's own spec, `doc/specs/loci.md`, gives the rules in full,
-with their cases.
+With a SNP at 100, a satellite at 105–3000 that it does not touch, and a record at 2990 inside the
+satellite, the record makes a locus 105–3000, and step 4 joins it to the locus at 100: one locus
+100–3000. The distance is measured between the loci, not to their records: if the SNP at 100
+touches a satellite at 101–200, its locus is 100–200, which the locus 205–3000 joins although the
+SNP itself is 104 positions away (decided by the owner on 19 October 2026, over keeping such loci
+apart, which would lose the chain distance next to STR regions; the look-ahead then holds a locus
+until the reading has passed every STR region that starts within the chain distance after it). The
+loci's own spec, `doc/specs/loci.md`, gives the rules in full, with their cases.
 
 **Why a chain distance** (decided by the owner on 19 October 2026). Two events can be traded
 between spellings: one file deletes a base and changes the next one, the other changes the first
