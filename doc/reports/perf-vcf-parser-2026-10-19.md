@@ -128,6 +128,35 @@ the generator shares the phase set; on real phased data the reviewer estimates 1
 record. It is tried after P1, on the workload with a phase set per sample, and kept only if
 the gain over P1 holds there.
 
+*What P2 gave* (commit c5b19a6, measured 19 October 2026 from 15:50 to 16:20, against P1 at
+6db2cd8). The code adds 10 lines: `_parse_genotype` runs under
+`functools.lru_cache(maxsize=4096)`, with a comment that gives its numbers, and one test
+checks that two equal genotypes in one record are the same object. The four digests equal
+the README's. The gain holds on the GATK-like input, whose samples have phase sets of their
+own: the cache reports 3,174,116 hits and 451,284 misses for 3,625,400 genotypes, against
+437,393 distinct genotypes, so an unbounded cache would miss only 3% fewer, and one of
+1,024 entries misses 611,784. On the GT:GQ:PS input, 3,626,435 hits and 35,565 misses.
+tracemalloc, with no limit, puts the bytes held per record at 5.6 KB on the GATK-like input
+and 2.7 KB on the GT:GQ:PS one, against 18.3 KB for both with P1. Each input was timed in
+one hyperfine call that alternated P1 and P2, 10 runs, mean ± sd:
+
+| input | span limit | P1 | P2 | change |
+|---|---|---|---|---|
+| 5 Mb, GATK-like | 10 kb | 3.223 ± 0.047 s | 2.402 ± 0.014 s | −25.5% |
+| 5 Mb, GATK-like | none | 3.633 ± 0.025 s | 2.549 ± 0.010 s | −29.8% |
+| 5 Mb, GT:GQ:PS | 10 kb | 2.752 ± 0.015 s | 1.757 ± 0.008 s | −36.2% |
+| 5 Mb, GT:GQ:PS | none | 3.176 ± 0.008 s | 1.799 ± 0.034 s | −43.4% |
+| one sample | 10 kb | 753.9 ± 14.3 ms | 733.8 ± 3.2 ms | −2.7% |
+| one sample | none | 830.8 ± 3.1 ms | 821.2 ± 5.6 ms | −1.2% |
+
+The one-sample input, timed again, gave −2.2% and −1.3%: below the noise, as expected where a
+record has one sample. Peak memory with no limit, the median of 3 maximum resident set sizes
+(1 for the 64 Mb input): 381 MB to 141 MB on the GATK-like input (−63%), 383 MB to 87 MB on
+the GT:GQ:PS one (−77%), and 4,612 MB to 707 MB on the 64 Mb input (−85%), where the run also
+took 23.0 s instead of 40.5 s. At the default limit the cache adds 1 to 2 MB of RSS, which does
+not grow with the input. The one-minute load average was 2.07 to 3.38 during all of it, with
+`mediaanalysisd` taking about half a core.
+
 **P3. Find the FORMAT keys once per record** (`vcf.py:528-537`). Each sample now builds a
 small dict of its fields and reads three keys from it, 11 million `dict.get` calls on the
 small input; the positions of GT, GQ and PS can be found once per record and each sample
