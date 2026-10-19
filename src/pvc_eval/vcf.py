@@ -58,7 +58,11 @@ DEFAULT_SPAN_LIMIT = 10_000
 # benchmark input at the default span limit, parse_vcf took 13.1 s with 1 thread, 3.9 s
 # with 4 and 4.4 s with 8, the rest being the calling thread's own work; at 8 threads the
 # peak memory was 64 MB against 37 MB, the same as on a 5 Mb input, so it does not grow
-# with the file.
+# with the file. The 4 was measured on one stream. Two streams read together from one
+# thread, as the loci stage will merge files A and B, read their lines one after the other:
+# on the 5 Mb GATK-like input against itself, one stream took 0.35 s, two zipped 0.75 s
+# with 4 threads each and 0.76 s with 2 each, and each stream in a thread of its own
+# 0.57 s. How two streams share the cores is for the loci or the command-line milestone.
 DEFAULT_NUM_THREADS = 4
 # How many bases on each side of a REF its span is first looked for in. A slide that runs
 # into the end of them looks again in twice as many, up to one more than the span limit, so
