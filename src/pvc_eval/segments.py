@@ -17,6 +17,7 @@ from dataclasses import dataclass, fields
 from enum import Enum
 from importlib.metadata import version
 from pathlib import Path
+from typing import TextIO
 
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
@@ -1129,18 +1130,12 @@ def write_str_regions(
     Raises PvcEvalInputError, naming the file and the line, for a --regions BED that cannot
     be read, a line of it with fewer than three columns, a start or end that is not a whole
     number, an end not after its start, a contig the reference lacks or an end past its
-    length; and for a byte of the FASTA that is not a letter and an output whose directory
-    does not exist.
+    length; for a byte of the FASTA that is not a letter; and, before any contig is
+    segmented, for an output that is a directory or whose `.tmp` cannot be made.
     """
     requested = None if regions is None else _parse_requested_regions(regions, reference)
     temporary = Path(f"{output}.tmp")
-    try:
-        bed = temporary.open("w", encoding="utf-8")
-    except FileNotFoundError:
-        raise PvcEvalInputError(
-            f"{output} cannot be written: its directory, {output.parent}, does not exist. Make"
-            " it, or give another --output, and run again."
-        ) from None
+    bed = _open_temporary_output(output, temporary)
     try:
         with bed:
             bed.writelines(_format_str_regions_header(parameters))
@@ -1158,6 +1153,41 @@ def write_str_regions(
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def _open_temporary_output(output: Path, temporary: Path) -> TextIO:
+    """Open the file the BED is written to before it is renamed to output.
+
+    Raises PvcEvalInputError, naming --output, when output is a directory or temporary
+    cannot be made.
+    """
+    if output.is_dir():
+        raise PvcEvalInputError(
+            f"--output {output} is a directory. Give the path of a file to write, and run again."
+        )
+    cannot = f"--output {output} cannot be written:"
+    try:
+        return temporary.open("w", encoding="utf-8")
+    except FileNotFoundError:
+        raise PvcEvalInputError(
+            f"{cannot} its directory, {output.parent}, does not exist. Make it, or give another"
+            " --output, and run again."
+        ) from None
+    except NotADirectoryError:
+        raise PvcEvalInputError(
+            f"{cannot} its path goes through a file as if it were a directory. Correct the"
+            " path, and run again."
+        ) from None
+    except PermissionError:
+        raise PvcEvalInputError(
+            f"{cannot} permission denied to write in {output.parent}. Allow writing there, or"
+            " give another --output, and run again."
+        ) from None
+    except IsADirectoryError:
+        raise PvcEvalInputError(
+            f"{cannot} {temporary}, where it is written first, is a directory. Move it away,"
+            " and run again."
+        ) from None
 
 
 def _format_str_regions_header(parameters: StrFinderParameters) -> list[str]:

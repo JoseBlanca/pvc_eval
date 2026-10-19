@@ -1,6 +1,7 @@
 """The `pvc_eval str-regions` command and read_str_regions (doc/specs/str_finder.md,
 "read_str_regions" and "The str-regions command")."""
 
+import os
 import re
 import subprocess
 import sysconfig
@@ -369,18 +370,89 @@ def test_a_missing_regions_bed_stops_the_run(
     assert (status, stderr) == (1, f"{regions} does not exist. Check its path and run again.\n")
 
 
-def test_an_output_in_a_missing_directory_stops_the_run(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def _make_output_errors(tmp_path: Path) -> list[tuple[str, Path, str]]:
+    """Each --output that cannot be written: its id, the path, and the message. The
+    paths are made by _make_output_fault."""
+    missing = tmp_path / "missing" / "str.bed"
+    through_file = tmp_path / "a_file" / "str.bed"
+    read_only = tmp_path / "read_only" / "str.bed"
+    taken = tmp_path / "taken.bed"
+    return [
+        (
+            "missing_directory",
+            missing,
+            f"--output {missing} cannot be written: its directory, {missing.parent}, does not"
+            " exist. Make it, or give another --output, and run again.",
+        ),
+        (
+            "a_directory",
+            tmp_path,
+            f"--output {tmp_path} is a directory. Give the path of a file to write, and run again.",
+        ),
+        (
+            "through_a_file",
+            through_file,
+            f"--output {through_file} cannot be written: its path goes through a file as if it"
+            " were a directory. Correct the path, and run again.",
+        ),
+        (
+            "permission_denied",
+            read_only,
+            f"--output {read_only} cannot be written: permission denied to write in"
+            f" {read_only.parent}. Allow writing there, or give another --output, and run"
+            " again.",
+        ),
+        (
+            "temporary_is_a_directory",
+            taken,
+            f"--output {taken} cannot be written: {taken}.tmp, where it is written first, is a"
+            " directory. Move it away, and run again.",
+        ),
+    ]
+
+
+def _make_output_fault(case_id: str, tmp_path: Path) -> None:
+    if case_id == "through_a_file":
+        (tmp_path / "a_file").write_text("", encoding="utf-8")
+    elif case_id == "permission_denied":
+        (tmp_path / "read_only").mkdir(mode=0o555)
+    elif case_id == "temporary_is_a_directory":
+        (tmp_path / "taken.bed.tmp").mkdir()
+
+
+_OUTPUT_ERROR_IDS = [case[0] for case in _make_output_errors(Path("out"))]
+
+
+@pytest.mark.parametrize("case_id", _OUTPUT_ERROR_IDS)
+def test_an_output_that_cannot_be_written_stops_the_run_before_segmenting(
+    case_id: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    fasta = _write_fasta(tmp_path, {"four_a": _FOUR_A})
-    output = tmp_path / "missing" / "str.bed"
+    # chr1 has a byte that is not a letter, which stops the run if chr1 is segmented first.
+    if case_id == "permission_denied" and os.geteuid() == 0:
+        pytest.skip("root writes in a directory without write permission")
+    fasta = _write_fasta(tmp_path, {"chr1": "AC-GT"})
+    (output, message) = next(
+        (output, message)
+        for name, output, message in _make_output_errors(tmp_path)
+        if name == case_id
+    )
+    _make_output_fault(case_id, tmp_path)
     status, stderr = _run(
         ["str-regions", "--reference", str(fasta), "--output", str(output)], capsys
     )
+    assert (status, stderr) == (1, f"{message}\n")
+
+
+def test_an_empty_output_path_stops_the_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An empty --output is the current directory to pathlib.
+    monkeypatch.chdir(tmp_path)
+    fasta = _write_fasta(tmp_path, {"chr1": "AC-GT"})
+    status, stderr = _run(["str-regions", "--reference", str(fasta), "--output", ""], capsys)
     assert (status, stderr) == (
         1,
-        f"{output} cannot be written: its directory, {output.parent}, does not exist. Make it,"
-        " or give another --output, and run again.\n",
+        "--output . is a directory. Give the path of a file to write, and run again.\n",
     )
 
 
