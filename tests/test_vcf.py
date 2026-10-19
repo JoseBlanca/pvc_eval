@@ -392,3 +392,13 @@ def test_telomeric_breakend_at_pos_0_is_skipped_and_counted(
 
     assert [(record.start, record.alleles) for record in records] == [(6, ("A", "T"))]
     assert "1 VCF records with symbolic alleles" in caplog.text
+
+
+def test_message_names_the_file_by_the_path_given(tmp_path: Path) -> None:
+    (tmp_path / "calls").mkdir()
+    path = write_vcf(tmp_path / "calls", "chrUn\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n")
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(read_vcf_records(path, CONTIGS))
+
+    assert str(raised.value).startswith(f"{path}, line 3:")
