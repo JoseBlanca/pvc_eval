@@ -5,7 +5,7 @@ branch `loci`.*
 
 The plan is done. pvc_eval now builds its loci: `build_loci` turns the VCF records of file A and
 file B and the STR regions into loci as it reads them, and the kind, the stratum and the
-`--regions` selection of a locus are read from a locus. The checks give 346 passed and 1 skipped.
+`--regions` selection of a locus are read from a locus. The checks give 360 passed and 1 skipped.
 The skipped test runs `build_loci` on the STR finder's `segment_contig`, which is not on this
 branch; it passed against a copy of it from the `str-finder` branch. `build_loci` gave the same
 loci as a brute force of `doc/spec.md` §5.3, written from its four steps alone, on 60,000 random
@@ -25,22 +25,14 @@ memory figure below was measured on the Apple M5 Pro, with CPython 3.15t, on 19 
 Nothing on this branch waits on the other branches: the test that needs `segment_contig` is
 skipped until it exists.
 
-**Three points for the owner**, each found during the work. None blocks the merge.
+**The owner's answers.** On 19 October 2026 the owner agreed to the three points the work raised:
+`--regions` and `--strata` read gzipped BEDs and refuse an empty one (milestone 4, below), and
+`doc/spec.md` §5.2 now says its cases join "by overlap alone" through the span (`300e085`).
 
-1. *Gzipped BEDs.* GIAB's stratification BEDs come gzipped, and `--regions` and `--strata` refuse
-   them today, with a message that says to `gunzip` them. Reading them as `parse_vcf` reads
-   gzipped VCFs costs a check of the first two bytes and the standard library's `gzip`, about
-   twenty lines with their tests. I recommend reading them.
-2. *An empty BED.* A `--regions` or `--strata` BED with no line, or only header lines, is read
-   today as no region: every locus is skipped, or every stratum is `.`, without a word. Refusing
-   it with an error, as a BED naming only absent contigs already is, costs a few lines. I recommend
-   refusing it.
-3. *A sentence of `doc/spec.md` §5.2.* Its second case says: "Without the span, A's deletion
-   (21–23) and B's record (24–26) would fall into different loci". Since the chain distance came
-   in, spans that touch always chain (§5.3 step 2), so the two records share a locus with or
-   without the span. I suggest "by overlap alone, A's deletion (21–23) and B's record (24–26) would
-   fall into different loci", as §5.3 words the traded events; the case the span alone joins is now
-   in `doc/specs/loci.md`. The edit is the owner's, as `doc/spec.md` is.
+**One point for the owner.** `parse_vcf` lets `zlib.error` through, so a gzipped VCF whose
+compressed data is damaged ends in a traceback; the BED reader of milestone 4 catches it. The two
+readers hold one copy each of the gzip handling. Making it one private function, used by both,
+fixes the VCF reader too, and changes `vcf.py`, which the handoff keeps for the owner.
 
 **What went wrong.** While removing its reviewers' worktrees, this session removed 14 worktrees
 of the other sessions' reviewers and deleted 15 `worktree-agent-*` branches, by a glob. No commit
@@ -177,6 +169,19 @@ non-UTF-8 message names the line its decoder's chunk began at, which is true as 
 
 **Tokens**: implementation 115,000; review 256,000 (spec 57,000, tests 58,000, correctness 36,000,
 errors 40,000, design 65,000); fixes 55,000; second look 23,000.
+
+## Milestone 4: gzipped and empty BEDs
+
+Done, from `8b8fb6e` to `26bfdf0`, in `src/pvc_eval/bed.py` and `tests/test_bed.py`: a gzipped or
+bgzipped BED is read by its first two bytes, a damaged one is refused with no traceback, and a BED
+with no line is refused. `uv run pytest tests/test_bed.py -q` gave "31 passed", 15 of them failing
+on `300e085`; the four checks: "23 files already formatted", "All checks passed!" twice, "360
+passed, 1 skipped". The review found no defect: every damaged or truncated gzip case it tried gave
+the user an error, files close on every path, and each new test fails under its mutant. Not taken:
+a one-byte file holding the first byte of a gzip header is told it holds no line, which is unlikely
+and still stops the run. The gzip handling copied from `vcf.py` is the point for the owner above.
+
+**Tokens**: implementation 75,000; review, one reviewer for four categories, not given.
 
 ## The check of the whole plan
 

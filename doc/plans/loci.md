@@ -1,6 +1,6 @@
 # Plan: the loci
 
-*Status: approved by the owner on 19 October 2026; milestones 1 to 3 done, milestone 4 under way. It builds `doc/specs/loci.md`,
+*Status: approved by the owner on 19 October 2026; done on 19 October 2026. It builds `doc/specs/loci.md`,
 approved by the owner on 19 October 2026, on the branch `loci` in `.claude/worktrees/loci`; the
 owner's handoff named the branch `loci`, so it is not `plan/loci`. The work report will be
 `doc/reports/loci.md`.*
@@ -158,7 +158,7 @@ milestone 2, in different files.
 2026 (a BED contig the reference lacks, an untyped STR region under `--strata pvc`) say what to do,
 as the writing skill's section on errors asks. The `errors` reviewer gets them.
 
-- [ ] 4. Gzipped and empty BEDs
+- [x] 4. Gzipped and empty BEDs
 
 Added on 19 October 2026, after the plan was done, by the owner's answers to two points the work
 raised.
