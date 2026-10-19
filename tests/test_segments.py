@@ -1213,3 +1213,24 @@ def test_step_six_tests_the_copy_floor_then_the_purity_then_the_contig_ends() ->
     contig = "ATATGGATATAT" + "GCGCG"
     parameters = replace(_PARAMS, min_purity=0.9)
     assert _find_rejections([_iv(0, 12, 2, 100)], contig, parameters) == [_Rejection.PURITY]
+
+
+# ---- The cut's bounds, pvc_eval's own ----------------------------------------------------------
+# The expected values are pvc's, from the transcription named above.
+
+
+def test_the_cut_reaches_no_further_than_half_the_repeat() -> None:
+    # 11 bases: the start is searched up to offset 5, so the GCGC at offset 6 is not found.
+    assert _find_cut("GCAAAAGCGCG", "GC") is None
+
+
+def test_the_contig_end_flank_is_measured_on_the_cuts_end() -> None:
+    # The detected span ends 12 bases from the contig's end, its cut 15.
+    bases = "G" * 40 + "AT" * 8 + "GAT" + "G" * 12
+    candidate = _iv(40, 59, 2, 42)
+    assert list(_drop_near_contig_ends([candidate], bases, StrFinderParameters())) == [candidate]
+
+
+def test_a_bundle_member_starts_where_its_cut_starts() -> None:
+    member = _make_bundle_member(_iv(0, 11, 2, 5), "ATCATATATAT")
+    assert member == _BundleMember(start=3, end=11, motif="AT")
