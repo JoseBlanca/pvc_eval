@@ -497,6 +497,15 @@ def test_a_closed_indexed_fasta_reads_nothing(one_fa: Path) -> None:
         indexed_fasta.get_bases("chr1", 0, 3)
 
 
+def test_a_window_over_a_closed_indexed_fasta_reads_nothing(window_fa: Path) -> None:
+    with IndexedFasta(window_fa) as indexed_fasta:
+        window = FastaWindow(indexed_fasta)
+        window.get_bases("chr1", 0, 4)
+    # The bases asked for are in the window's buffer, and still not given.
+    with pytest.raises(ValueError, match=f"^{re.escape(f'{window_fa} is closed')}$"):
+        window.get_bases("chr1", 0, 4)
+
+
 def test_closing_twice_leaves_a_file_opened_between_alone(one_fa: Path, tmp_path: Path) -> None:
     indexed_fasta = IndexedFasta(one_fa)
     indexed_fasta.close()

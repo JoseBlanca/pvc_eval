@@ -105,8 +105,6 @@ class IndexedFasta:
         fai_line = self._check_region(contig, start, end)
         if start == end:
             return bytearray()
-        if self._fd < 0:
-            raise ValueError(f"{self._path} is closed")
         first_byte = fai_line.find_byte(start)
         num_bytes = fai_line.find_byte(end - 1) + 1 - first_byte
         fasta_bytes = os.pread(self._fd, num_bytes, first_byte)
@@ -133,8 +131,12 @@ class IndexedFasta:
     def _check_region(self, contig: str, start: int, end: int) -> _FaiLine:
         """The .fai line of the contig of a region, 0-based and half-open.
 
-        Raises ValueError for a contig the `.fai` lacks or a region outside the contig.
+        Raises ValueError when the FASTA is closed, for a contig the `.fai` lacks and for a
+        region outside the contig. A FastaWindow checks every request here, so that it
+        gives nothing from its buffer once the FASTA is closed.
         """
+        if self._fd < 0:
+            raise ValueError(f"{self._path} is closed")
         fai_line = self._get_fai_line(contig)
         if start < 0:
             raise ValueError(f"start must be 0 or more, not {start}")
