@@ -1160,3 +1160,56 @@ def test_the_candidates_are_bundled_in_order_of_start() -> None:
     classification = _find_str_segments([at_100, at_200, cag_60], contig, _PVC_DEFAULT)
     assert classification.str_segments == (_StrSegment(start=200, end=220, motif="AT", purity=1.0),)
     assert classification.bundle_members == (cag_60, at_100)
+
+
+# ---- The order of the rules of steps 4 to 6, pvc_eval's own -----------------------------------
+# Each case has two rules that apply, so that only the order the spec gives passes. The
+# expected values are pvc's, from a transcription of its classify, run as
+# uv run python /private/tmp/claude-501/-Users-jose-devel-pvc-eval/2dab6280-84d0-4e89-88dc-7955494ebca9/scratchpad/m2_fix_values.py \
+#     /private/tmp/claude-501/-Users-jose-devel-pvc-eval/2dab6280-84d0-4e89-88dc-7955494ebca9/scratchpad/review_m2_spec
+
+
+def test_a_candidate_under_min_score_bundles_nothing() -> None:
+    # The (CAG)x5 at 22 is 1 base from the (AT)x8 at 5, but under min_score 50.
+    contig = "CGCGC" + "AT" * 8 + "G" + "CAG" * 5 + "CGCGC"
+    candidates = [_iv(5, 21, 2, 100), _iv(22, 37, 3, 10)]
+    classification = _find_str_segments(candidates, contig, replace(_PARAMS, min_score=50))
+    assert classification.str_segments == (_StrSegment(start=5, end=21, motif="AT", purity=1.0),)
+    assert classification.bundle_members == ()
+    assert classification.rejected == ()
+
+
+def test_a_compound_candidate_bundles_nothing() -> None:
+    # AAAAAAAA at 22, given as period 2, is compound and is dropped before bundling.
+    contig = "CGCGC" + "AT" * 8 + "G" + "A" * 8 + "CGCGC"
+    compound = _iv(22, 30, 2, 100)
+    classification = _find_str_segments([_iv(5, 21, 2, 100), compound], contig, _PARAMS)
+    assert classification.str_segments == (_StrSegment(start=5, end=21, motif="AT", purity=1.0),)
+    assert classification.bundle_members == ()
+    assert classification.rejected == ((compound, _Rejection.COMPOUND),)
+
+
+def test_a_candidate_shorter_than_its_period_is_turned_down_before_the_compound_test() -> None:
+    # AA given as period 4 is both shorter than its period and, as a motif, compound.
+    rejections = _find_rejections([_iv(5, 7, 4, 100)], "CGCGCAAGCGCG", _PARAMS)
+    assert rejections == [_Rejection.COPY_FLOOR]
+
+
+def test_a_candidate_exactly_one_period_long_still_bundles() -> None:
+    # CG at 22, one copy of period 2, is not shorter than its period.
+    one_copy = _iv(22, 24, 2, 1)
+    classification = _find_str_segments([_iv(5, 21, 2, 100), one_copy], _CLEAN_AT, _PARAMS)
+    assert classification.str_segments == ()
+    assert classification.bundle_members == (_iv(5, 21, 2, 100), one_copy)
+
+
+def test_step_six_tests_the_copy_floor_then_the_purity_then_the_contig_ends() -> None:
+    # The cut ATATGGATAT has 5 copies, under a floor of 6, and a purity of 0.8, under 0.9.
+    contig = "CGCGC" + "ATATGGATAT" + "GCGCG"
+    parameters = replace(_PARAMS, copy_floors=(10, 6, 4, 3, 3, 3), min_purity=0.9)
+    assert _find_rejections([_iv(5, 15, 2, 100)], contig, parameters) == [_Rejection.COPY_FLOOR]
+
+    # The cut ATATGGATATAT has a purity of 10/12, under 0.9, and starts on base 0.
+    contig = "ATATGGATATAT" + "GCGCG"
+    parameters = replace(_PARAMS, min_purity=0.9)
+    assert _find_rejections([_iv(0, 12, 2, 100)], contig, parameters) == [_Rejection.PURITY]
