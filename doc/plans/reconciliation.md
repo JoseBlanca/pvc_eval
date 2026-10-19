@@ -1,6 +1,6 @@
 # Plan: reconciliation and evaluation
 
-*Status: draft, 19 October 2026, for the owner's approval. It builds `doc/specs/reconciliation.md`,
+*Status: approved by the owner on 19 October 2026; under way. It builds `doc/specs/reconciliation.md`,
 approved by the owner on 19 October 2026, on the branch `reconciliation` in the worktree
 `.claude/worktrees/reconciliation`. The work report will be `doc/reports/reconciliation.md`.*
 
