@@ -49,8 +49,8 @@ Milestones 1 and 2 touch different files and can run side by side. The others ru
   Deliverables:
   - `uv run pytest tests/test_vcf.py -v` runs the seven cases of the `parse_vcf` item of §9, each a
     test named for its case, and all pass. On 76d14dc they fail: `parse_vcf` takes no `ploidy`.
-  - The 213 tests of 76d14dc still pass, changed only where they name `PLOIDY` or `HAPLOID_GT`,
-    which the commit message lists.
+  - The 213 tests of 76d14dc still pass. A test may change only where it names `PLOIDY` or
+    `HAPLOID_GT`, which this milestone renames, and the commit message lists each test changed.
 
   Stands on: nothing.
 
@@ -85,8 +85,9 @@ Milestones 1 and 2 touch different files and can run side by side. The others ru
   Deliverables:
   - First, in a commit of its own, `pvc_eval.segments` with `RegionType` and `GenomeSegment`
     only, and `pvc_eval.locus` with `Locus`, exactly as `doc/spec.md` §4 gives them; the session
-    sends the commit to the loci and STR finder sessions, which write the functions of those
-    modules. `uv run ty check` passes.
+    sends the commit, with `SendMessage`, to the sessions building the loci (branch `loci`) and
+    the STR finder (branch `str-finder`), found with `ListAgents`; they write the functions of
+    those modules. `uv run ty check` passes.
   - `uv run pytest tests/test_reconcile.py -v` runs a test for each row and each case of §4.4,
     R1 to R9, each with its locus alleles and possible genotypes as literals and the case's label
     in its id, and the other cases of the `reconcile` item of §9: the order of the locus alleles
@@ -98,7 +99,7 @@ Milestones 1 and 2 touch different files and can run side by side. The others ru
   - The verb `reconcile` in the verb table of `.claude/skills/coding/python.md`, with the meaning
     §7 gives it, in the commit of the code that first uses it.
 
-  Stands on: milestone 1, whose `OTHER_PLOIDY_GT` the tests of `ploidy mismatch` read.
+  Stands on: milestone 1, whose `OTHER_PLOIDY_GT` the tests of the invalid reason `ploidy mismatch` read.
 
   What could go wrong, and what guards it: a wrong rule here gives a plausible wrong genotype, and
   no later check sees it. The rules most likely to be built wrong are the `*` coverage of §4.2,
@@ -117,7 +118,7 @@ Milestones 1 and 2 touch different files and can run side by side. The others ru
   Deliverables:
   - First, in a commit of its own, `pvc_eval.kind` with `Kind` only, exactly as the loci spec
     gives it (`git show loci:doc/specs/loci.md`, Kind); the session sends the commit to the loci
-    session, which writes `locus_kind` there.
+    session, as in milestone 3, which writes `locus_kind` there.
   - `uv run pytest tests/test_evaluate.py -v` runs E1 to E13 of §5 at `evaluate_pair`, one
     parametrized test with the labels as ids, and the cases of the `make_outcome_rows` item of §9:
     every field on one locus with two pairs that share a sample; the partner's genotype in a row
@@ -136,8 +137,9 @@ Milestones 1 and 2 touch different files and can run side by side. The others ru
   What it gives: the property of §9: for generated loci, file B made from file A by decomposing
   each record into records of one replaced base or one indel, phased in a phase set of their own,
   gives only *same genotype*, *reference in both*, *missing in both*, *invalid in both* or *too
-  complex*, the last three only where A has a missing haplotype, an invalid sample or a sample over
-  the cap.
+  complex*. Each of the last three comes only from its own cause in A: *missing in both* where A
+  has a missing haplotype, *invalid in both* where A's sample is invalid, *too complex* where it is
+  over the cap.
 
   Spec: the property item of §9.
 
@@ -153,8 +155,10 @@ Milestones 1 and 2 touch different files and can run side by side. The others ru
 
   What could go wrong: the decomposition can itself make records that collide or a `*` that no
   deletion covers, and then the property fails on the test's input, not on the code. Its cases
-  are checked by hand first. A failure of the property is a stop when it shows that a rule of the
-  spec gives a file and its decomposition different outcomes.
+  are checked by hand first. When a failure shows that a rule of the spec gives a file and its
+  decomposition different outcomes, the session stops and asks the owner, as the coding skill's
+  "When to stop and ask" says, since the fix changes an outcome; a failure of the code against
+  the spec is fixed like any finding.
 
 ## At the end
 
