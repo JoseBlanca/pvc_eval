@@ -168,6 +168,21 @@ def test_gt_gives_its_alleles_or_its_case(
     assert _parse_genotype(gt, num_alleles=3, phase_set=None, quality=None) == expected
 
 
+def test_samples_with_the_same_gt_share_one_alleles_tuple(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(tmp_path, "chr1\t4\t.\tA\tG\t.\tPASS\t.\tGT:GQ:PS\t0|1:30:4\t0|1:20:9\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    first, second = record.genotypes
+    assert first == VcfGenotype(alleles=(0, 1), phased=True, phase_set="4", quality=30)
+    assert second == VcfGenotype(alleles=(0, 1), phased=True, phase_set="9", quality=20)
+    assert isinstance(first, VcfGenotype)
+    assert isinstance(second, VcfGenotype)
+    assert first.alleles is second.alleles
+
+
 @pytest.mark.parametrize("gzipped", [False, True], ids=["plain", "bgzipped"])
 def test_records_are_read_with_0_based_starts(
     tmp_path: Path, reference: IndexedFasta, gzipped: bool

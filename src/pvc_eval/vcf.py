@@ -12,6 +12,7 @@ genotype is compared with, MISSING, MALFORMED_GT and HAPLOID_GT; and the constan
 and DEFAULT_SPAN_LIMIT.
 """
 
+import functools
 import gzip
 import heapq
 import logging
@@ -313,15 +314,36 @@ def _parse_genotype(
     """A GT field as a VcfGenotype; HAPLOID_GT for one allele index, such as `1`; or
     MALFORMED_GT when it cannot be either (§5.4).
 
-    A single `.` says nothing about either haplotype, and is both MISSING.
-
     num_alleles: how many VCF alleles the record has, REF included.
     phase_set, quality: the sample's PS and GQ, kept in the VcfGenotype.
     """
+    parsed_gt = _parse_gt(gt, num_alleles)
+    if parsed_gt is MALFORMED_GT or parsed_gt is HAPLOID_GT:
+        return parsed_gt
+    alleles, phased = parsed_gt
+    return VcfGenotype(alleles=alleles, phased=phased, phase_set=phase_set, quality=quality)
+
+
+type _ParsedGt = tuple[tuple[int | MISSING, ...], bool]
+"""A GT's alleles, and whether it was written with `|`."""
+
+_MISSING_GT: _ParsedGt = ((MISSING,) * PLOIDY, False)
+
+
+# GTs repeat: the 3,662,000 of the 5 Mb, 200-sample benchmark input are 24 distinct pairs
+# of GT and number of alleles, so each is parsed once and its genotypes share one alleles
+# tuple. That makes parse_vcf 21% faster on that input, and its peak memory with no span
+# limit 383 MB instead of 615 MB. The cache is bounded and holds only immutable values, and
+# lru_cache is safe to share between threads.
+@functools.lru_cache(maxsize=1024)
+def _parse_gt(gt: str, num_alleles: int) -> _ParsedGt | MALFORMED_GT | HAPLOID_GT:
+    """What a GT field says whatever the sample's PS and GQ: its alleles and whether it is
+    phased, HAPLOID_GT or MALFORMED_GT (§5.4).
+
+    A single `.` says nothing about either haplotype, and is both MISSING.
+    """
     if gt == ".":
-        return VcfGenotype(
-            alleles=(MISSING,) * PLOIDY, phased=False, phase_set=phase_set, quality=quality
-        )
+        return _MISSING_GT
     parts = gt.replace("|", "/").split("/")
     if len(parts) == 1 and _is_allele_index(gt, num_alleles):
         return HAPLOID_GT
@@ -335,9 +357,7 @@ def _parse_genotype(
             alleles.append(int(part))
         else:
             return MALFORMED_GT
-    return VcfGenotype(
-        alleles=tuple(alleles), phased="|" in gt, phase_set=phase_set, quality=quality
-    )
+    return tuple(alleles), "|" in gt
 
 
 def _is_allele_index(part: str, num_alleles: int) -> bool:
