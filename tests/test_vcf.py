@@ -212,6 +212,21 @@ def test_samples_with_the_same_gt_share_one_alleles_tuple(
     assert first.alleles is second.alleles
 
 
+def test_samples_with_the_same_gt_and_ps_keep_their_own_gq(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    # A genotype cache that left GQ out of its key would give the second sample the first
+    # one's quality.
+    path = write_vcf(tmp_path, "chr1\t4\t.\tA\tG\t.\tPASS\t.\tGT:GQ:PS\t0|1:30:4\t0|1:20:4\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(0, 1), phased=True, phase_set="4", quality=30),
+        VcfGenotype(alleles=(0, 1), phased=True, phase_set="4", quality=20),
+    )
+
+
 def test_samples_with_the_same_genotype_share_one_genotype(
     tmp_path: Path, reference: IndexedFasta
 ) -> None:
