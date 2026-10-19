@@ -1,7 +1,8 @@
-"""The reference: a FASTA read through its `.fai`, one region at a time (doc/spec.md §3).
+"""A FASTA read through its `.fai`, one region at a time. The reference (doc/spec.md §3) is
+read this way.
 
-Only the bytes of the region asked for are read from disk, so the reference is never held
-in memory. Positions are 0-based and half-open, as in the `.fai`.
+Only the bytes of the region asked for are read from disk, so the FASTA is never held in
+memory. Positions are 0-based and half-open, as in the `.fai`.
 """
 
 import os
@@ -37,12 +38,12 @@ class _FaiLine:
         return self.offset + line * self.line_bytes + column
 
 
-class Reference:
-    """The reference genome, a FASTA with its `.fai` beside it (`ref.fa.fai`).
+class IndexedFasta:
+    """A FASTA with its `.fai` beside it (`ref.fa.fai`).
 
-    The contig names and their order are those of the `.fai`. A Reference is a context
+    The contig names and their order are those of the `.fai`. An IndexedFasta is a context
     manager that holds one open file descriptor and closes it on exit. Its reads do not
-    depend on a file position, so several threads can read one Reference at once.
+    depend on a file position, so several threads can read one IndexedFasta at once.
 
     Raises PvcEvalInputError when the FASTA is compressed, when the `.fai` is missing, and
     for a line of the `.fai` that is malformed or whose bases fall past the end of the
@@ -57,9 +58,8 @@ class Reference:
         if magic == GZIP_MAGIC:
             raise PvcEvalInputError(
                 f"{path} is compressed with gzip or bgzip, and pvc_eval reads only an"
-                f" uncompressed FASTA. Decompress it with `gunzip -c {path} > ref.fa`,"
-                " index it with `samtools faidx ref.fa`, and run again with"
-                " --reference ref.fa."
+                f" uncompressed FASTA. Decompress it with `gunzip -c {path} > file.fa`,"
+                " index it with `samtools faidx file.fa`, and give file.fa instead."
             )
         self._fai_lines = _read_fai(path, fasta_size)
         # One descriptor read with os.pread, which takes the byte to start at and so
@@ -136,7 +136,7 @@ class Reference:
         try:
             return self._fai_lines[contig]
         except KeyError:
-            raise ValueError(f"contig {contig} is not in the reference") from None
+            raise ValueError(f"contig {contig} is not in {self.path}") from None
 
 
 def _read_fai(fasta: Path, fasta_size: int) -> dict[str, _FaiLine]:

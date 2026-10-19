@@ -12,7 +12,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from pvc_eval.errors import PvcEvalInputError
-from pvc_eval.fasta import Reference
+from pvc_eval.fasta import IndexedFasta
 
 # Lines of five bases, a last line shorter than the others, lower-case bases, a contig
 # whose last line has no line end. Its .fai is what `samtools faidx one.fa` (samtools
@@ -59,17 +59,17 @@ def crlf_fa(tmp_path: Path) -> Path:
 
 
 def test_contigs_and_lengths_come_from_the_fai(one_fa: Path) -> None:
-    with Reference(one_fa) as reference:
-        assert reference.contigs == ("chr1", "chr2", "chr3")
-        assert [reference.length(contig) for contig in reference.contigs] == [12, 6, 7]
+    with IndexedFasta(one_fa) as indexed_fasta:
+        assert indexed_fasta.contigs == ("chr1", "chr2", "chr3")
+        assert [indexed_fasta.length(contig) for contig in indexed_fasta.contigs] == [12, 6, 7]
 
 
 def test_contig_order_is_the_fai_order_not_the_fasta_order(tmp_path: Path) -> None:
     fai = "chr3\t7\t54\t7\t8\nchr1\t12\t19\t5\t6\nchr2\t6\t40\t4\t5\n"
     path = write_fasta(tmp_path, "one.fa", ONE_FA, fai)
-    with Reference(path) as reference:
-        assert reference.contigs == ("chr3", "chr1", "chr2")
-        assert reference.bases("chr3", 0, 7) == "ACGTACG"
+    with IndexedFasta(path) as indexed_fasta:
+        assert indexed_fasta.contigs == ("chr3", "chr1", "chr2")
+        assert indexed_fasta.bases("chr3", 0, 7) == "ACGTACG"
 
 
 @pytest.mark.parametrize(
@@ -112,8 +112,8 @@ def test_contig_order_is_the_fai_order_not_the_fasta_order(tmp_path: Path) -> No
 def test_bases_of_a_region_in_upper_case(
     one_fa: Path, contig: str, start: int, end: int, expected: str
 ) -> None:
-    with Reference(one_fa) as reference:
-        assert reference.bases(contig, start, end) == expected
+    with IndexedFasta(one_fa) as indexed_fasta:
+        assert indexed_fasta.bases(contig, start, end) == expected
 
 
 @pytest.mark.parametrize(
@@ -140,17 +140,17 @@ def test_bases_of_a_region_in_upper_case(
 def test_bases_with_windows_line_ends(
     crlf_fa: Path, contig: str, start: int, end: int, expected: str
 ) -> None:
-    with Reference(crlf_fa) as reference:
-        assert reference.bases(contig, start, end) == expected
+    with IndexedFasta(crlf_fa) as indexed_fasta:
+        assert indexed_fasta.bases(contig, start, end) == expected
 
 
 @pytest.mark.skipif(shutil.which("samtools") is None, reason="samtools is not installed")
 def test_bases_agree_with_a_fai_made_by_samtools(tmp_path: Path) -> None:
     path = write_fasta(tmp_path, "one.fa", ONE_FA, None)
     subprocess.run(["samtools", "faidx", str(path)], check=True)
-    with Reference(path) as reference:
-        assert reference.contigs == ("chr1", "chr2", "chr3")
-        assert reference.bases("chr1", 3, 11) == "TACGTNNA"
+    with IndexedFasta(path) as indexed_fasta:
+        assert indexed_fasta.contigs == ("chr1", "chr2", "chr3")
+        assert indexed_fasta.bases("chr1", 3, 11) == "TACGTNNA"
 
 
 @given(
@@ -167,16 +167,16 @@ def test_every_region_is_the_upper_case_slice_of_its_contig(
     fasta, fai = fai_of(contigs, line_width, line_end)
     with tempfile.TemporaryDirectory() as directory:
         path = write_fasta(Path(directory), "ref.fa", fasta, fai)
-        with Reference(path) as reference:
-            assert reference.contigs == tuple(contigs)
+        with IndexedFasta(path) as indexed_fasta:
+            assert indexed_fasta.contigs == tuple(contigs)
             for name, sequence in contigs.items():
-                assert reference.length(name) == len(sequence)
+                assert indexed_fasta.length(name) == len(sequence)
                 for start in range(len(sequence) + 1):
                     for end in range(start, len(sequence) + 1):
-                        assert reference.bases(name, start, end) == sequence[start:end].upper()
+                        assert indexed_fasta.bases(name, start, end) == sequence[start:end].upper()
 
 
-def test_threads_reading_one_reference_get_the_bases_one_thread_gets(tmp_path: Path) -> None:
+def test_threads_reading_one_indexed_fasta_get_the_bases_one_thread_gets(tmp_path: Path) -> None:
     rng = random.Random(20261019)
     contigs = {
         f"chr{i}": "".join(rng.choices("ACGTacgtN", k=rng.randint(2000, 5000))) for i in range(4)
@@ -190,10 +190,12 @@ def test_threads_reading_one_reference_get_the_bases_one_thread_gets(tmp_path: P
         start = rng.randint(0, len(contigs[name]))
         end = rng.randint(start, min(start + 300, len(contigs[name])))
         regions.append((name, start, end))
-    with Reference(path) as reference:
-        one_thread = [reference.bases(*region) for region in regions]
+    with IndexedFasta(path) as indexed_fasta:
+        one_thread = [indexed_fasta.bases(*region) for region in regions]
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
-            several_threads = list(executor.map(lambda region: reference.bases(*region), regions))
+            several_threads = list(
+                executor.map(lambda region: indexed_fasta.bases(*region), regions)
+            )
     assert several_threads == one_thread
     assert one_thread == [contigs[name][start:end].upper() for name, start, end in regions]
 
@@ -204,18 +206,18 @@ def test_a_missing_fai_says_how_to_make_one(tmp_path: Path) -> None:
         f"{path} has no index {path}.fai. Make it with `samtools faidx {path}` and run again."
     )
     with pytest.raises(PvcEvalInputError, match=f"^{re.escape(expected)}$"):
-        Reference(path)
+        IndexedFasta(path)
 
 
 def test_a_compressed_fasta_says_to_decompress_it(tmp_path: Path) -> None:
     path = write_fasta(tmp_path, "one.fa.gz", gzip.compress(ONE_FA), ONE_FAI)
     expected = (
         f"{path} is compressed with gzip or bgzip, and pvc_eval reads only an uncompressed"
-        f" FASTA. Decompress it with `gunzip -c {path} > ref.fa`, index it with"
-        " `samtools faidx ref.fa`, and run again with --reference ref.fa."
+        f" FASTA. Decompress it with `gunzip -c {path} > file.fa`, index it with"
+        " `samtools faidx file.fa`, and give file.fa instead."
     )
     with pytest.raises(PvcEvalInputError, match=f"^{re.escape(expected)}$"):
-        Reference(path)
+        IndexedFasta(path)
 
 
 @pytest.mark.parametrize(
@@ -292,7 +294,7 @@ def test_a_wrong_fai_line_is_named(tmp_path: Path, fai: str, line_number: int, f
         f" Make the .fai again with `samtools faidx {path}` and run again."
     )
     with pytest.raises(PvcEvalInputError, match=f"^{re.escape(expected)}$"):
-        Reference(path)
+        IndexedFasta(path)
 
 
 def test_a_fai_of_another_fasta_is_found_where_its_bases_are_read(tmp_path: Path) -> None:
@@ -305,16 +307,16 @@ def test_a_fai_of_another_fasta_is_found_where_its_bases_are_read(tmp_path: Path
         f" Make the .fai again with `samtools faidx {path}` and run again."
     )
     with (
-        Reference(path) as reference,
+        IndexedFasta(path) as indexed_fasta,
         pytest.raises(PvcEvalInputError, match=f"^{re.escape(expected)}$"),
     ):
-        reference.bases("chr1", 0, 12)
+        indexed_fasta.bases("chr1", 0, 12)
 
 
 @pytest.mark.parametrize(
     ("contig", "start", "end", "message"),
     [
-        ("chr9", 0, 1, "contig chr9 is not in the reference"),
+        ("chr9", 0, 1, "contig chr9 is not in {path}"),
         ("chr1", -1, 3, "start must be 0 or more, not -1"),
         ("chr1", 5, 4, "end 4 is before start 5"),
         ("chr1", 0, 13, "end 13 is past the length of chr1, 12"),
@@ -328,19 +330,22 @@ def test_a_fai_of_another_fasta_is_found_where_its_bases_are_read(tmp_path: Path
         "start_past_length",
     ],
 )
-def test_a_region_outside_the_reference_is_a_value_error(
+def test_a_region_outside_its_contig_is_a_value_error(
     one_fa: Path, contig: str, start: int, end: int, message: str
 ) -> None:
-    with Reference(one_fa) as reference, pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
-        reference.bases(contig, start, end)
+    with (
+        IndexedFasta(one_fa) as indexed_fasta,
+        pytest.raises(ValueError, match=f"^{re.escape(message.format(path=one_fa))}$"),
+    ):
+        indexed_fasta.bases(contig, start, end)
 
 
 def test_length_of_an_unknown_contig_is_a_value_error(one_fa: Path) -> None:
     with (
-        Reference(one_fa) as reference,
-        pytest.raises(ValueError, match=r"^contig chr9 is not in the reference$"),
+        IndexedFasta(one_fa) as indexed_fasta,
+        pytest.raises(ValueError, match=f"^{re.escape(f'contig chr9 is not in {one_fa}')}$"),
     ):
-        reference.length("chr9")
+        indexed_fasta.length("chr9")
 
 
 def test_a_byte_that_is_not_ascii_is_named(tmp_path: Path) -> None:
@@ -350,14 +355,14 @@ def test_a_byte_that_is_not_ascii_is_named(tmp_path: Path) -> None:
         " only letters. Check that it is a FASTA file, and run again."
     )
     with (
-        Reference(path) as reference,
+        IndexedFasta(path) as indexed_fasta,
         pytest.raises(PvcEvalInputError, match=f"^{re.escape(expected)}$"),
     ):
-        reference.bases("chr1", 0, 5)
+        indexed_fasta.bases("chr1", 0, 5)
 
 
-def test_a_closed_reference_reads_nothing(one_fa: Path) -> None:
-    with Reference(one_fa) as reference:
+def test_a_closed_indexed_fasta_reads_nothing(one_fa: Path) -> None:
+    with IndexedFasta(one_fa) as indexed_fasta:
         pass
     with pytest.raises(OSError, match="Bad file descriptor"):
-        reference.bases("chr1", 0, 3)
+        indexed_fasta.bases("chr1", 0, 3)
