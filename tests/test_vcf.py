@@ -11,7 +11,7 @@ from pvc_eval.vcf import (
     MISSING,
     VcfGenotype,
     VcfRecord,
-    parse_genotype,
+    _parse_genotype,
     parse_vcf,
     parse_vcf_samples,
 )
@@ -78,7 +78,7 @@ def write_vcf(tmp_path: Path, body: str, *, gzipped: bool = False) -> Path:
     ],
 )
 def test_parse_genotype(gt: str, expected: VcfGenotype | MALFORMED_GT | HAPLOID_GT) -> None:
-    assert parse_genotype(gt, num_alleles=3, phase_set=None, quality=None) == expected
+    assert _parse_genotype(gt, num_alleles=3, phase_set=None, quality=None) == expected
 
 
 @pytest.mark.parametrize("gzipped", [False, True], ids=["plain", "bgzipped"])

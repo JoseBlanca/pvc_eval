@@ -5,6 +5,11 @@ never moved, split or decomposed.
 
 Positions are 0-based and half-open inside pvc_eval. The 1-based POS of a VCF line is
 converted here, and nowhere else.
+
+Public: parse_vcf, which gives the VCF records; parse_vcf_samples, which gives the sample
+names; VcfRecord and VcfGenotype; Span, the type of VcfRecord.span; the sentinels a
+genotype is compared with, MISSING, MALFORMED_GT and HAPLOID_GT; and the constants PLOIDY
+and MAX_SPAN_REACH.
 """
 
 import gzip
@@ -35,10 +40,10 @@ HAPLOID_GT = sentinel("HAPLOID_GT")
 """A GT of one allele index, such as `1` on chrX of a male sample: the sample is invalid
 at the locus with its own reason, `haploid GT` (§5.4, §6, Open 1)."""
 
-SPANNING_DELETION = "*"
-GZIP_MAGIC = b"\x1f\x8b"
-DECIMAL_NUMBER = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?")
-NUM_FIXED_COLUMNS = 9  # CHROM to FORMAT
+_SPANNING_DELETION = "*"
+_GZIP_MAGIC = b"\x1f\x8b"
+_DECIMAL_NUMBER = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?")
+_NUM_FIXED_COLUMNS = 9  # CHROM to FORMAT
 # doc/spec.md §5.2: a span that would reach further than this beyond its REF, on either
 # side, is cut to the REF, which bounds how long the reader holds a record.
 MAX_SPAN_REACH = 10_000
@@ -255,7 +260,7 @@ def _parse_records_in_file_order(
         )
 
 
-def parse_genotype(
+def _parse_genotype(
     gt: str, num_alleles: int, phase_set: str | None, quality: int | None
 ) -> VcfGenotype | MALFORMED_GT | HAPLOID_GT:
     """A GT field as a VcfGenotype; HAPLOID_GT for one allele index, such as `1`; or
@@ -321,7 +326,7 @@ def _read_numbered_lines(path: Path) -> Generator[tuple[int, str]]:
 
 def _open_text(path: Path) -> TextIO:
     with path.open("rb") as raw:
-        is_gzipped = raw.read(len(GZIP_MAGIC)) == GZIP_MAGIC
+        is_gzipped = raw.read(len(_GZIP_MAGIC)) == _GZIP_MAGIC
     if is_gzipped:
         return gzip.open(path, "rt", encoding="utf-8")
     return path.open(encoding="utf-8")
@@ -333,7 +338,7 @@ def _parse_header(numbered_lines: Iterator[tuple[int, str]], path: Path) -> tupl
         if line.startswith("##") or not line.strip():
             continue
         if line.startswith("#CHROM"):
-            return tuple(line.rstrip("\n").split("\t")[NUM_FIXED_COLUMNS:])
+            return tuple(line.rstrip("\n").split("\t")[_NUM_FIXED_COLUMNS:])
         raise PvcEvalInputError(
             f"{path}, line {line_number}: a VCF file has a #CHROM line after its ## lines,"
             " and this line comes before any. Check that the file is a VCF with its header."
@@ -347,7 +352,7 @@ def _parse_header(numbered_lines: Iterator[tuple[int, str]], path: Path) -> tupl
 def _check_num_samples(fields: list[str], num_samples: int, path: Path, line_number: int) -> None:
     """Later stages find a sample's genotype by its column, so every line has one per
     sample of the #CHROM line, after FORMAT. A sites-only file has neither."""
-    num_found = max(len(fields) - NUM_FIXED_COLUMNS, 0)
+    num_found = max(len(fields) - _NUM_FIXED_COLUMNS, 0)
     if num_found != num_samples:
         raise PvcEvalInputError(
             f"{path}, line {line_number}: the line has {_format_count(num_found, 'sample column')},"
@@ -359,7 +364,7 @@ def _check_num_samples(fields: list[str], num_samples: int, path: Path, line_num
 # A line that is not a VCF record stops the run (a provisional choice: doc/spec.md §3 does
 # not list it), with the column at fault.
 def _parse_position(fields: list[str], path: Path, line_number: int) -> tuple[str, int]:
-    if len(fields) < NUM_FIXED_COLUMNS - 1:
+    if len(fields) < _NUM_FIXED_COLUMNS - 1:
         raise PvcEvalInputError(
             f"{path}, line {line_number}: the line has"
             f" {_format_count(len(fields), 'tab-separated column')},"
@@ -430,9 +435,9 @@ def _parse_record(
     # VCF bases are case-insensitive, and the reference is compared in upper case.
     alleles = (fields[3].upper(), *(alt.upper() for alt in alts))
     ref_mismatch = contig_sequence[pos : pos + len(alleles[0])] != alleles[0]
-    start, trimmed = trim(pos, alleles)
+    start, trimmed = _trim(pos, alleles)
     ref_span = (start, start + len(trimmed[0]))
-    span = ref_span if ref_mismatch else find_span(start, trimmed, contig_sequence)
+    span = ref_span if ref_mismatch else _find_span(start, trimmed, contig_sequence)
     is_beyond_reach = span is None
     if span is None:
         span = ref_span
@@ -460,12 +465,12 @@ def _parse_genotypes(
 
     num_alleles: how many VCF alleles the record has, REF included.
     """
-    if len(fields) <= NUM_FIXED_COLUMNS:
+    if len(fields) <= _NUM_FIXED_COLUMNS:
         return (), 0
     genotypes: list[VcfGenotype | MALFORMED_GT | HAPLOID_GT] = []
     num_not_numbers = 0
     keys = fields[8].split(":")
-    for sample_field in fields[NUM_FIXED_COLUMNS:]:
+    for sample_field in fields[_NUM_FIXED_COLUMNS:]:
         # VCF lets trailing sample fields be dropped, so a key may have no value.
         values = dict(zip(keys, sample_field.split(":"), strict=False))
         phase_set = values.get("PS")
@@ -483,7 +488,7 @@ def _parse_genotypes(
                 )
             )
             continue
-        genotypes.append(parse_genotype(values["GT"], num_alleles, phase_set, quality))
+        genotypes.append(_parse_genotype(values["GT"], num_alleles, phase_set, quality))
     return tuple(genotypes), num_not_numbers
 
 
@@ -492,7 +497,7 @@ def _parse_genotypes(
 # run (a provisional choice). Only decimal numbers count, not Python's "nan", "inf" or
 # "1_000", and a QUAL must be finite.
 def _parse_qual(field: str) -> float | None:
-    if not DECIMAL_NUMBER.fullmatch(field):
+    if not _DECIMAL_NUMBER.fullmatch(field):
         return None
     qual = float(field)
     return qual if math.isfinite(qual) else None
@@ -509,7 +514,7 @@ def _is_not_a_number(field: str | None, number: float | None) -> bool:
     return number is None and field not in (None, ".")
 
 
-def trim(start: int, alleles: Sequence[str]) -> tuple[int, tuple[str, ...]]:
+def _trim(start: int, alleles: Sequence[str]) -> tuple[int, tuple[str, ...]]:
     """A record's start and alleles without the bases all its VCF alleles share, at the
     right end, then at the left, keeping at least one base in each (the VCF anchor
     convention); start is 0-based.
@@ -524,7 +529,7 @@ def trim(start: int, alleles: Sequence[str]) -> tuple[int, tuple[str, ...]]:
     return start, _make_trimmed_alleles(alleles, trimmed)
 
 
-def find_span(start: int, alleles: Sequence[str], contig_sequence: str) -> Span | None:
+def _find_span(start: int, alleles: Sequence[str], contig_sequence: str) -> Span | None:
     """The span of a trimmed record whose REF agrees with the reference (§5.2), or None
     when it would reach more than MAX_SPAN_REACH bases beyond the REF.
 
@@ -538,7 +543,7 @@ def find_span(start: int, alleles: Sequence[str], contig_sequence: str) -> Span 
     end = start + len(alleles[0])
     span_start, span_end = start, end
     for alt in alleles[1:]:
-        if alt == SPANNING_DELETION:
+        if alt == _SPANNING_DELETION:
             continue
         indel_span = _find_indel_span(start, alleles[0], alt, contig_sequence)
         if indel_span is not None:
@@ -619,12 +624,12 @@ def _trim_sequences(start: int, alleles: Sequence[str]) -> tuple[int, list[str]]
 def _drop_spanning_deletions(alleles: Sequence[str]) -> list[str]:
     """The alleles that are sequences. A `*` has no bases and takes no part in trimming;
     _make_trimmed_alleles returns it to its place."""
-    return [allele for allele in alleles if allele != SPANNING_DELETION]
+    return [allele for allele in alleles if allele != _SPANNING_DELETION]
 
 
 def _make_trimmed_alleles(alleles: Sequence[str], sequences: list[str]) -> tuple[str, ...]:
     """The alleles with the sequences _drop_spanning_deletions took out replaced, in order, by these."""
     replacements = iter(sequences)
     return tuple(
-        allele if allele == SPANNING_DELETION else next(replacements) for allele in alleles
+        allele if allele == _SPANNING_DELETION else next(replacements) for allele in alleles
     )

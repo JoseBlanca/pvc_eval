@@ -2,7 +2,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from pvc_eval.vcf import VcfRecord, find_span, trim
+from pvc_eval.vcf import VcfRecord, _find_span, _trim
 
 HOMOPOLYMER = "GAAAAT"  # G at 0, A at 1 to 4, T at 5
 DINUCLEOTIDE = "GCACACAT"  # G at 0, CA repeated from 1 to 6, T at 7
@@ -32,7 +32,7 @@ DINUCLEOTIDE = "GCACACAT"  # G at 0, CA repeated from 1 to 6, T at 7
 def test_trim_removes_shared_bases_and_keeps_one(
     start: int, alleles: tuple[str, ...], expected: tuple[int, tuple[str, ...]]
 ) -> None:
-    assert trim(start, alleles) == expected
+    assert _trim(start, alleles) == expected
 
 
 # The three cases of doc/spec.md §5.2, with the 1-based positions of the spec made 0-based
@@ -71,7 +71,7 @@ CASE_3 = "N" * 9 + "CG"  # 1-based 10 to 11
 def test_spans_of_the_three_cases_of_the_spec(
     contig: str, start: int, alleles: tuple[str, ...], expected: tuple[int, int]
 ) -> None:
-    assert find_span(start, alleles, contig) == expected
+    assert _find_span(start, alleles, contig) == expected
 
 
 @pytest.mark.parametrize(
@@ -124,7 +124,7 @@ def test_spans_of_the_three_cases_of_the_spec(
 def test_span_covers_every_place_the_record_could_be_written(
     contig: str, start: int, alleles: tuple[str, ...], expected: tuple[int, int]
 ) -> None:
-    assert find_span(start, alleles, contig) == expected
+    assert _find_span(start, alleles, contig) == expected
 
 
 @pytest.mark.parametrize(
@@ -154,7 +154,7 @@ def test_span_covers_every_place_the_record_could_be_written(
 def test_span_that_reaches_more_than_10_kb_beyond_its_ref_is_none(
     contig: str, start: int, alleles: tuple[str, ...], expected: tuple[int, int] | None
 ) -> None:
-    assert find_span(start, alleles, contig) == expected
+    assert _find_span(start, alleles, contig) == expected
 
 
 def make_haplotype(contig: str, start: int, ref: str, alt: str) -> str:
@@ -185,7 +185,7 @@ def test_trimming_keeps_the_sequence_each_alt_gives(
 ) -> None:
     contig, start, alleles = case
 
-    trimmed_start, trimmed = trim(start, alleles)
+    trimmed_start, trimmed = _trim(start, alleles)
 
     for alt, trimmed_alt in zip(alleles[1:], trimmed[1:], strict=True):
         if alt != "*":
@@ -197,9 +197,9 @@ def test_trimming_keeps_the_sequence_each_alt_gives(
 @given(make_contig_and_record())
 def test_span_contains_the_trimmed_ref(case: tuple[str, int, tuple[str, ...]]) -> None:
     contig, start, alleles = case
-    trimmed_start, trimmed = trim(start, alleles)
+    trimmed_start, trimmed = _trim(start, alleles)
 
-    span = find_span(trimmed_start, trimmed, contig)
+    span = _find_span(trimmed_start, trimmed, contig)
 
     assert span is not None
     assert span[0] <= trimmed_start
@@ -255,7 +255,7 @@ def test_every_spelling_of_one_indel_spans_from_the_first_to_the_last(
     is_deletion = size < 0
     expected_end = last_start + len(last_ref) if is_deletion else min(last_start + 2, len(contig))
 
-    spans = {find_span(*trim(start, (ref, alt)), contig) for start, ref, alt in spellings}
+    spans = {_find_span(*_trim(start, (ref, alt)), contig) for start, ref, alt in spellings}
 
     assert spans == {(expected_start, expected_end)}
 
