@@ -486,7 +486,8 @@ class _StrSegment:
 class _BundleMember:
     """A bundle member as pvc's partition describes it: its cut, `[start, end)`, 0-based
     and half-open, or its detected span when it has no cut, and its motif in upper case.
-    pvc's BundleMember."""
+    pvc's BundleMember. It holds the cut, where _Classification.bundle_members hold the
+    detected spans."""
 
     start: int
     end: int
@@ -496,8 +497,9 @@ class _BundleMember:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _Classification:
     """What steps 4 to 6 make of the candidates of a contig, pvc's Classified: the STR
-    segments, the bundle members as they came in, and each candidate turned down with
-    its reason. A candidate outside the periods admitted, under min_score, or whose end
+    segments, the bundle members, and each candidate turned down with its reason. The
+    bundle members are the candidates themselves, so their detected spans, sorted by
+    start and then end. A candidate outside the periods admitted, under min_score, or whose end
     is not after its start is in none of the three, as in pvc."""
 
     str_segments: tuple[_StrSegment, ...]
@@ -532,6 +534,9 @@ def _find_cut(span_bases: str, motif: str) -> tuple[int, int] | None:
     if start is None:
         return None
     for offset in range(len(span_bases), len(span_bases) - reach - 1, -1):
+        # The two copies found at start end at an offset after start, which this search
+        # reaches before any offset under two copies. So neither test below can turn the
+        # cut down; both mirror pvc's minimal_trim.
         if offset < len(two_copies):
             return None
         if span_bases[offset - len(two_copies) : offset] == two_copies:
