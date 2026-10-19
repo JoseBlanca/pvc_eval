@@ -5,26 +5,52 @@ branch `loci`.*
 
 The plan is done. pvc_eval now builds its loci: `build_loci` turns the VCF records of file A and
 file B and the STR regions into loci as it reads them, and the kind, the stratum and the
-`--regions` selection of a locus are read from it. The checks give 346 passed and 1 skipped; the
-skipped test runs `build_loci` on the STR finder's `segment_contig`, and passed against a copy of
-it from the `str-finder` branch. `build_loci` agreed with a brute force of `doc/spec.md` §5.3 on
-60,000 random cases.
+`--regions` selection of a locus are read from a locus. The checks give 346 passed and 1 skipped.
+The skipped test runs `build_loci` on the STR finder's `segment_contig`, which is not on this
+branch; it passed against a copy of it from the `str-finder` branch. `build_loci` gave the same
+loci as a brute force of `doc/spec.md` §5.3, written from its four steps alone, on 60,000 random
+inputs of both files, two contigs, STR regions and chain distances from 0 to 10. Every time and
+memory figure below was measured on the Apple M5 Pro, with CPython 3.15t, on 19 October 2026.
 
-What is asked of the owner:
+**What the merge brings into main.** The branch holds, besides this plan's code and tests:
 
-- The merge of `loci` into `main`, which also carries the spec commits `baf1be3`, `84d6357` and
-  `c0fcb6a` to `doc/spec.md` that the other sessions read their contracts from, and the shared
-  modules cherry-picked from the `str-finder` and `reconciliation` branches.
-- Three points, each found during the work:
-  1. Should `--regions` and `--strata` read gzipped BEDs, as `parse_vcf` reads gzipped VCFs?
-     GIAB's stratification BEDs come gzipped; today they are refused with a hint to gunzip.
-  2. Should an empty `--regions` or `--strata` BED stop the run? Today it skips every locus, or
-     gives `.` for every stratum, without a word.
-  3. `doc/spec.md` §5.2 says its second case would fall into two loci without the span; with the
-     chain distance, touching spans always chain, so the sentence no longer holds.
+- three commits to `doc/spec.md`: `baf1be3` (`build_loci` takes `contigs`), `84d6357` and
+  `c0fcb6a` (loci within the chain distance of each other are one, §5.3 step 4). The other
+  sessions read the contracts of §4 from main, so until the merge they know these only from
+  messages;
+- the shared modules, cherry-picked: `pvc_eval.segments` from `str-finder`, `pvc_eval.locus` and
+  `Kind` from `reconciliation`. When those branches are merged, git sees the same changes on both
+  sides; a conflict, if any, is in those files alone.
 
-What is left open: the shared trim of an ALT (milestone 3), and the test on `segment_contig`,
-skipped until the STR finder is merged.
+Nothing on this branch waits on the other branches: the test that needs `segment_contig` is
+skipped until it exists.
+
+**Three points for the owner**, each found during the work. None blocks the merge.
+
+1. *Gzipped BEDs.* GIAB's stratification BEDs come gzipped, and `--regions` and `--strata` refuse
+   them today, with a message that says to `gunzip` them. Reading them as `parse_vcf` reads
+   gzipped VCFs costs a check of the first two bytes and the standard library's `gzip`, about
+   twenty lines with their tests. I recommend reading them.
+2. *An empty BED.* A `--regions` or `--strata` BED with no line, or only header lines, is read
+   today as no region: every locus is skipped, or every stratum is `.`, without a word. Refusing
+   it with an error, as a BED naming only absent contigs already is, costs a few lines. I recommend
+   refusing it.
+3. *A sentence of `doc/spec.md` §5.2.* Its second case says: "Without the span, A's deletion
+   (21–23) and B's record (24–26) would fall into different loci". Since the chain distance came
+   in, spans that touch always chain (§5.3 step 2), so the two records share a locus with or
+   without the span. I suggest "by overlap alone, A's deletion (21–23) and B's record (24–26) would
+   fall into different loci", as §5.3 words the traded events; the case the span alone joins is now
+   in `doc/specs/loci.md`. The edit is the owner's, as `doc/spec.md` is.
+
+**What went wrong.** While removing its reviewers' worktrees, this session removed 14 worktrees
+of the other sessions' reviewers and deleted 15 `worktree-agent-*` branches, by a glob. No commit
+was lost: every commit they held is on `reconciliation`, `reconciliation-samples` or `str-finder`,
+and the branches had none of their own. The STR finder session reported that its reviewers there
+had finished. The rule is now in this session's memory: a worktree is removed by its exact path.
+
+What is left open after the merge: one trim of an ALT against its REF is written twice, in the
+kind and in reconciliation, to be made one when the branches meet; and the test on
+`segment_contig`, which runs once the STR finder is merged.
 
 ## Before the first milestone
 
@@ -67,7 +93,7 @@ Done, from `2be9d5f` to `ea49f42`. `build_loci` is in `src/pvc_eval/loci.py`, wi
 - Records with no ALT held over a satellite took time growing with the square of its length:
   5,000, 10,000 and 20,000 of them took 2.56, 10.11 and 40.33 s; after the fix 0.01, 0.01 and
   0.02 s. A test marked `slow` holds 50,000 under 5 s.
-- A blocker: no test saw STR regions dropped; with them held forever all 52 tests passed while the
+- A blocker: no test saw STR regions dropped; with them held forever all 52 tests of that version passed while the
   peak grew from 4,296 bytes to 2,508,752 at 10,000 loci. A memory test now catches it, in 6.4 s:
   its first version took 627 s to fail, which the second look found.
 - Three rules guarded only by the property test now have fixed cases: a satellite exactly at the
