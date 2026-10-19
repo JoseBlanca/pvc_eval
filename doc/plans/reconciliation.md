@@ -122,7 +122,7 @@ Milestones 1 and 2 touch different files and can run side by side. The others ru
   - First, in a commit of its own, `pvc_eval.kind` with `Kind` only, exactly as the loci spec
     gives it (`git show loci:doc/specs/loci.md`, Kind); the session sends the commit to the loci
     session, as in milestone 3, which writes `locus_kind` there.
-  - `uv run pytest tests/test_evaluate.py -v` runs E1 to E13 of §5 at `evaluate_pair`, one
+  - `uv run pytest tests/test_evaluate.py -v` runs E1 to E14 of §5 at `evaluate_pair`, one
     parametrized test with the labels as ids, and the cases of the `make_outcome_rows` item of §9:
     every field on one locus with two pairs that share a sample; the partner's genotype in a row
     *invalid in A*; the reason in a row *too complex*; `quality` and `gq` with a QUAL absent and
