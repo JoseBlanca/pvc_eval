@@ -1089,6 +1089,19 @@ def test_one_dot_read_with_ploidy_2_is_missing_on_both_haplotypes(
     )
 
 
+def test_three_alleles_read_with_ploidy_3_are_a_genotype(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1/1\t./1/0\n")
+
+    (record,) = parse_vcf(path, reference, ploidy=3)
+
+    assert record.genotypes == (
+        VcfGenotype(alleles=(0, 1, 1), phased=False, phase_set=None, quality=None),
+        VcfGenotype(alleles=(MISSING, 1, 0), phased=False, phase_set=None, quality=None),
+    )
+
+
 def test_index_beyond_two_alts_is_malformed(tmp_path: Path, reference: IndexedFasta) -> None:
     path = write_vcf(tmp_path, "chr1\t5\t.\tA\tT,C\t.\t.\t.\tGT\t3/1\t2/1\n")
 
