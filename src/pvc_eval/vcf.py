@@ -191,8 +191,9 @@ def parse_vcf(
     is a directory or cannot be read, for a file with no #CHROM line after its ## lines, for
     an empty sample name in it, for a line that does not hold a VCF record, and for one whose
     number of sample columns differs from the number of samples the #CHROM line names. A
-    blank line is skipped. A record with a symbolic allele is skipped, and the number
-    skipped is logged as a warning at the end (§9). A QUAL or GQ that is not a number is
+    blank line is skipped. A record with a symbolic allele is skipped once its contig and
+    its order are checked, and its REF is not; the number skipped is logged as a warning
+    at the end (§9). A QUAL or GQ that is not a number is
     taken as absent, and those are counted in a warning at the end too. Raises
     ValueError, when the stream starts, for a span_limit
     that is neither None nor a whole number of 1 or more, for a num_threads that is not

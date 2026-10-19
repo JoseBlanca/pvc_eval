@@ -338,6 +338,46 @@ def test_symbolic_alleles_are_skipped_and_counted(
     assert "skipped 1 VCF record with symbolic alleles" in caplog.text
 
 
+# §5.2: two records with a symbolic allele whose REF the reference does not have, at chr1:5
+# (A in the reference) and reaching past the end of chr1's 16 bases.
+SYMBOLIC_LINES_THAT_DIFFER = (
+    "chr1\t5\t.\tC\t<DEL>\t.\t.\t.\tGT\t0/1\t0/1\n"
+    f"chr1\t6\t.\t{'G' * 20}\t<DEL>\t.\t.\t.\tGT\t0/1\t0/1\n"
+)
+
+
+def test_symbolic_record_whose_ref_differs_is_skipped_and_counted(
+    tmp_path: Path, reference: IndexedFasta, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = write_vcf(
+        tmp_path, SYMBOLIC_LINES_THAT_DIFFER + "chr1\t7\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n"
+    )
+
+    with caplog.at_level(logging.WARNING):
+        records = list(parse_vcf(path, reference))
+
+    assert [(record.start, record.alleles) for record in records] == [(6, ("A", "T"))]
+    assert "skipped 2 VCF records with symbolic alleles" in caplog.text
+
+
+def test_after_symbolic_records_the_first_plain_record_that_differs_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_vcf(
+        tmp_path, SYMBOLIC_LINES_THAT_DIFFER + "chr1\t7\t.\tC\tT\t.\t.\t.\tGT\t0/1\t0/1\n"
+    )
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == (
+        f"{path}, line 5: the REF of chr1:7 is 'C', and the reference, read in upper case, has"
+        " 'A' there. It is the file's first record with no symbolic allele, so the VCF looks"
+        " made on another reference: compare against the reference it was called on, and"
+        " run again."
+    )
+
+
 @pytest.mark.parametrize(
     ("line", "message"),
     [
