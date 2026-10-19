@@ -214,9 +214,53 @@ def test_a_missing_fai_says_how_to_make_one(tmp_path: Path) -> None:
 
 def test_a_missing_fasta_says_to_check_the_path(tmp_path: Path) -> None:
     path = tmp_path / "ref.fa"
-    expected = f"{path} does not exist. Check the path given to --reference, and run again."
+    expected = f"{path} does not exist. Check its path and run again."
     with pytest.raises(PvcEvalInputError, match=f"^{re.escape(expected)}$"):
         IndexedFasta(path)
+
+
+def test_a_fasta_that_is_a_directory_is_named(tmp_path: Path) -> None:
+    path = tmp_path / "ref.fa"
+    path.mkdir()
+    expected = f"{path} is a directory, not a FASTA file. Check its path and run again."
+    with pytest.raises(PvcEvalInputError, match=f"^{re.escape(expected)}$"):
+        IndexedFasta(path)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+def test_a_fasta_that_cannot_be_read_is_named(tmp_path: Path) -> None:
+    path = write_fasta(tmp_path, "one.fa", ONE_FA, ONE_FAI)
+    path.chmod(0)
+    expected = f"{path} cannot be read: permission denied. Allow reading it and run again."
+    try:
+        with pytest.raises(PvcEvalInputError, match=f"^{re.escape(expected)}$"):
+            IndexedFasta(path)
+    finally:
+        path.chmod(0o644)
+
+
+def test_a_fai_that_is_a_directory_is_named(tmp_path: Path) -> None:
+    path = write_fasta(tmp_path, "one.fa", ONE_FA, None)
+    Path(f"{path}.fai").mkdir()
+    expected = (
+        f"{path}.fai is a directory, not the index of {path}. Move it away, make the index"
+        f" with `samtools faidx {path}`, and run again."
+    )
+    with pytest.raises(PvcEvalInputError, match=f"^{re.escape(expected)}$"):
+        IndexedFasta(path)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+def test_a_fai_that_cannot_be_read_is_named(tmp_path: Path) -> None:
+    path = write_fasta(tmp_path, "one.fa", ONE_FA, ONE_FAI)
+    fai = Path(f"{path}.fai")
+    fai.chmod(0)
+    expected = f"{fai} cannot be read: permission denied. Allow reading it and run again."
+    try:
+        with pytest.raises(PvcEvalInputError, match=f"^{re.escape(expected)}$"):
+            IndexedFasta(path)
+    finally:
+        fai.chmod(0o644)
 
 
 def test_an_empty_fai_says_to_make_it_again(tmp_path: Path) -> None:
@@ -449,7 +493,7 @@ def test_length_of_an_unknown_contig_is_a_value_error(one_fa: Path) -> None:
 def test_a_closed_indexed_fasta_reads_nothing(one_fa: Path) -> None:
     with IndexedFasta(one_fa) as indexed_fasta:
         pass
-    with pytest.raises(OSError, match="Bad file descriptor"):
+    with pytest.raises(ValueError, match=f"^{re.escape(f'{one_fa} is closed')}$"):
         indexed_fasta.get_bases("chr1", 0, 3)
 
 

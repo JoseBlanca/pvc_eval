@@ -46,9 +46,10 @@ class IndexedFasta:
     manager that holds one open file descriptor and closes it on exit. Its reads do not
     depend on a file position, so several threads can read one IndexedFasta at once.
 
-    Raises PvcEvalInputError when the FASTA is missing or compressed, when the `.fai` is
-    missing or names no contig, and for a line of the `.fai` that is not UTF-8, is
-    malformed or puts bases past the end of the FASTA.
+    Raises PvcEvalInputError when the FASTA or its `.fai` is missing, a directory or not
+    readable, when the FASTA is compressed, when the `.fai` names no contig, and for a
+    line of the `.fai` that is not UTF-8, is malformed or puts bases past the end of the
+    FASTA.
     """
 
     def __init__(self, path: Path) -> None:
@@ -59,8 +60,14 @@ class IndexedFasta:
                 fasta_size = os.fstat(fasta.fileno()).st_size
         except FileNotFoundError:
             raise PvcEvalInputError(
-                f"{path} does not exist. Check the path given to --reference, and run again."
+                f"{path} does not exist. Check its path and run again."
             ) from None
+        except IsADirectoryError:
+            raise PvcEvalInputError(
+                f"{path} is a directory, not a FASTA file. Check its path and run again."
+            ) from None
+        except PermissionError:
+            raise PvcEvalInputError(_make_cannot_read_message(path)) from None
         if magic == GZIP_MAGIC:
             raise PvcEvalInputError(
                 f"{path} is compressed with gzip or bgzip, and pvc_eval reads only an"
@@ -95,6 +102,8 @@ class IndexedFasta:
         fai_line = self._check_region(contig, start, end)
         if start == end:
             return bytearray()
+        if self._fd < 0:
+            raise ValueError(f"{self.path} is closed")
         first_byte = fai_line.find_byte(start)
         num_bytes = fai_line.find_byte(end - 1) + 1 - first_byte
         fasta_bytes = os.pread(self._fd, num_bytes, first_byte)
@@ -133,7 +142,7 @@ class IndexedFasta:
         return fai_line
 
     def close(self) -> None:
-        """Close the FASTA. A read after this raises OSError."""
+        """Close the FASTA. A read after this raises ValueError."""
         if self._fd >= 0:
             os.close(self._fd)
             self._fd = -1
@@ -156,6 +165,10 @@ class IndexedFasta:
             raise ValueError(f"contig {contig} is not in {self.path}") from None
 
 
+def _make_cannot_read_message(path: Path) -> str:
+    return f"{path} cannot be read: permission denied. Allow reading it and run again."
+
+
 def _read_fai(fasta: Path, fasta_size: int) -> dict[str, _FaiLine]:
     """The lines of the `.fai` of a FASTA of fasta_size bytes, by contig, in its order."""
     fai = Path(f"{fasta}.fai")
@@ -166,6 +179,13 @@ def _read_fai(fasta: Path, fasta_size: int) -> dict[str, _FaiLine]:
         raise PvcEvalInputError(
             f"{fasta} has no index {fai}. Make it with `samtools faidx {fasta}` and run again."
         ) from None
+    except IsADirectoryError:
+        raise PvcEvalInputError(
+            f"{fai} is a directory, not the index of {fasta}. Move it away, make the index"
+            f" with `samtools faidx {fasta}`, and run again."
+        ) from None
+    except PermissionError:
+        raise PvcEvalInputError(_make_cannot_read_message(fai)) from None
     fai_lines: dict[str, _FaiLine] = {}
     for line_number, line_bytes in enumerate(fai_bytes.splitlines(), start=1):
         try:
