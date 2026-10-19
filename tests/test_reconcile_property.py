@@ -11,12 +11,11 @@ cases worked by hand.
 
 from collections.abc import Iterator, Sequence
 from contextlib import ExitStack
-from pathlib import Path
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from tests.test_reconcile import CONTIG, CaseFiles, get_locus_bases, pair_samples
+from tests.conftest import CONTIG, CaseFiles, get_locus_bases, pair_samples
 
 from pvc_eval.evaluate import make_outcome_rows
 from pvc_eval.fasta import IndexedFasta
@@ -178,12 +177,6 @@ def _format_piece_genotype(
         for allele in vcf_genotype.alleles
     ]
     return f"{'|'.join(alleles)}:{phase_set}"
-
-
-@pytest.fixture
-def case_files(tmp_path: Path) -> Iterator[CaseFiles]:
-    with ExitStack() as stack:
-        yield CaseFiles(tmp_path, stack)
 
 
 @pytest.mark.parametrize(
