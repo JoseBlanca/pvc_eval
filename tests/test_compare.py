@@ -12,6 +12,7 @@ import pytest
 from tests.compare_case import (
     CONTIGS,
     LINES_A,
+    LINES_B,
     STR_REGIONS,
     CompareCase,
     write_bed,
@@ -338,21 +339,61 @@ def test_vcf_out_of_order_on_contig_3_stops_after_the_same_rows(tmp_path: Path) 
     _check_same_run(run, expected)
 
 
-def test_fasta_byte_not_a_letter_stops_the_finder_after_the_same_rows(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+@pytest.mark.parametrize(
+    ("bad_contig", "lines_a", "lines_b", "loci_before"),
+    [
+        # chr2 is taken at the start, as file B's first record; it is scanned at that
+        # record, after the loci of chr1:50 and chr1:100.
+        ("chr2", LINES_A, LINES_B, [("chr1", 49, 50), ("chr1", 99, 116)]),
+        # chr1:250 reads the GENERIC segment at chr2:1, and the locus of chr1:50 is given;
+        # chr3 is scanned at chr3:105, before the locus of chr1:250 is given. A chain of
+        # segment_contig over chr1 and chr3 scans chr3 at chr1:250, and gives no row.
+        (
+            "chr3",
+            ["chr1 50 T C 50 0/1:40 1/1:35", "chr1 250 T C 30 0/1:30 0/0:30", LINES_A[3]],
+            [],
+            [("chr1", 49, 50)],
+        ),
+        # chr1:205, in (AGT)6, reads past chr1's last STR region while chr2:125 of file B
+        # is taken, so chr2 is scanned there, before the locus of chr1:50 is given. A chain
+        # of segment_contig over chr1 and chr2 scans chr2 at chr2:125, after that locus.
+        (
+            "chr2",
+            ["chr1 50 T C 50 0/1:40 1/1:35", "chr1 205 G A 30 0/1:30 0/0:30"],
+            ["chr2 125 A G 40 0/1:33 1/1:30"],
+            [],
+        ),
+    ],
+    ids=[
+        "chr2, default records",
+        "chr3, after a record past chr1's STR regions",
+        "chr2 taken early",
+    ],
+)
+def test_fasta_byte_not_a_letter_stops_the_finder_after_its_rows(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    bad_contig: str,
+    lines_a: Sequence[str],
+    lines_b: Sequence[str],
+    loci_before: list[tuple[str, int, int]],
 ) -> None:
-    # chr2 grows to 140,000 bases with a 0 at 139,001 (1-based), more than BLOCK_BASES,
-    # 65,536, from its records at 120 and 200, so that parse_vcf's window does not read it.
-    chr2 = CONTIGS["chr2"] + "N" * 139_700
-    chr2 = chr2[:139_000] + "0" + chr2[139_001:]
-    case = write_compare_case(tmp_path, contigs={**CONTIGS, "chr2": chr2})
+    # The contig grows to 140,000 bases with a 0 at 139,001 (1-based), more than
+    # BLOCK_BASES, 65,536, from its records, so that parse_vcf's window does not read it.
+    bases = CONTIGS[bad_contig] + "N" * 139_700
+    bases = bases[:139_000] + "0" + bases[139_001:]
+    contigs = {**CONTIGS, bad_contig: bases}
+    case = write_compare_case(tmp_path, contigs=contigs, lines_a=lines_a, lines_b=lines_b)
     caplog.set_level(logging.INFO, logger=_LOGGER)
-    run = _run_compare(case, CompareConfig())
-    expected = _run_nine_steps(case, CompareConfig(), _CONTIGS_WITH_RECORDS)
-    assert expected[0]
-    assert "chr2:139001 is not a letter" in str(expected[1])
-    _check_same_run(run, expected)
-    assert _get_scan_messages(caplog)[-1] == "chr2: finding STR regions in 140,000 bases."
+    rows, error = _run_compare(case, CompareConfig())
+    assert [(row.contig, row.start, row.end) for row in rows] == loci_before
+    assert str(error) == (
+        f"{case.reference}: {bad_contig}:139001 is not a letter where its .fai, line"
+        f" {bad_contig[-1]}, puts a base. Make the .fai again with `samtools faidx"
+        f" {case.reference}`, check that the FASTA holds only letters between its header"
+        " lines, and run again."
+    )
+    assert _get_scan_messages(caplog)[-1] == f"{bad_contig}: finding STR regions in 140,000 bases."
 
 
 def test_strata_pvc_with_untyped_str_region_stops_after_the_same_rows(tmp_path: Path) -> None:

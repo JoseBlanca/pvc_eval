@@ -55,9 +55,7 @@ STR_REGIONS = (
 SAMPLES_A = ("HG002", "HG003")
 SAMPLES_B = ("HG002", "HG004")
 
-# Each line is CHROM POS REF ALT QUAL and a GT:GQ per sample. On chr1 every span ends
-# before 200, where the STR region (AGT)6 starts, so that the segments of chr2 are read
-# only at the first record on chr2, both from segment_contig and from compare().
+# Each line is CHROM POS REF ALT QUAL and a GT:GQ per sample.
 LINES_A = (
     "chr1 50 T C 50 0/1:40 1/1:35",
     "chr1 100 GAC G 29.5 0/1:45 0/0:50",  # a deletion of AC in (AC)8
