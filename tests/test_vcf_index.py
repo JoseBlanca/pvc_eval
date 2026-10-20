@@ -138,6 +138,33 @@ _UNREADABLE_INDEXES = {
     "csi_without_tabix_header": (".csi", _with_int32(f"{_VCF_B_D}.csi", 12, 0)),
     # l_nm at byte 24 of aux, from 10 to 11, one past the end of aux.
     "csi_names_past_aux": (".csi", _with_int32(f"{_VCF_B_D}.csi", 16 + 24, 11)),
+    # A valid .tbi with its magic alone changed, to a BAM index's.
+    "tbi_magic_of_bai": (
+        ".tbi",
+        gzip.compress(b"BAI\x01" + _decompressed(f"{_VCF_B_D}.tbi")[4:]),
+    ),
+    # The format field of the .csi, at byte 0 of aux and 16 of the file, from 2, VCF, to 0.
+    "csi_not_of_a_vcf": (".csi", _with_int32(f"{_VCF_B_D}.csi", 16, 0)),
+    # l_aux at byte 12, from 38 to 27, one short of the tabix header before the names.
+    "csi_aux_27_bytes": (".csi", _with_int32(f"{_VCF_B_D}.csi", 12, 27)),
+    # l_nm from 10 to 9, and the NUL that ends the names removed: b"ctgB\0ctgD".
+    "tbi_last_name_not_nul_terminated": (
+        ".tbi",
+        gzip.compress(
+            _decompressed(f"{_VCF_B_D}.tbi")[:32]
+            + struct.pack("<i", 9)
+            + _decompressed(f"{_VCF_B_D}.tbi")[36:45]
+            + _decompressed(f"{_VCF_B_D}.tbi")[46:]
+        ),
+    ),
+    # The compressed bytes 18 to 25, the start of the deflate data after the BGZF block's
+    # 18-byte gzip header, set to 0xff.
+    "tbi_deflate_damaged": (
+        ".tbi",
+        (_DATA / f"{_VCF_B_D}.tbi").read_bytes()[:18]
+        + b"\xff" * 8
+        + (_DATA / f"{_VCF_B_D}.tbi").read_bytes()[26:],
+    ),
     "wrong_magic": (".tbi", (_DATA / _VCF_B_D).read_bytes()),
     "not_gzip": (".tbi", b"TBI\x01 is not compressed\n"),
     "empty": (".csi", b""),
