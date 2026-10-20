@@ -42,7 +42,7 @@ equal sample results.
 The milestones run in order: 4, 5 and 6 each add to `tests/respell.py`, and 2 to 6 stand on
 what 1 builds.
 
-- [ ] **1. Decomposition, and what the four re-spellings share**
+- [x] **1. Decomposition, and what the four re-spellings share**
 
   What it gives: `respell_by_decomposing`, and under it what every re-spelling uses: reading the
   input as lines and as records, the records kept, the touched test with the phase, the reach and
