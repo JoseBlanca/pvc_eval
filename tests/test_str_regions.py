@@ -280,6 +280,18 @@ def test_threads_outside_1_to_256_stop_the_run_naming_the_option(
     assert not Path(f"{output}.tmp").exists()
 
 
+@pytest.mark.parametrize("threads", ["1", "256"])
+def test_threads_of_1_and_256_are_accepted(
+    threads: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    status, stderr, output = _run_threads(tmp_path, capsys, {"four_a": _FOUR_A}, threads)
+    assert (status, stderr) == (0, "")
+    assert output.read_text(encoding="utf-8").splitlines() == [
+        *_DEFAULT_HEADER,
+        "four_a\t58\t80\tstr\tCA",
+    ]
+
+
 def test_threads_that_are_not_a_number_get_a_usage_error(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -342,6 +354,18 @@ def test_write_str_regions_refuses_threads_before_reading_the_regions(
             num_threads,  # ty: ignore[invalid-argument-type]  # the wrong types are the test
         )
     assert not Path(f"{output}.tmp").exists()
+
+
+@pytest.mark.parametrize("num_threads", [1, 256])
+def test_write_str_regions_takes_1_and_256_threads(num_threads: int, tmp_path: Path) -> None:
+    fasta = _write_fasta(tmp_path, {"four_a": _FOUR_A})
+    output = tmp_path / "str.bed"
+    with IndexedFasta(fasta) as reference:
+        write_str_regions(reference, output, StrFinderParameters(), None, num_threads)
+    assert output.read_text(encoding="utf-8").splitlines() == [
+        *_DEFAULT_HEADER,
+        "four_a\t58\t80\tstr\tCA",
+    ]
 
 
 # ---- Which thread segments which contig -------------------------------------------------
