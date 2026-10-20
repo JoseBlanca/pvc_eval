@@ -18,6 +18,7 @@ Positions are 0-based and half-open, but for POS in the lines, which is 1-based.
 from collections.abc import Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 from hypothesis import strategies as st
@@ -32,6 +33,16 @@ _CONTIG_NAMES = ("chr1", "chr2")
 _MIN_CONTIG_BASES = 12
 _MAX_CONTIG_BASES = 60
 _PADDING_BASES = 4  # the most N on each side of a contig that is padded
+
+
+class _RecordKind(Enum):
+    """What a record with one ALT is drawn as."""
+
+    SNP = "SNP"
+    REPLACEMENT = "replacement"
+    REPEAT_INDEL = "indel of a planted repeat"
+    RANDOM_INDEL = "random indel"
+    DELETION_OVER = "deletion over another record"
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,7 +202,7 @@ def _make_records(draw: st.DrawFn, contig: _Contig) -> list[_Record]:
     for _ in range(draw(st.integers(1, 6))):
         kind = draw(st.integers(0, 19))
         if kind == 19:
-            records.append(_make_no_alt_record(draw, contig))
+            records.append(draw(_make_no_alt_record(contig)))
             continue
         record = draw(_make_one_alt_record(contig, records))
         if kind == 18:
@@ -206,7 +217,9 @@ def _make_records(draw: st.DrawFn, contig: _Contig) -> list[_Record]:
     return sorted(records, key=lambda record: record.start)
 
 
+@st.composite
 def _make_no_alt_record(draw: st.DrawFn, contig: _Contig) -> _Record:
+    """A record with no ALT, `.`, over 1 to 3 bases."""
     start = draw(st.integers(contig.core_start, contig.core_end - 1))
     length = draw(st.integers(1, min(3, contig.core_end - start)))
     return _Record(start, contig.bases[start : start + length], (".",))
@@ -214,17 +227,25 @@ def _make_no_alt_record(draw: st.DrawFn, contig: _Contig) -> _Record:
 
 @st.composite
 def _make_one_alt_record(draw: st.DrawFn, contig: _Contig, records: Sequence[_Record]) -> _Record:
-    kind = draw(st.sampled_from(["snp", "replacement", "repeat", "indel", "deletion over"]))
-    if kind == "repeat" and contig.repeats:
+    """A record of one ALT, of a kind drawn evenly. The indel of a planted repeat on a contig
+    with none, and the deletion over another record where no record is drawn before it or
+    the one drawn is at the first base of the contig's bases, are a SNP instead."""
+    kind = draw(st.sampled_from(_RecordKind))
+    if kind is _RecordKind.REPEAT_INDEL and contig.repeats:
         return draw(_make_repeat_indel(contig))
-    if kind == "deletion over" and records:
-        record = _make_deletion_over(draw, contig, draw(st.sampled_from(records)))
+    if kind is _RecordKind.DELETION_OVER and records:
+        record = draw(_make_deletion_over(contig, draw(st.sampled_from(records))))
         if record is not None:
             return record
-    if kind == "replacement":
+    if kind is _RecordKind.REPLACEMENT:
         return draw(_make_replacement(contig))
-    if kind == "indel":
+    if kind is _RecordKind.RANDOM_INDEL:
         return draw(_make_random_indel(contig))
+    return draw(_make_snp(contig))
+
+
+@st.composite
+def _make_snp(draw: st.DrawFn, contig: _Contig) -> _Record:
     start = draw(st.integers(contig.core_start, contig.core_end - 1))
     ref = contig.bases[start]
     return _Record(start, ref, (draw(st.sampled_from([base for base in _BASES if base != ref])),))
@@ -281,6 +302,7 @@ def _make_repeat_indel(draw: st.DrawFn, contig: _Contig) -> _Record:
     return _Record(anchor, contig.bases[anchor : repeat.end], (contig.bases[anchor],))
 
 
+@st.composite
 def _make_deletion_over(draw: st.DrawFn, contig: _Contig, record: _Record) -> _Record | None:
     """A deletion that deletes the first base of record's REF, anchored 1 to 3 bases before
     it, so that the `*` re-spelling has records under deletions; None when the record is at
