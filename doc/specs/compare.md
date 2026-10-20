@@ -273,7 +273,7 @@ class CompareConfig:
 DEFAULT_FINDER_THREADS = 2
 
 def compare(a: Path, b: Path, reference: Path, config: CompareConfig = CompareConfig(), *,
-            finder_threads: int = DEFAULT_FINDER_THREADS) -> Iterator[OutcomeRow]: ...
+            finder_threads: int = DEFAULT_FINDER_THREADS) -> Generator[OutcomeRow]: ...
 ```
 
 `compare()` yields every row, *reference in both* included, as `doc/spec.md` §3 says. It raises
