@@ -1,6 +1,6 @@
 # Plan: the re-spelling program
 
-*Status: approved by the owner on 20 October 2026. It builds `doc/specs/respell.md`,
+*Status: approved by the owner on 20 October 2026; under way. It builds `doc/specs/respell.md`,
 approved by the owner on 20 October 2026, on the branch `respell` in the worktree
 `.claude/worktrees/respell` (the name the owner gave the branch, in place of `plan/respell`). The
 work report will be `doc/reports/respell.md`.*
