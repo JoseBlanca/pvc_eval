@@ -145,7 +145,9 @@ def check_same_haplotypes(
                     )
                     for window_records in windows_records
                 ]
-                if any(result is _OVER_CAP for result in results):
+                # A reason needs no phase assignment, and is compared whatever the cap.
+                has_reason = any(isinstance(result, str) for result in results)
+                if any(result is _OVER_CAP for result in results) and not has_reason:
                     num_over_cap += 1
                     continue
                 result_a, result_b = results
@@ -441,7 +443,8 @@ def _format_difference(result_a: _SampleResult, result_b: _SampleResult) -> str:
 
 
 def _format_count(result: _SampleResult) -> str:
-    assert result is not _OVER_CAP, "a window over the cap is not compared"
+    if result is _OVER_CAP:
+        return f"more than {ORACLE_CAP} phase assignments"
     if isinstance(result, str):
         return result
     if not result:

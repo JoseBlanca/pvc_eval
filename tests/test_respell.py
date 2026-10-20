@@ -19,7 +19,6 @@ from pathlib import Path
 import pytest
 from hypothesis import given, settings
 from tests.conftest import CONTIG, FILEFORMAT_LINE, CaseFiles, make_chrom_line, write_case_vcf
-from tests.haplotype_oracle import check_same_haplotypes
 from tests.respell import _find_reach, _make_bgzf, respell_by_decomposing
 from tests.respell_cases import (
     DECOMPOSITION_CASES,
@@ -28,7 +27,12 @@ from tests.respell_cases import (
     read_header,
     read_vcf_lines,
 )
-from tests.respell_generator import GeneratedVcf, make_generated_vcf, write_generated_vcf
+from tests.respell_generator import (
+    GeneratedVcf,
+    check_respelled_haplotypes,
+    make_generated_vcf,
+    write_generated_vcf,
+)
 
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
@@ -690,8 +694,29 @@ def test_the_decomposition_of_a_case_passes_the_oracle(
     case_files: CaseFiles, tmp_path: Path, case: RespellingCase
 ) -> None:
     reference, vcf, output = _write_and_decompose_case(case_files, tmp_path, case)
-    comparison = check_same_haplotypes(vcf, output, reference, ploidy=case.ploidy)
+    comparison = check_respelled_haplotypes(vcf, output, reference, ploidy=case.ploidy)
     assert comparison.num_windows >= 1
+
+
+def test_an_oracle_check_of_a_respelling_fails_on_a_window_over_the_cap(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    # A re-spelling of a 14-base MNP as 14 unphased SNPs loses its phase: the oracle cannot
+    # compare the window, with 2^13 phase assignments in B, and the check must not pass it.
+    bases = "GACGTACGTACGTACGT"
+    reference = case_files.write_reference(1, bases)
+    ref = bases[1:15]
+    alt = "".join("C" if base == "A" else "A" for base in ref)
+    vcf = _write_vcf(tmp_path / "a.vcf", [f"2 {ref} {alt} 0/1"])
+    output = _write_vcf(
+        tmp_path / "b.vcf",
+        [
+            f"{pos} {ref_base} {alt_base} 0/1"
+            for pos, ref_base, alt_base in zip(range(2, 16), ref, alt, strict=True)
+        ],
+    )
+    with pytest.raises(AssertionError, match="1 window or pair over the oracle's cap"):
+        check_respelled_haplotypes(vcf, output, reference, ploidy=2)
 
 
 def _read_bcftools_messages(vcf: Path) -> set[str]:
@@ -761,7 +786,7 @@ def test_the_decomposition_of_a_generated_file_passes_the_oracle(
         with ExitStack() as stack:
             directory = tmp_path_factory.mktemp("generated")
             reference, vcf, output = _write_and_decompose(generated, directory, stack)
-            comparison = check_same_haplotypes(vcf, output, reference, ploidy=generated.ploidy)
+            comparison = check_respelled_haplotypes(vcf, output, reference, ploidy=generated.ploidy)
         tally["files"] += 1
         tally["rewritten"] += _is_rewritten(vcf, output)
         tally["linked pairs"] += comparison.num_linked_pairs

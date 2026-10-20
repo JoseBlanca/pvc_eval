@@ -1,7 +1,8 @@
 """The VCF files the properties of doc/specs/respell.md §9.2 generate with hypothesis: small
 contigs of random bases and planted repeats, and a few records on them dense enough to
 interact. make_generated_vcf is the strategy, GeneratedVcf what it gives, PlantedRepeat
-one repeat of it, and write_generated_vcf writes one to a directory.
+one repeat of it, and write_generated_vcf writes one to a directory; and
+check_respelled_haplotypes, the oracle's check of a re-spelling as its tests make it.
 
 hypothesis draws the ends of a range of whole numbers more often than its middle, so a rare
 kind is drawn at the top of its range, where it is also not what shrinking leads to. Over
@@ -21,6 +22,7 @@ from pathlib import Path
 
 from hypothesis import strategies as st
 from tests.conftest import CaseFiles, write_case_vcf
+from tests.haplotype_oracle import ORACLE_CAP, HaplotypeComparison, check_same_haplotypes
 
 from pvc_eval.fasta import IndexedFasta
 
@@ -81,6 +83,22 @@ class _Record:
     start: int
     ref: str
     alts: tuple[str, ...]
+
+
+def check_respelled_haplotypes(
+    vcf: Path, output: Path, reference: IndexedFasta, *, ploidy: int
+) -> HaplotypeComparison:
+    """Check with the oracle that output, a re-spelling of vcf, gives every sample the same
+    haplotypes, and that no window or pair was over the oracle's cap (doc/specs/respell.md
+    §9.2), since one left uncompared could hide a lost phase set."""
+    comparison = check_same_haplotypes(vcf, output, reference, ploidy=ploidy)
+    num_over_cap = comparison.num_over_cap
+    if num_over_cap:
+        raise AssertionError(
+            f"{num_over_cap} window or pair over the oracle's cap of {ORACLE_CAP} phase"
+            f" assignments, not compared, between {vcf} and {output}"
+        )
+    return comparison
 
 
 def write_generated_vcf(

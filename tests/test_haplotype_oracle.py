@@ -286,6 +286,27 @@ def test_a_window_over_the_cap_is_counted_and_not_compared(
         _check(tmp_path, reference, lines_a[:13], lines_b[:13])
 
 
+def test_a_reason_over_the_cap_is_compared(case_files: CaseFiles, tmp_path: Path) -> None:
+    # §8: a malformed GT needs no phase assignment, so the window of fourteen unphased SNPs
+    # and a malformed GT at 16 is compared, whatever the cap.
+    bases = "GACGTACGTACGTACGT"
+    reference = case_files.write_reference(1, bases)
+    snps = [
+        f"{pos} {bases[pos - 1]} {'C' if bases[pos - 1] == 'A' else 'A'}" for pos in range(2, 16)
+    ]
+    lines_a = [*(f"{snp} 0/1" for snp in snps), "16 G A 0/5"]
+    lines_b = [*(f"{snp} 0|1:1" for snp in snps), "16 G A 0/5"]
+    assert _check(tmp_path, reference, lines_a, lines_b) == HaplotypeComparison(
+        num_windows=1, num_linked_pairs=0, num_over_cap=0
+    )
+    message = (
+        "chr1:2-16, sample S0: file A gives malformed GT"
+        " and file B more than 4096 phase assignments"
+    )
+    with pytest.raises(AssertionError, match=f"^{re.escape(message)}$"):
+        _check(tmp_path, reference, lines_a, [*(f"{snp} 0/1" for snp in snps), "16 G A 0/1"])
+
+
 def test_the_message_of_many_genotypes_gives_ten_and_how_many_more(
     case_files: CaseFiles, tmp_path: Path
 ) -> None:
