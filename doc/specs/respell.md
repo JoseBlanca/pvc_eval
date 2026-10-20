@@ -296,7 +296,9 @@ sample when all of these hold:
      unphased and heterozygous; and with its phase as read when D is unphased and homozygous,
      since every haplotype then gets a `*`. When the deletions over R of that sample come from
      records of two or more phase units, R would have to join both, and that sample gets no `*`
-     at R;
+     at R, even on a haplotype where the first way alone would give one: `10 AG A 1|0:5`,
+     `11 GTC ACA 0|0:5`, `12 TC T 0|1:6` is written as read (the review of milestone 5 found
+     that the other reading gives no wrong outcome either, and this one is the simpler);
   3. the ploidy is 1.
 
   When D is unphased and heterozygous, D is rewritten as well, with its VCF genotype phased in
