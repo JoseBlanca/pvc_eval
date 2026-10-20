@@ -116,36 +116,71 @@ def test_all_rows_and_summary_are_written(
 
 
 @pytest.mark.parametrize(
-    ("option", "config"),
+    ("option", "config", "column", "values"),
     [
-        (["--ploidy-a", "1"], CompareConfig(ploidy_a=1)),
-        (["--ploidy-b", "1"], CompareConfig(ploidy_b=1)),
+        (["--ploidy-a", "1"], CompareConfig(ploidy_a=1), None, None),
+        (["--ploidy-b", "1"], CompareConfig(ploidy_b=1), None, None),
         (
             ["--chain-distance", "200", "--phasing-cap", "1"],
             CompareConfig(chain_distance=200, phasing_cap=1),
+            None,
+            None,
         ),
-        (["--span-limit", "1"], CompareConfig(span_limit=1)),
-        (["--span-limit", "none"], CompareConfig(span_limit=None)),
-        (["--chain-distance", "0"], CompareConfig(chain_distance=0)),
+        (["--span-limit", "1"], CompareConfig(span_limit=1), None, None),
+        (["--span-limit", "none"], CompareConfig(span_limit=None), None, None),
+        (["--chain-distance", "0"], CompareConfig(chain_distance=0), None, None),
+        # HG003 of file A paired with HG004 of file B, and HG002 left out: five rows of
+        # seven, those at chr1:100 and chr2:120 being reference in both.
+        (
+            ["--sample-map", "pairs.tsv"],
+            CompareConfig(sample_map=Path("pairs.tsv")),
+            "sample_a",
+            ["HG003"] * 5,
+        ),
+        # The BED's one STR region, at chr1 41-60, widens the locus of chr1:50 and replaces
+        # the finder's, so the locus of chr3:105 is the SNP alone.
+        (
+            ["--str-regions", "str.bed"],
+            CompareConfig(str_regions=Path("str.bed")),
+            "start",
+            ["41", "100", "120", "200", "105", "250"],
+        ),
     ],
-    ids=["ploidy-a", "ploidy-b", "chain-distance-phasing-cap", "span-limit", "none", "zero"],
+    ids=[
+        "ploidy-a",
+        "ploidy-b",
+        "chain-distance-phasing-cap",
+        "span-limit",
+        "none",
+        "zero",
+        "sample-map",
+        "str-regions",
+    ],
 )
 def test_options_reach_compare(
     option: list[str],
     config: CompareConfig,
+    column: str | None,
+    values: list[str] | None,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # chr1:115 AC>A deletes a C of CCC at 116-118, so its span reaches two bases past its
     # REF, which --span-limit 1 cuts.
     lines_a = [*LINES_A[:2], "chr1 115 AC A 20 0/1:30 0/0:30", *LINES_A[2:]]
     case = write_compare_case(tmp_path, lines_a=lines_a)
+    (tmp_path / "pairs.tsv").write_text("HG003\tHG004\n", encoding="utf-8")
+    write_bed(tmp_path / "str.bed", ["chr1 40 60 str T"])
+    monkeypatch.chdir(tmp_path)
     output = tmp_path / "loci.tsv"
     status, _, _ = _run(_make_argv(case, output, *option), capsys)
     expected = tmp_path / "expected.tsv"
     _write_expected(case, config, expected)
     assert status == 0
     assert output.read_text(encoding="utf-8") == expected.read_text(encoding="utf-8")
+    if column is not None:
+        assert _read_column(output, column) == values
 
 
 def test_ploidy_a_of_1_makes_file_as_samples_invalid(
