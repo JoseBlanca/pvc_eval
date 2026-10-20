@@ -120,9 +120,11 @@ An index decides only when a scan starts, never whether a contig's loci get thei
 contig that an out-of-date index leaves out is still scanned when a reader reaches it. A contig it
 lists and no file has a record on is scanned for nothing, and its segments are dropped. So the
 rows never depend on the index. An index that cannot be read is ignored, with a warning:
-"a.vcf.gz.tbi could not be read as an index (it ends too soon); the contigs of a.vcf.gz are
-scanned for STR regions as the reading reaches them, which can take longer." Its contigs that the
-reference lacks are ignored, since a record on one stops the run when the reader reaches it.
+"a.vcf.gz.tbi could not be read as the index of a VCF; the contigs of a.vcf.gz are scanned for
+STR regions as the reading reaches them, which can take longer." When both a `.tbi` and a `.csi`
+are beside a VCF, both are read and their contigs joined, since either may be the one out of date.
+Their contigs that the reference lacks are ignored, since a record on one stops the run when the
+reader reaches it.
 
 `--regions` never makes a contig planned. A contig it names is scanned only when a record is on
 it, known from an index or from a reader. GIAB's benchmark regions name chr1 to chr22, and
@@ -152,17 +154,22 @@ record's span, by contig rank and then position (`doc/specs/loci.md`, "What `bui
 decides for each contig, when it gets there, whether to give its STR regions. It cannot ask the
 readers which contigs are still to come without waiting on them, and a reader may be waiting on a
 full buffer that only the loci side empties. So the iterator decides from the records the loci
-side has taken from the two buffers so far, and from nothing else.
+side has taken so far, and from nothing else. A record is **taken** when it is handed to
+`build_loci`, one record at a time, and not when its batch leaves a reader's buffer. Counted by
+the batch, a record later in the batch could decide a contig while `build_loci` still handles an
+earlier one, and an error of that contig's scan would come before rows that the stages run one
+after another give before it.
 
 For each contig *X*, in the order of the `.fai`:
 
-1. If a record on *X* has been taken from either buffer, and `--regions`, when given, names *X*,
+1. If a record on *X* has been taken from either file, and `--regions`, when given, names *X*,
    it yields the STR regions of *X*, waiting for the finder if the scan is not done.
 2. Otherwise it yields one GENERIC segment at the first base of *X*, `GenomeSegment(X, 0, 1,
    RegionType.GENERIC, None)`. This segment is not part of the segmented genome. It tells
-   `build_loci` that no segment before position 0 of *X* is to come, which `build_loci` needs
-   only when a record's span ends at the last base of the contig before *X*. `build_loci` drops
-   GENERIC segments, so this one changes no locus.
+   `build_loci` that no segment before position 0 of *X* is to come. `build_loci` asks for a
+   segment past the last one it has read whenever that one starts at or before the end of the
+   record it handles, so every record past the last STR region of the contig before *X* gets this
+   segment. `build_loci` drops GENERIC segments, so this one changes no locus.
 3. When asked for the next segment after that, it decides *X* again by step 1; if *X* still has
    no record taken, it goes on to the next contig.
 
@@ -180,9 +187,9 @@ neither indexed, no `--regions`. The readers reach chr1 and chr2 at once, and la
 contig goes in line as it is reached. When `build_loci` handles its first record, on chr1, the
 iterator yields chr1's STR regions, after the scan of chr1 ends. Past them, it yields the GENERIC
 segment at (chr2, 0). The first record on chr2 asks again: a record on chr2 has been taken, so it
-yields chr2's STR regions, then (chr3, 0), and chr3's STR regions in the same way. Past the last
-of chr3's, it yields (chr4, 0) only if a record's span ends at chr3's last base. No record on chr4
-is ever taken, so chr4 is never scanned, and the iterator is not asked again.
+yields chr2's STR regions, then (chr3, 0), and chr3's STR regions in the same way. A record on
+chr3 past chr3's last STR region gets (chr4, 0). No record on chr4 is ever taken, so chr4 is never
+scanned, and the iterator is not asked again.
 
 ### Errors, and stopping early
 
@@ -198,19 +205,28 @@ Warnings are logged from the thread that finds them, through the module's logger
 log them. `parse_vcf` logs its warnings when a file's reading ends, which with a reader thread can
 come before the rows of the last loci rather than after them. The text is the same.
 
-**When the caller stops reading the rows**, by closing the iterator, by an exception in the code
-that reads it, or by Ctrl-C, `compare()` sets a stop that every thread checks:
+**The stop.** `compare()` holds one `threading.Event`, the stop, which every thread checks. It is
+set when the rows end, so that a scan planned from an index and not needed does not start after
+the last row, and when the caller stops reading the rows early, by closing the iterator, by an
+exception in the code that reads it, or by Ctrl-C. Once it is set:
 
 - a reader blocked on its full buffer wakes, closes its `parse_vcf` stream, which closes its file
-  and its pool, and ends;
+  and its pool, and ends. `compare()` waits for both readers to end, which takes at most one batch
+  of `parse_vcf`'s work, before it closes the reference;
 - the finder starts no new contig. A contig already being scanned is not waited for. Its thread
   ends when the scan does, a few seconds to 10 to 12 minutes later on GRCh38 (forecast, below),
-  and its segments are dropped. The threads are daemon threads, so they do not keep
-  Python from exiting;
-- nothing a thread raises after the stop reaches the caller.
+  and its segments are dropped. A scan that calls `segment_contig` after the reference is closed
+  gets a `ValueError`, which is dropped;
+- every thread catches every exception it meets. Before the stop it passes it to the loci side,
+  as above; after the stop it drops it. So nothing reaches Python's handler of exceptions in
+  threads, which would print a traceback after "Stopped; nothing was written."
 
-`compare()` closes the reference when it ends. A scan already started has read its contig's bases
-by then, since `segment_contig` reads them all when it is called.
+The finder's threads are daemon threads, `threading.Thread(daemon=True)`, so that a scan in
+progress does not keep Python from exiting for up to 12 minutes after Ctrl-C. A
+`ThreadPoolExecutor`, which `.claude/skills/coding/python.md` asks for, makes threads that Python
+waits for when it exits: with one worker sleeping 3 s, the program ended 3.03 s after its last
+line (measured by the spec's reviewer on 20 October 2026). The finder departs from `python.md`
+for that reason, and keeps its rule that a thread's exception reaches the caller.
 
 ## The Python interface
 
@@ -219,7 +235,9 @@ by then, since `segment_contig` reads them all when it is called.
 
 `CompareConfig` holds the options of `doc/spec.md` §3 that change the rows, with the defaults of
 the stages. `strata` is a path to a BED, or `PVC_STRATA` for `--strata pvc`. A sentinel is used
-because a path named `pvc` is a BED (`doc/spec.md` §3). `compare()` checks the ploidies, the
+because a path named `pvc` is a BED (`doc/spec.md` §3). The command line tells them apart by the
+text of the option, before it makes a path of it: `Path("./pvc")` equals `Path("pvc")`, so the
+`./` that `doc/spec.md` §3 asks of a file named `pvc` is lost once it is a path. `compare()` checks the ploidies, the
 phasing cap, the span limit and the chain distance when the stream starts, and raises
 `ValueError` naming the field. The command line checks the same values first, and turns a wrong
 one into its own message (see "The `compare` command").
@@ -299,10 +317,10 @@ The first line is the column names, with no `#` (**Open 3**): `chrom`, `start`, 
 | `records_a`, `records_b` | `records_a`, `records_b` | a whole number |
 | `invalid_reason_a`, `invalid_reason_b` | `invalid_reason_a`, `invalid_reason_b` | the enum's value |
 
-One row, worked. The reference at 1-based 100–110 is `CATATATATAT`, and an AT repeat at
+One row, worked. The reference at 1-based 100–111 is `CATATATATATG`, and an AT repeat at
 101–110 is an STR segment. File A has `100 CAT C 0/1`, QUAL 29.5 and GQ 45, for HG002, and file B
-no record there. The span of the deletion reaches the end of the repeat, which the record touches,
-so the locus is 100–110, 0-based (99, 110). With `--strata pvc`:
+no record there. The deletion of AT slides right as far as 109–110, where the G at 111 stops it, so its span is
+100–110; the record touches the repeat, and the locus is 100–110, 0-based (99, 110). With `--strata pvc`:
 
 ```
 chrom  start  end  kind  stratum  str_regions     sample_a  sample_b  outcome    alleles                  genotype_a  genotype_b  possible_a  possible_b  quality_a  quality_b  gq_a  gq_b  records_a  records_b  invalid_reason_a  invalid_reason_b
@@ -389,9 +407,11 @@ not a number at all is argparse's error, with its usage line and status 2, as in
   cut, an index that could not be read;
 - one line when the finder starts a contig, since on GRCh38 a contig takes up to 10 to 12 minutes
   (forecast for chr1) and nothing else would show: "chr1: finding STR regions in 248,956,422 bases.";
-- one line when the last row of a contig has been written: "chr20: 31,204 loci compared, 1,880
-  skipped by --regions, 2,113 rows written; 4 min 12 s since the start." The clause about
-  `--regions` is there only when it is given.
+- one line when the loci of a contig are done: "chr20: 31,204 loci compared, 1,880 skipped by
+  --regions; 4 min 12 s since the start." The clause about `--regions` is there only when it is
+  given. It counts loci, not rows, since `compare()` does not know which rows the command writes.
+  It comes when the first locus of a later contig is built, or when the rows end, since only then
+  does `build_loci` give a contig's last locus; so it can come after the next contig's scan.
 
 These are logged by `compare()` at INFO through its logger. The command line sends INFO and above
 to stderr, the message alone on each line. A Python user sees them only by setting up logging.
@@ -473,28 +493,36 @@ test reads from the log:
 
 - with neither file indexed, the contigs with records, and not contig 4, which has none;
 - with `--regions` naming contig 3, contig 3 alone, whatever the indexes;
-- with both indexed and an index that lists contig 4 but no record on it, contig 4 is scanned and
-  its rows are the same as without the index;
+- with both indexed and an index that lists contig 4 but no record on it, the rows are the same
+  as without the index (whether contig 4's scan starts before the rows end depends on the
+  threads, so it is not checked);
 - with an index that leaves out contig 2, contig 2 is still scanned and the rows are the same;
-- with a record whose span ends on the last base of contig 1 and the next on contig 3, the rows
-  are the stages' rows. This is the case of the GENERIC segment at the first base of the next
-  contig.
+- with a record past the last STR region of contig 1, one whose span ends on contig 1's last
+  base, and the next record on contig 3, the rows are the stages' rows. These are the cases of
+  the GENERIC segment at the first base of the next contig.
 
 **The index reader**, on a `.tbi` and a `.csi` written by bcftools 1.24 (`bcftools index -t` and
 `bcftools index -c` on a small VCF in `tests/data/`, with the commands in its `README.md`): the
 contigs listed are a literal list. An index cut short gives the warning of "Which contigs are
 scanned", with its text.
 
-**Errors through the threads, at `compare()`:** a VCF out of order on contig 3, a byte of the
-FASTA that is not a letter on contig 2, and a `--strata pvc` with an untyped `--str-regions`
+**Errors through the threads, at `compare()`:** a VCF out of order on contig 3; a byte of the
+FASTA that is not a letter on contig 2; and a `--strata pvc` with an untyped `--str-regions`
 region. With threads and with `finder_threads=0`, the same exception type and message, after the
-same rows. A FASTA error on a contig no record is on is not raised.
+same rows. For the FASTA error to come from the finder and not from the reader, contig 2 is
+longer than 65,536 bases and the bad byte more than 65,536 bases from any record of it, since
+the reader's `FastaWindow` reads at least that many bases at a time (`BLOCK_BASES`). A FASTA error
+on a contig no record is on is not raised, with an index that lists that contig, so that its scan
+is planned and may run.
 
 **The bound and the stop, at `compare()`.** With the finder held on a `threading.Event` the test
 sets, through a stand-in for `segment_contig` that the test puts in `pvc_eval.compare`, a reader
-of a file of 50,000 records has taken at most 10,000 plus one batch of them from `parse_vcf`.
-After the first row is taken and the iterator closed: within 5 seconds, no reader thread is alive,
-and no scan starts after the close, by the INFO lines and by the stand-in's count of calls.
+of a file of 50,000 records has taken from `parse_vcf` at least 10,000 of them and at most 10,000
+plus two batches: the buffer full, one batch the loci side took before it waited on the finder,
+since `build_loci` takes the first record of each file before it reads a segment, and one the
+reader holds while it waits. After the first row is taken and the iterator closed, the test sets
+the event: within 5 seconds no reader thread is alive, and the stand-in has been called no more
+times than before the close.
 
 **The table, at `format_table_row`**, on `OutcomeRow` values built in the test, each field as a
 literal: 1-based coordinates; `None` as `.`; a `MISSING` haplotype; a haploid genotype; an empty
@@ -577,7 +605,7 @@ merged second resolves a one-line conflict. Recommended: make them `StrEnum`, in
 own on this branch. Meanwhile they stay `Enum`.
 
 **Open 5. The messages.** On stderr: the warnings of the stages; a line when a contig's scan
-starts; a line when a contig's rows are written; an input error with its message, no traceback
+starts; a line when a contig's loci are done; an input error with its message, no traceback
 and status 1; Ctrl-C with status 130. Their text is in "The `compare` command". Without the line
 when a scan starts, a run on chr1 shows nothing for 10 to 12 minutes. Recommended: as written.
 Other texts change "The `compare` command" and its tests.
