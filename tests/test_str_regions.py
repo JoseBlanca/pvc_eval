@@ -5,9 +5,12 @@ import gzip
 import os
 import re
 import subprocess
+import sys
 import sysconfig
-from collections.abc import Sequence
+import threading
+from collections.abc import Iterator, Sequence
 from pathlib import Path
+from types import CodeType
 
 import pytest
 
@@ -19,6 +22,7 @@ from pvc_eval.segments import (
     RegionType,
     StrFinderParameters,
     read_str_regions,
+    segment_contig,
     write_str_regions,
 )
 
@@ -329,6 +333,103 @@ def test_write_str_regions_refuses_threads_before_reading_the_regions(
             num_threads,  # ty: ignore[invalid-argument-type]  # the wrong types are the test
         )
     assert not Path(f"{output}.tmp").exists()
+
+
+# ---- Which thread segments which contig -------------------------------------------------
+
+# A tool id of sys.monitoring that nothing else in the tests takes: 0, 1, 2 and 5 are those
+# of a debugger, of coverage, of a profiler and of an optimizer.
+_MONITORING_TOOL = 4
+
+# The long contig of _LONG_CONTIGS and then twelve short ones, so that with two threads the
+# short ones would all be started long before the long one returns, were nothing to hold
+# them back.
+_LONG_THEN_SHORT = {"long": _LONG_CONTIGS["long"]} | {
+    f"short{index}": _FOUR_A for index in range(12)
+}
+
+# A call of segment_contig as sys.monitoring sees it: "start" when it starts or "return"
+# when it hands back its segments, the contig, and the ident of the thread it runs on.
+type _SegmentEvent = tuple[str, str, int]
+
+
+@pytest.fixture
+def segment_contig_events() -> Iterator[list[_SegmentEvent]]:
+    """The calls of segment_contig while the test runs, in the order they were recorded.
+
+    sys.monitoring calls back on each start and return of segment_contig's code, and replaces
+    nothing, so the code that runs is pvc_eval's own. The tool id and the events are freed
+    when the test ends, failed or not.
+    """
+    # list.append from several threads keeps every item on the free-threaded build, and an
+    # event is appended after it happened, so a start recorded before a return happened
+    # before it.
+    events: list[_SegmentEvent] = []
+
+    def record_start(code: CodeType, offset: int) -> None:  # noqa: ARG001 -- the signature sys.monitoring calls
+        # Frame 1 is segment_contig's, which called back.
+        events.append(("start", sys._getframe(1).f_locals["contig"], threading.get_ident()))
+
+    def record_return(code: CodeType, offset: int, value: object) -> None:  # noqa: ARG001 -- the signature sys.monitoring calls
+        events.append(("return", sys._getframe(1).f_locals["contig"], threading.get_ident()))
+
+    monitoring = sys.monitoring
+    monitoring.use_tool_id(_MONITORING_TOOL, "pvc_eval tests")
+    try:
+        monitoring.register_callback(_MONITORING_TOOL, monitoring.events.PY_START, record_start)
+        monitoring.register_callback(_MONITORING_TOOL, monitoring.events.PY_RETURN, record_return)
+        monitoring.set_local_events(
+            _MONITORING_TOOL,
+            segment_contig.__code__,
+            monitoring.events.PY_START | monitoring.events.PY_RETURN,
+        )
+        yield events
+    finally:
+        monitoring.set_local_events(
+            _MONITORING_TOOL, segment_contig.__code__, monitoring.events.NO_EVENTS
+        )
+        monitoring.free_tool_id(_MONITORING_TOOL)
+
+
+def _run_long_then_short(tmp_path: Path, capsys: pytest.CaptureFixture[str], threads: str) -> None:
+    status, stderr, _ = _run_threads(tmp_path, capsys, _LONG_THEN_SHORT, threads)
+    assert (status, stderr) == (0, "")
+
+
+def test_one_thread_segments_every_contig_in_the_calling_thread(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], segment_contig_events: list[_SegmentEvent]
+) -> None:
+    _run_long_then_short(tmp_path, capsys, "1")
+    # A start and a return for each of the 13 contigs.
+    assert len(segment_contig_events) == 26
+    assert {thread for _, _, thread in segment_contig_events} == {threading.get_ident()}
+
+
+def test_two_threads_segment_no_contig_in_the_calling_thread_and_use_at_most_two(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], segment_contig_events: list[_SegmentEvent]
+) -> None:
+    _run_long_then_short(tmp_path, capsys, "2")
+    assert len(segment_contig_events) == 26
+    threads = {thread for _, _, thread in segment_contig_events}
+    assert threading.get_ident() not in threads
+    assert len(threads) <= 2
+
+
+def test_two_threads_start_at_most_five_contigs_before_the_first_returns(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], segment_contig_events: list[_SegmentEvent]
+) -> None:
+    # Executor.map with buffersize=2 * 2 submits the long contig and three short ones, and one
+    # more when the first result is asked for, before it waits on the long one: 1 + 2N. With
+    # no buffersize, the twelve short ones all finish on the second thread while the long one
+    # runs.
+    _run_long_then_short(tmp_path, capsys, "2")
+    long_return = next(
+        index
+        for index, (kind, contig, _) in enumerate(segment_contig_events)
+        if (kind, contig) == ("return", "long")
+    )
+    started = [contig for kind, contig, _ in segment_contig_events[:long_return] if kind == "start"]
+    assert len(started) <= 5, started
 
 
 # ---- --regions --------------------------------------------------------------------------
