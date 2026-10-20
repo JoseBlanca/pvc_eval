@@ -1,6 +1,6 @@
 # Plan: compare
 
-*Status: approved by the owner on 20 October 2026, who asked for it to be written and run. It
+*Status: approved by the owner on 20 October 2026, who asked for it to be written and run; under way. It
 builds `doc/specs/compare.md`, approved by the owner on 20 October 2026, on the branch `compare`
 in `.claude/worktrees/compare`; the owner's handoff named the branch `compare`, so it is not
 `plan/compare`. The work report is `doc/reports/compare.md`.*
