@@ -111,8 +111,9 @@ def write_table(
 
     Raises PvcEvalInputError, before any row is read, naming --output or --summary, for a
     path that is a directory or whose `.tmp` cannot be made, and for a summary that is the
-    same file as output, however either is spelled, or one is the other's `.tmp`; and, naming the option, for an error of the system while a file is
-    written or renamed, a full disk among them.
+    same file as output, however either is spelled, or one is the other's `.tmp`; and,
+    naming the option, for an error of the system while a file is written or renamed, a
+    full disk among them.
     """
     if summary is not None:
         _check_distinct_paths(output, summary)
