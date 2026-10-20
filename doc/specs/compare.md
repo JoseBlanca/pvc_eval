@@ -436,8 +436,8 @@ not a number at all is argparse's error, with its usage line and status 2, as in
 - one line when the loci of a contig are done: "chr20: 31,204 loci compared, 1,880 skipped by
   --regions; 4 min 12 s since the start." The clause about `--regions` is there only when it is
   given. It counts loci, not rows, since `compare()` does not know which rows the command writes.
-  On a contig `--regions` does not name, the loci skipped are built without STR regions, so they
-  can be more than with the STR regions: two records in one repeat count as two.
+  A contig `--regions` does not name has no locus and no line, since its records are not read
+  (`doc/specs/regions_read.md`).
   It comes when the first locus of a later contig is built, or when the rows end, since only then
   does `build_loci` give a contig's last locus; so it can come after the next contig's scan. A
   contig with records and no locus, whose records all have no ALT, gets no line: nothing was
