@@ -252,27 +252,116 @@ def test_a_generated_file_against_its_respelling_gives_the_outcomes_of_itself(
 # --- GIAB's HG002, §9.4 ---
 
 
+_HG002_WHAT = "GIAB's HG002 v4.2.1 benchmark VCF for GRCh38"
+_GRCH38_WHAT = "GRCh38, the analysis set, with its .fai beside it"
+
+
 def _get_giab_paths() -> tuple[Path, Path]:
-    """The HG002 VCF and GRCh38 the environment names; the test is skipped, naming each
-    variable that is unset or names no file, without them."""
+    """The HG002 VCF and GRCh38 the environment names. The test is skipped, naming each
+    variable unset, when one is (§9.4); it fails, saying what is wrong, when a variable names
+    a path that is not there, is a directory, or has no .fai beside it where one is needed."""
     needed = (
-        ("PVC_EVAL_HG002_VCF", "GIAB's HG002 v4.2.1 benchmark VCF for GRCh38", ""),
-        ("PVC_EVAL_GRCH38", "GRCh38, the analysis set, with its .fai beside it", ".fai"),
+        ("PVC_EVAL_HG002_VCF", _HG002_WHAT, None),
+        ("PVC_EVAL_GRCH38", _GRCH38_WHAT, ".fai"),
     )
     paths = []
-    missing = []
+    unset = []
+    wrong = []
     for variable, what, beside in needed:
         value = os.environ.get(variable)
         if not value:
-            missing.append(f"{variable} is not set; it names {what}")
-        elif not (Path(value).is_file() and Path(f"{value}{beside}").is_file()):
-            missing.append(f"{variable} names {value}, which is not there; it names {what}")
+            unset.append(f"{variable} is not set; it names {what}")
+            continue
+        path = Path(value)
+        problem = _find_path_problem(path, beside)
+        if problem is None:
+            paths.append(path)
         else:
-            paths.append(Path(value))
-    if missing:
-        pytest.skip(". ".join(missing))
+            wrong.append(f"{variable} names {path}, which {problem}")
+    if wrong:
+        pytest.fail(". ".join(wrong))
+    if unset:
+        pytest.skip(". ".join(unset))
     hg002_vcf, grch38 = paths
     return hg002_vcf, grch38
+
+
+def _find_path_problem(path: Path, beside: str | None) -> str | None:
+    """What is wrong with a path the environment names, or None."""
+    if path.is_dir():
+        return "is a directory"
+    if not path.is_file():
+        return "is not there"
+    if beside is not None and not Path(f"{path}{beside}").is_file():
+        return f"has no {beside} beside it"
+    return None
+
+
+def test_the_giab_test_is_skipped_naming_each_variable_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PVC_EVAL_HG002_VCF", raising=False)
+    monkeypatch.delenv("PVC_EVAL_GRCH38", raising=False)
+
+    message = (
+        f"PVC_EVAL_HG002_VCF is not set; it names {_HG002_WHAT}."
+        f" PVC_EVAL_GRCH38 is not set; it names {_GRCH38_WHAT}"
+    )
+    with pytest.raises(pytest.skip.Exception, match=f"^{re.escape(message)}$"):
+        _get_giab_paths()
+
+
+@pytest.mark.parametrize(
+    ("vcf_name", "fasta_name", "problems"),
+    [
+        pytest.param(
+            "absent.vcf.gz",
+            "ref.fa",
+            ["PVC_EVAL_HG002_VCF names {vcf}, which is not there"],
+            id="absent",
+        ),
+        pytest.param(
+            "directory",
+            "ref.fa",
+            ["PVC_EVAL_HG002_VCF names {vcf}, which is a directory"],
+            id="directory",
+        ),
+        pytest.param(
+            "a.vcf.gz",
+            "no_fai.fa",
+            ["PVC_EVAL_GRCH38 names {fasta}, which has no .fai beside it"],
+            id="no-fai",
+        ),
+        pytest.param(
+            "directory",
+            "absent.fa",
+            [
+                "PVC_EVAL_HG002_VCF names {vcf}, which is a directory",
+                "PVC_EVAL_GRCH38 names {fasta}, which is not there",
+            ],
+            id="both",
+        ),
+    ],
+)
+def test_the_giab_test_fails_naming_what_is_wrong_with_a_path_set(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    vcf_name: str,
+    fasta_name: str,
+    problems: list[str],
+) -> None:
+    (tmp_path / "directory").mkdir()
+    (tmp_path / "a.vcf.gz").write_bytes(b"")
+    (tmp_path / "ref.fa").write_text(">chr20\nA\n", encoding="utf-8")
+    (tmp_path / "ref.fa.fai").write_text("chr20\t1\t7\t1\t2\n", encoding="utf-8")
+    (tmp_path / "no_fai.fa").write_text(">chr20\nA\n", encoding="utf-8")
+    vcf, fasta = tmp_path / vcf_name, tmp_path / fasta_name
+    monkeypatch.setenv("PVC_EVAL_HG002_VCF", str(vcf))
+    monkeypatch.setenv("PVC_EVAL_GRCH38", str(fasta))
+
+    message = ". ".join(problems).format(vcf=vcf, fasta=fasta)
+    with pytest.raises(pytest.fail.Exception, match=f"^{re.escape(message)}$"):
+        _get_giab_paths()
 
 
 def _write_contig_vcf(vcf: Path, contig: str, output: Path) -> int:
