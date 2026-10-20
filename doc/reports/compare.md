@@ -110,3 +110,35 @@ reason, the strata's order, UTF-8, the line ends and the gzip level. Not taken: 
 **Left open, outside this plan:** in `pvc_eval str-regions`, a full disk after the BED is opened
 still ends in a traceback, as before this plan. Its opener now gives messages for every error of
 the system, but its writing loop does not.
+
+## Milestone 3: the `pvc_eval compare` command
+
+Built in b800ce0 and fixed in 171a415 to 14d5fed. pvc_eval now runs end to end from the command
+line, still with no thread. On 14d5fed `tests/test_cli_compare.py` runs 48 tests, the plan asked
+for at least 10; the five checks gave "1157 passed, 4 skipped", run by the implementer on a copy
+of the commit, since milestone 5's work in progress was in the shared tree at the time.
+
+- A real Ctrl-C, sent to the installed command at 60 moments of a run, gave status 130, "Stopped;
+  nothing was written." and no `.tmp` every time but one. That one came in the first milliseconds,
+  while the options were parsed, and gave a traceback; it is fixed.
+- `--help` was read by a first reader standing for a bioinformatician new to pvc_eval. It could
+  run a comparison but not read its result. The help now lists the outcomes and the kinds, says
+  what the STR finder does, which contigs it scans and how long it takes, and how to write the STR
+  regions once with `pvc_eval str-regions` for later runs.
+
+**Fixed, a blocker, confirmed by a second look:** no test checked that `--sample-map` or
+`--str-regions` reached `compare()`. Dropping either gave a wrong table with every test passing.
+
+Also fixed: every line printed twice when a Python caller had set up logging; no test that a
+defect of pvc_eval keeps its traceback; the ploidy options tested at one bound only; `--summary`
+and `--all-rows` without their default in `--help`.
+
+**Moved to milestone 5:** `compare()` annotated as returning a generator, which the command closes,
+so that its `cast` goes; and a test that the command runs `compare()` with two finder threads,
+which cannot be told apart from none before the threads exist.
+
+**Not taken:** a Ctrl-C between the renames of the summary and of the table, a window of
+microseconds, prints "nothing was written" after the summary was replaced. The spec admits the
+window, and the message is not worth a third state. **Left open, a nit:** no test checks that the
+command puts the level of pvc_eval's logger back after a run; the second look found that removing
+it still passes.

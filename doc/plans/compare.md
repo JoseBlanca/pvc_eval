@@ -120,7 +120,7 @@ and "The Python interface" for these four names.
 **What could go wrong.** The 1-based coordinates of `start` and of the STR regions, and the
 QUAL's shortest form: a test of each at a boundary, a QUAL of 50.0, 29.53, 1e-05 and 1e+20.
 
-- [ ] 3. The `pvc_eval compare` command
+- [x] 3. The `pvc_eval compare` command
 
 **What it gives.** pvc_eval runs end to end from the command line: two VCFs in, a table and a
 summary out, with no thread yet.
