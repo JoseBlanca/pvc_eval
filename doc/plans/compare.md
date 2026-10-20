@@ -50,7 +50,7 @@ literals.
 Milestones 1, 2 and 4 need nothing of each other. They are run one after another all the same,
 since their subagents would commit to the one branch of this worktree at once.
 
-- [ ] 1. `compare()` with no thread
+- [x] 1. `compare()` with no thread
 
 **What it gives.** `compare()` and `CompareConfig`, which a Python user can call: the rows of two
 VCFs, from the stages run one after another in the caller's thread.
