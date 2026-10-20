@@ -348,6 +348,44 @@ def test_a_star_on_another_contig_keeps_nothing(case_files: CaseFiles, tmp_path:
     ]
 
 
+# §2.3, the order: records of one POS keep the order of the input records they come from.
+@pytest.mark.parametrize(
+    ("case_lines", "expected"),
+    [
+        pytest.param(
+            ["2 A . ./.", "2 A T 0/1"], ["2 A . ./.", "2 A T 0|1:2"], id="no-alt-then-rewritten"
+        ),
+        pytest.param(
+            ["2 A T 0/1", "2 A <DEL> 0/1"],
+            ["2 A T 0|1:1", "2 A <DEL> 0/1"],
+            id="rewritten-then-symbolic",
+        ),
+        # The deletion of the A at 2 is written anchored on the G at 1, at the POS of the SNP.
+        pytest.param(
+            ["1 G T 0/1 0/0", "2 AC C 0/0 0/1"],
+            ["1 G T 0|1:1 0|0:1", "1 GA G 0|0:2 0|1:2"],
+            id="a-piece-anchored-before-its-pos",
+        ),
+    ],
+)
+def test_records_of_one_pos_keep_the_order_of_the_input(
+    case_files: CaseFiles, tmp_path: Path, case_lines: Sequence[str], expected: Sequence[str]
+) -> None:
+    assert _decompose(case_files, tmp_path, "GACGTA", case_lines) == expected
+
+
+def test_contigs_keep_the_order_of_the_input_and_not_of_their_names(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    reference = case_files.write_contigs({"chr2": "AAAAAAAA", "chr1": "CCGTCCCC"})
+    vcf = _write_vcf(tmp_path / "a.vcf", ["chr2 3 A G 0/1", "chr1 2 CGT C 0/1"], has_chrom=True)
+    respell_by_decomposing(vcf, reference, tmp_path / "b.vcf")
+    assert read_case_lines(tmp_path / "b.vcf", has_chrom=True) == [
+        "chr2 3 A G 0|1:1",
+        "chr1 2 CGT C 0|1:2",
+    ]
+
+
 def test_records_are_sorted_by_the_contigs_of_the_input(
     case_files: CaseFiles, tmp_path: Path
 ) -> None:
