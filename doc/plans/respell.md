@@ -143,7 +143,7 @@ what 1 builds.
   What could go wrong: the slide past the contig's end and the span cut by the span limit, which
   S7, S8 and the span condition of §4 guard.
 
-- [ ] **5. Spanning deletions**
+- [x] **5. Spanning deletions**
 
   What it gives: `respell_with_spanning_deletions`, checked the same way.
 

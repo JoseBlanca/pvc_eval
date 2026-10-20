@@ -166,3 +166,41 @@ For the owner, outside this plan: `parse_vcf` gives a record its span by sliding
 letters, while reconciliation builds each haplotype from the reference's bases. Where a REF
 matches the reference only by an IUPAC code, as above, the two can disagree. It is in pvc_eval's
 code, and only a reference with IUPAC codes under a deletion reaches it.
+
+## Milestone 5: spanning deletions
+
+Done in 249c68d and fixed in c41246d to 483cd2f. `respell_with_spanning_deletions` writes a `*`
+on each haplotype that carries a deletion over a record whose REF it deletes, where the spec's
+§5 says the phase between the two is known; GATK's unphased case is kept as read, as the owner
+decided for Open 1.
+
+- `uv run pytest tests/test_respell.py tests/test_respell_check.py` passes: T1 to T8 and the
+  trimmed-REF case `12 TC TA`, with their outputs as literals, through the oracle, bcftools and
+  §7.4; the cases of each of §5's three ways the phase is known and of what is kept; the oracle,
+  bcftools and §7.4 properties.
+- **GIAB HG002 v4.2.1, chr20: it passes, and writes no `*`.** chr20 has no phased genotype and
+  no `0/0` record, so none of §5's three ways holds; all 81,257 rows are *same genotype*. A
+  check of this re-spelling on real data needs a phased or a multi-sample VCF.
+- Over 5,000 random generated files, 782 got a `*` (15.6%), and every one passed the oracle and
+  §7.4. Two reviewers ran 28,000 and 7,500 more files, one with a generator of its own that
+  reached every branch of the rule, through `reconcile`, the oracle and a reading of §5 written
+  apart from the code: no difference.
+- The five checks pass on 483cd2f; the whole suite gives "1268 passed, 7 skipped".
+
+Changed in the spec: a new phase set is the n-th whole number, from 1, that no PS of the input
+uses (d9c746f), where it was numbered from the input's largest PS, which went past bcftools'
+32-bit limit and Python's 4,300 digits on inputs with a PS near either; and an all-REF record
+under deletions of two phase units gets no `*`, also where one of them shares its own phase set
+(bf23b11).
+
+The review found one blocker, found by two reviewers from two sides: condition 1 of §5, both
+genotypes phased in one phase set, had no test that could fail, and each of three broken
+versions wrote a `*` that changed reconciliation's result while the whole suite passed. Fixed
+with cases a broken rule fails, confirmed by the second look. Fixed besides: two unphased
+deletions counted as one phase unit; the share of files with a `*` met its bound only on the
+fixed files, and the generator now draws more deletions over other records; one function gives
+the phase unit of a genotype, which the merge will use; and the search for deletions runs once
+per record, not once per sample.
+
+For the owner, outside this plan: `parse_vcf` accepts `.` as one ALT among others (`G A,.`) and
+reads it as an allele.
