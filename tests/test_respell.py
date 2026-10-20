@@ -21,7 +21,7 @@ import pytest
 from hypothesis import given, settings
 from tests.conftest import CONTIG, FILEFORMAT_LINE, CaseFiles, make_chrom_line, write_case_vcf
 from tests.haplotype_oracle import check_same_haplotypes
-from tests.respell import _find_reach, _make_bgzf, respell_by_decomposing, respell_by_shifting
+from tests.respell import _find_reach, make_bgzf, respell_by_decomposing, respell_by_shifting
 from tests.respell_cases import (
     RespellingCase,
     read_case_lines,
@@ -31,6 +31,7 @@ from tests.respell_cases import (
 from tests.respell_generator import (
     RESPELLING_CASE_PARAMS,
     RESPELLING_PARAMS,
+    RESPELLINGS,
     GeneratedVcf,
     Respelling,
     check_generated_respellings,
@@ -63,20 +64,31 @@ def _write_vcf(
     )
 
 
-def _decompose(
+_DECOMPOSITION, _SHIFT = (
+    next(respelling for respelling in RESPELLINGS if respelling.name == name)
+    for name in ("decomposition", "shift")
+)
+
+
+def _respell(
     case_files: CaseFiles,
     directory: Path,
+    respelling: Respelling,
     bases: str,
     case_lines: Sequence[str],
     *,
     ploidy: int = 2,
 ) -> list[str]:
-    """The decomposition's records, of a case on a reference that is N but for bases from
-    position 1."""
-    reference = case_files.write_reference(1, bases)
-    vcf = _write_vcf(directory / "a.vcf", case_lines)
-    output = directory / "b.vcf"
-    respell_by_decomposing(vcf, reference, output, ploidy=ploidy)
+    """The records a re-spelling writes, with no seed, of a case on a reference that is N but
+    for bases from position 1."""
+    case = RespellingCase(
+        name="a case of this module",
+        bases=bases,
+        input_lines=tuple(case_lines),
+        output_lines=(),
+        ploidy=ploidy,
+    )
+    _, _, output = write_and_respell_case(case_files, directory, respelling, case)
     return read_case_lines(output)
 
 
@@ -115,7 +127,7 @@ def test_the_respelling_gives_the_case_of_the_spec(
 def test_decomposition_carries_the_phase_of_each_record(
     case_files: CaseFiles, tmp_path: Path, case_lines: Sequence[str], expected: Sequence[str]
 ) -> None:
-    assert _decompose(case_files, tmp_path, "GACGTA", case_lines) == expected
+    assert _respell(case_files, tmp_path, _DECOMPOSITION, "GACGTA", case_lines) == expected
 
 
 # §1, "may share a haplotype" and "touch", on reference GACGTA.
@@ -199,7 +211,10 @@ def test_records_whose_edits_touch_on_a_haplotype_they_may_share_are_kept(
     ploidy: int,
     expected: Sequence[str],
 ) -> None:
-    assert _decompose(case_files, tmp_path, "GACGTA", case_lines, ploidy=ploidy) == expected
+    assert (
+        _respell(case_files, tmp_path, _DECOMPOSITION, "GACGTA", case_lines, ploidy=ploidy)
+        == expected
+    )
 
 
 # §2.2: each record every re-spelling keeps, written as read beside a decomposed neighbour.
@@ -293,7 +308,7 @@ def test_a_record_every_respelling_keeps_is_written_as_read(
     case_lines: Sequence[str],
     expected: Sequence[str],
 ) -> None:
-    assert _decompose(case_files, tmp_path, bases, case_lines) == expected
+    assert _respell(case_files, tmp_path, _DECOMPOSITION, bases, case_lines) == expected
 
 
 # §2.2, last paragraph: a record at the contig's last base is decomposed as any other.
@@ -398,7 +413,7 @@ def test_a_star_on_another_contig_keeps_nothing(case_files: CaseFiles, tmp_path:
 def test_records_of_one_pos_keep_the_order_of_the_input(
     case_files: CaseFiles, tmp_path: Path, case_lines: Sequence[str], expected: Sequence[str]
 ) -> None:
-    assert _decompose(case_files, tmp_path, "GACGTA", case_lines) == expected
+    assert _respell(case_files, tmp_path, _DECOMPOSITION, "GACGTA", case_lines) == expected
 
 
 def test_contigs_keep_the_order_of_the_input_and_not_of_their_names(
@@ -461,7 +476,7 @@ def test_records_are_sorted_by_the_contigs_of_the_input(
 def test_a_new_phase_set_is_one_no_record_of_the_input_uses(
     case_files: CaseFiles, tmp_path: Path, case_lines: Sequence[str], expected: Sequence[str]
 ) -> None:
-    assert _decompose(case_files, tmp_path, "GACGTA", case_lines) == expected
+    assert _respell(case_files, tmp_path, _DECOMPOSITION, "GACGTA", case_lines) == expected
 
 
 @pytest.mark.parametrize(
@@ -596,7 +611,7 @@ def test_a_gzipped_input_gives_a_bgzipped_output_that_parse_vcf_reads(
 
 def test_bgzf_blocks_hold_at_most_65280_bytes_of_text_each() -> None:
     text = b"".join(b"chr1\t%d\t.\tA\tT\t.\t.\t.\n" % position for position in range(10_000))
-    compressed = _make_bgzf(text)
+    compressed = make_bgzf(text)
     block_text_sizes = []
     offset = 0
     while offset < len(compressed):
@@ -722,24 +737,6 @@ def test_decomposing_20000_snps_with_touching_records_takes_under_10_seconds(
 # --- The shift (§4) ---
 
 
-def _shift(
-    case_files: CaseFiles,
-    directory: Path,
-    bases: str,
-    case_lines: Sequence[str],
-    *,
-    seed: int | None = None,
-    ploidy: int = 2,
-) -> list[str]:
-    """The shift's records, of a case on a reference that is N but for bases from position
-    1."""
-    reference = case_files.write_reference(1, bases)
-    vcf = _write_vcf(directory / "a.vcf", case_lines)
-    output = directory / "b.vcf"
-    respell_by_shifting(vcf, reference, output, seed=seed, ploidy=ploidy)
-    return read_case_lines(output)
-
-
 # §2.2 for the shift, on reference GCAAAATCGTTTA: each record every re-spelling keeps, and
 # the records the shift keeps for itself, written as read beside the deletion of the T at 10,
 # which the shift moves to 12.
@@ -769,7 +766,7 @@ def test_a_record_the_shift_keeps_is_written_as_read(
     case_files: CaseFiles, tmp_path: Path, case_lines: Sequence[str]
 ) -> None:
     lines = [*case_lines, _SHIFTED_NEIGHBOUR]
-    assert _shift(case_files, tmp_path, "GCAAAATCGTTTA", lines) == [
+    assert _respell(case_files, tmp_path, _SHIFT, "GCAAAATCGTTTA", lines) == [
         *case_lines,
         _NEIGHBOUR_SHIFTED,
     ]
@@ -883,7 +880,7 @@ def test_the_shift_stops_short_of_an_edit_that_may_share_the_haplotype(
     ploidy: int,
     expected: Sequence[str],
 ) -> None:
-    assert _shift(case_files, tmp_path, "GCAAAAT", case_lines, ploidy=ploidy) == expected
+    assert _respell(case_files, tmp_path, _SHIFT, "GCAAAAT", case_lines, ploidy=ploidy) == expected
 
 
 # §4, the bases: parse_vcf accepts a REF A where the reference has M or N, and the shift
@@ -911,7 +908,7 @@ def test_the_shift_slides_only_over_plain_bases_of_the_reference(
     case_lines: Sequence[str],
     expected: Sequence[str],
 ) -> None:
-    assert _shift(case_files, tmp_path, bases, case_lines) == expected
+    assert _respell(case_files, tmp_path, _SHIFT, bases, case_lines) == expected
 
 
 def test_the_shift_stops_only_for_edits_of_its_own_contig(
@@ -1005,7 +1002,10 @@ def test_seeds_write_every_placement_from_one_to_the_largest_shift(
     for seed in range(40):
         directory = tmp_path / str(seed)
         directory.mkdir()
-        placements.update(_shift(case_files, directory, _SEEDED_BASES, _SEEDED_LINES, seed=seed))
+        reference = case_files.write_reference(1, _SEEDED_BASES)
+        vcf = _write_vcf(directory / "a.vcf", _SEEDED_LINES)
+        respell_by_shifting(vcf, reference, directory / "b.vcf", seed=seed)
+        placements.update(read_case_lines(directory / "b.vcf"))
     assert placements == {
         "3 AA A 0/1:.",
         "4 AA A 0/1:.",

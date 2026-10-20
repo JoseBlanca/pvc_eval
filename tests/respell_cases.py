@@ -1,8 +1,8 @@
 """The cases of doc/specs/respell.md in its notation, for the tests of the re-spelling
 program and of what checks it: RespellingCase, the D cases of §3 as DECOMPOSITION_CASES,
-the S cases of §4 as SHIFT_CASES, and the readers of a VCF file in the notation, read_case_lines, read_header and
-read_vcf_lines. A case's input is written with write_case_vcf of tests.conftest, with
-fills_ps=False.
+the S cases of §4 as SHIFT_CASES, and the readers of a VCF file in the notation,
+read_case_lines, read_header and read_vcf_lines. A case's input is written with
+write_case_vcf of tests.conftest, with fills_ps=False.
 
 A case is written as the spec writes it, one record a line, `POS REF ALT` and one sample
 field per sample, on chr1, and an output's records are read back the same way: a record

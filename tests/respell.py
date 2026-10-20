@@ -8,7 +8,8 @@ with its header, its order, its new phase sets and, for a gzipped input, BGZF.
 Positions are 0-based and half-open, as everywhere inside pvc_eval, but for POS, which is
 1-based where a name says so.
 
-Public: respell_by_decomposing (§3), respell_by_shifting (§4).
+Public: respell_by_decomposing (§3), respell_by_shifting (§4); make_bgzf, the BGZF writer,
+which the tests use to write a bgzipped input.
 """
 
 import bisect
@@ -142,13 +143,12 @@ def respell_by_decomposing(
     """
     _check_output(vcf, output)
     respelling_input = _parse_input(vcf, reference, ploidy)
-    touched_places = _find_touched_places(_make_contig_edits(respelling_input.input_records))
-    spanning_deletion_refs = _find_spanning_deletion_refs(respelling_input.input_records)
+    record_index = _make_record_index(respelling_input.input_records)
     output_records = []
     for input_record in respelling_input.input_records:
         vcf_record = input_record.vcf_record
         if vcf_record is None or _is_kept_whatever_is_written(
-            vcf_record, input_record.place, touched_places
+            vcf_record, input_record.place, record_index.touched_places
         ):
             output_records.append(_make_kept_record(input_record))
             continue
@@ -158,7 +158,7 @@ def respell_by_decomposing(
             *((piece.start, (piece.ref, piece.alt)) for piece in pieces),
         ]
         if not pieces or _is_near_spanning_deletion(
-            vcf_record.contig, written, spanning_deletion_refs, reference
+            vcf_record.contig, written, record_index.spanning_deletions, reference
         ):
             output_records.append(_make_kept_record(input_record))
             continue
@@ -197,9 +197,7 @@ def respell_by_shifting(
         raise ValueError(f"the seed must be None or a whole number, not {seed!r}")
     _check_output(vcf, output)
     respelling_input = _parse_input(vcf, reference, ploidy)
-    contig_edits = _make_contig_edits(respelling_input.input_records)
-    touched_places = _find_touched_places(contig_edits)
-    spanning_deletion_refs = _find_spanning_deletion_refs(respelling_input.input_records)
+    record_index = _make_record_index(respelling_input.input_records)
     draws = None if seed is None else random.Random(seed)
     output_records = []
     for input_record in respelling_input.input_records:
@@ -207,13 +205,15 @@ def respell_by_shifting(
         if (
             vcf_record is None
             or len(vcf_record.alleles) != 2
-            or _is_kept_whatever_is_written(vcf_record, input_record.place, touched_places)
+            or _is_kept_whatever_is_written(
+                vcf_record, input_record.place, record_index.touched_places
+            )
         ):
             output_records.append(_make_kept_record(input_record))
             continue
-        record_edits = _RecordEdits(input_record.place, vcf_record, _find_edits(vcf_record))
+        record_edits = record_index.by_place[input_record.place]
         largest_shift = _count_largest_shift(
-            record_edits, contig_edits[vcf_record.contig], reference
+            record_edits, record_index.by_contig[vcf_record.contig], reference
         )
         if largest_shift < 1:
             output_records.append(_make_kept_record(input_record))
@@ -222,34 +222,12 @@ def respell_by_shifting(
         start, alleles = _make_shifted_alleles(record_edits, shift, reference)
         written = [(vcf_record.start, vcf_record.alleles), (start, alleles)]
         if _is_near_spanning_deletion(
-            vcf_record.contig, written, spanning_deletion_refs, reference
+            vcf_record.contig, written, record_index.spanning_deletions, reference
         ):
             output_records.append(_make_kept_record(input_record))
             continue
         output_records.append(_make_shifted_record(input_record, start, alleles))
     _write_output(output, respelling_input, output_records)
-
-
-def _is_near_spanning_deletion(
-    contig: str,
-    written: Iterable[tuple[int, Sequence[str]]],
-    spanning_deletion_refs: Mapping[str, _SpanningDeletionRefs],
-    reference: IndexedFasta,
-) -> bool:
-    """§2.2: the reach of a record of contig, or of a record its rewriting would write,
-    touches the REF of a record with a `*` ALT.
-
-    written: the input record and those its rewriting would write, each as its start,
-        0-based, and its alleles, trimmed as parse_vcf trims them.
-    """
-    # A contig with no record with a `*` ALT has no REFs to touch.
-    refs = spanning_deletion_refs.get(contig)
-    if refs is None:
-        return False
-    return any(
-        _is_touching_any_ref(refs, _find_reach(reference, contig, start, alleles))
-        for start, alleles in written
-    )
 
 
 # --- Reading (§2.1) ---
@@ -411,6 +389,9 @@ def _is_haplotype_shareable(
 
 @dataclass(frozen=True, slots=True)
 class _RecordEdits:
+    """A record that parse_vcf gives, with an ALT, its place among the input's record lines,
+    from 1, and the edit of each of its VCF alleles, by index (_find_edits)."""
+
     place: int
     vcf_record: VcfRecord
     edits: tuple[_Edit | None, ...]
@@ -427,15 +408,44 @@ class _ContigEdits:
     furthest_ends: tuple[int, ...]
 
 
-def _make_contig_edits(input_records: Iterable[_InputRecord]) -> dict[str, _ContigEdits]:
-    """The records with an ALT that parse_vcf gives, with their edits, by contig."""
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _RecordIndex:
+    """The records of the input with an ALT, with their edits, found as the rows of §2.2 need
+    them: by place; by contig, sorted by REF; those with a `*` ALT, by contig; and the places
+    of the touched records."""
+
+    by_place: Mapping[int, _RecordEdits]
+    by_contig: Mapping[str, _ContigEdits]
+    spanning_deletions: Mapping[str, _ContigEdits]
+    touched_places: set[int]
+
+
+def _make_record_index(input_records: Iterable[_InputRecord]) -> _RecordIndex:
+    by_place = {
+        input_record.place: _RecordEdits(
+            input_record.place, input_record.vcf_record, _find_edits(input_record.vcf_record)
+        )
+        for input_record in input_records
+        if input_record.vcf_record is not None and len(input_record.vcf_record.alleles) > 1
+    }
+    by_contig = _make_contig_edits(by_place.values())
+    return _RecordIndex(
+        by_place=by_place,
+        by_contig=by_contig,
+        spanning_deletions=_make_contig_edits(
+            record_edits
+            for record_edits in by_place.values()
+            if _SPANNING_DELETION in record_edits.vcf_record.alleles[1:]
+        ),
+        touched_places=_find_touched_places(by_contig),
+    )
+
+
+def _make_contig_edits(record_edits: Iterable[_RecordEdits]) -> dict[str, _ContigEdits]:
+    """Records with their edits, by contig, sorted by REF start."""
     by_contig: dict[str, list[_RecordEdits]] = {}
-    for input_record in input_records:
-        vcf_record = input_record.vcf_record
-        if vcf_record is None or len(vcf_record.alleles) < 2:
-            continue
-        record_edits = _RecordEdits(input_record.place, vcf_record, _find_edits(vcf_record))
-        by_contig.setdefault(vcf_record.contig, []).append(record_edits)
+    for one_record_edits in record_edits:
+        by_contig.setdefault(one_record_edits.vcf_record.contig, []).append(one_record_edits)
     contig_edits = {}
     for contig, contig_records in by_contig.items():
         contig_records.sort(key=lambda record_edits: record_edits.vcf_record.start)
@@ -467,19 +477,19 @@ def _find_touched_places(contig_edits: Mapping[str, _ContigEdits]) -> set[int]:
     that touches an edit it carries at another record of the contig, the two VCF alleles
     being ones that may share a haplotype.
 
-    An edit lies within its record's REF, its ends included, so the records are swept by REF
-    and each is compared only with those before it whose REF reaches its start (§10).
+    An edit lies within its record's REF, its ends included, so each record is compared only
+    with those whose REF touches its own (§10).
     """
     touched_places: set[int] = set()
     for one_contig_edits in contig_edits.values():
-        reaching: list[_RecordEdits] = []
         for record_edits in one_contig_edits.record_edits:
-            start = record_edits.vcf_record.start
-            reaching = [earlier for earlier in reaching if earlier.vcf_record.end >= start]
-            for earlier in reaching:
-                if _is_carried_edit_touching(earlier, record_edits):
-                    touched_places.update((earlier.place, record_edits.place))
-            reaching.append(record_edits)
+            vcf_record = record_edits.vcf_record
+            ref = (vcf_record.start, vcf_record.end)
+            if any(
+                other.place != record_edits.place and _is_carried_edit_touching(record_edits, other)
+                for other in _find_ref_touching_records(one_contig_edits, ref)
+            ):
+                touched_places.add(record_edits.place)
     return touched_places
 
 
@@ -511,44 +521,32 @@ def _find_carried_edits(
             yield haplotype, edit
 
 
-@dataclass(frozen=True, slots=True)
-class _SpanningDeletionRefs:
-    """The REFs of a contig's records with a `*` ALT, as parse_vcf trims them: their starts,
-    sorted, and for each the furthest end of the REFs up to it."""
+def _is_near_spanning_deletion(
+    contig: str,
+    written: Iterable[tuple[int, Sequence[str]]],
+    spanning_deletions: Mapping[str, _ContigEdits],
+    reference: IndexedFasta,
+) -> bool:
+    """§2.2: the reach of a record of contig, or of a record its rewriting would write,
+    touches the REF of a record with a `*` ALT.
 
-    starts: tuple[int, ...]
-    furthest_ends: tuple[int, ...]
-
-
-def _make_spanning_deletion_refs(refs: Iterable[Span]) -> _SpanningDeletionRefs:
-    sorted_refs = sorted(refs)
-    furthest_ends = []
-    furthest_end = 0
-    for _, end in sorted_refs:
-        furthest_end = max(furthest_end, end)
-        furthest_ends.append(furthest_end)
-    return _SpanningDeletionRefs(tuple(start for start, _ in sorted_refs), tuple(furthest_ends))
-
-
-def _is_touching_any_ref(refs: _SpanningDeletionRefs, stretch: Span) -> bool:
-    """Whether a REF overlaps or lies next to stretch."""
-    stretch_start, stretch_end = stretch
-    num_starting_by_end = bisect.bisect_right(refs.starts, stretch_end)
-    return num_starting_by_end > 0 and refs.furthest_ends[num_starting_by_end - 1] >= stretch_start
-
-
-def _find_spanning_deletion_refs(
-    input_records: Iterable[_InputRecord],
-) -> dict[str, _SpanningDeletionRefs]:
-    """The REFs of the records with a `*` ALT, by contig; a contig with none is absent."""
-    refs: dict[str, list[Span]] = {}
-    for input_record in input_records:
-        vcf_record = input_record.vcf_record
-        if vcf_record is not None and _SPANNING_DELETION in vcf_record.alleles[1:]:
-            refs.setdefault(vcf_record.contig, []).append((vcf_record.start, vcf_record.end))
-    return {
-        contig: _make_spanning_deletion_refs(contig_refs) for contig, contig_refs in refs.items()
-    }
+    written: the input record and those its rewriting would write, each as its start,
+        0-based, and its alleles, trimmed as parse_vcf trims them.
+    """
+    # A contig with no record with a `*` ALT has no REFs to touch.
+    contig_spanning_deletions = spanning_deletions.get(contig)
+    if contig_spanning_deletions is None:
+        return False
+    return any(
+        next(
+            _find_ref_touching_records(
+                contig_spanning_deletions, _find_reach(reference, contig, start, alleles)
+            ),
+            None,
+        )
+        is not None
+        for start, alleles in written
+    )
 
 
 # --- The reach (§1) ---
@@ -864,7 +862,7 @@ def _write_output(
     )
     lines = [*header_lines, *(record.line for record in sorted_records)]
     data = "".join(f"{line}\n" for line in lines).encode("utf-8")
-    output.write_bytes(_make_bgzf(data) if respelling_input.is_gzipped else data)
+    output.write_bytes(make_bgzf(data) if respelling_input.is_gzipped else data)
 
 
 def _make_contig_ranks(contigs: Iterable[str]) -> Mapping[str, int]:
@@ -922,7 +920,7 @@ _BGZF_HEADER = struct.Struct("<4BI2BH2BHH")
 _BGZF_FOOTER = struct.Struct("<II")  # CRC32 and ISIZE, the size of the text
 
 
-def _make_bgzf(data: bytes) -> bytes:
+def make_bgzf(data: bytes) -> bytes:
     """data as a BGZF file."""
     blocks = []
     for offset in range(0, len(data), _BGZF_TEXT_BYTES):

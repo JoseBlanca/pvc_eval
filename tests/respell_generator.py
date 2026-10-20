@@ -8,7 +8,8 @@ pytest.mark.parametrize. write_and_respell writes a generated file and its re-sp
 write_and_respell_case a case and its re-spelling, write_planted_repeats the BED of a
 generated file's planted repeats, and is_rewritten says whether a re-spelling rewrote a
 record. check_generated_respellings runs a property over generated files,
-check_rewritten_share checks that it rewrote enough of them, and check_respelled_haplotypes is the oracle's check of a re-spelling as its tests make it.
+check_rewritten_share checks that it rewrote enough of them, and check_respelled_haplotypes
+is the oracle's check of a re-spelling as its tests make it.
 
 hypothesis draws the ends of a range of whole numbers more often than its middle, so a rare
 kind is drawn at the top of its range, where it is also not what shrinking leads to. One run

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 from tests.conftest import CaseFiles, write_case_vcf
-from tests.respell import _make_bgzf, respell_by_decomposing, respell_by_shifting
+from tests.respell import make_bgzf, respell_by_decomposing, respell_by_shifting
 from tests.respell_cases import RespellingCase, read_case_lines
 from tests.respell_check import _make_checked_rows, check_respelling_outcomes
 from tests.respell_generator import (
@@ -384,7 +384,7 @@ def test_the_records_of_one_contig_are_written_with_the_header(tmp_path: Path) -
     }
     lines = [*header, *records["chr2"], *records["chr20"], *records["chr21"]]
     vcf = tmp_path / "all.vcf.gz"
-    vcf.write_bytes(_make_bgzf("".join(f"{line}\n" for line in lines).encode()))
+    vcf.write_bytes(make_bgzf("".join(f"{line}\n" for line in lines).encode()))
     output = tmp_path / "chr20.vcf"
 
     num_records = _write_contig_vcf(vcf, "chr20", output)
