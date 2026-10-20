@@ -61,7 +61,7 @@ def check_respelling_outcomes(
 
     Raises AssertionError at the first row that fails, with the locus, the sample, the
     outcome and what each file gives, ten genotypes at most of each; ValueError when the
-    headers name different samples; and what the stages raise.
+    headers name different samples, or none; and what the stages raise.
     """
     for _ in _make_checked_rows(vcf_a, vcf_b, reference, str_regions=str_regions, ploidy=ploidy):
         pass
@@ -104,7 +104,8 @@ def _make_checked_rows(
 
 
 def _make_sample_pairs(vcf_a: Path, vcf_b: Path) -> tuple[SamplePair, ...]:
-    """Each sample paired with itself; ValueError when the headers name different samples."""
+    """Each sample paired with itself; ValueError when the headers name different samples,
+    or none."""
     samples = parse_vcf_samples(vcf_a)
     samples_b = parse_vcf_samples(vcf_b)
     if samples_b != samples:
@@ -112,6 +113,8 @@ def _make_sample_pairs(vcf_a: Path, vcf_b: Path) -> tuple[SamplePair, ...]:
             f"{vcf_a} has the samples {', '.join(samples)}"
             f" and {vcf_b} the samples {', '.join(samples_b)}"
         )
+    if not samples:
+        raise ValueError(f"{vcf_a} names no sample, so the check would compare nothing")
     return tuple(
         SamplePair(name_a=name, index_a=index, name_b=name, index_b=index)
         for index, name in enumerate(samples)

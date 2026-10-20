@@ -208,6 +208,17 @@ def test_files_of_different_samples_raise(case_files: CaseFiles, tmp_path: Path)
         check_respelling_outcomes(vcf, output, reference)
 
 
+def test_files_with_no_samples_raise(case_files: CaseFiles, tmp_path: Path) -> None:
+    # With no sample there would be no row, and any file B would pass.
+    reference = case_files.write_reference(1, "GACGT")
+    vcf = write_case_vcf(tmp_path / "a.vcf", ["2 A T"], num_samples=0)
+    output = write_case_vcf(tmp_path / "b.vcf", ["2 A C"], num_samples=0)
+
+    message = f"{vcf} names no sample, so the check would compare nothing"
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        check_respelling_outcomes(vcf, output, reference)
+
+
 # The property counts, in a Counter of its own test, the files whose re-spelling rewrote a
 # record, as the oracle's property does in tests/test_respell.py, and asserts the share once
 # hypothesis has run every example (§9.2: at least one file in ten).
@@ -264,21 +275,22 @@ def _get_giab_paths() -> tuple[Path, Path]:
     return hg002_vcf, grch38
 
 
-def _write_contig_vcf(vcf: Path, contig: str, output: Path) -> Path:
-    """The header of a bgzipped VCF and the records of one contig, written plain to output.
-    The VCF is sorted, so its reading stops where the contig's records end."""
+def _write_contig_vcf(vcf: Path, contig: str, output: Path) -> int:
+    """Write the header of a bgzipped VCF and the records of one contig, plain, to output,
+    and return how many records it wrote. The VCF is sorted, so its reading stops where the
+    contig's records end."""
     prefix = f"{contig}\t".encode()
+    num_records = 0
     with gzip.open(vcf, "rb") as lines, output.open("wb") as written:
-        is_in_contig = False
         for line in lines:
             if line.startswith(prefix):
-                is_in_contig = True
-            elif is_in_contig:
+                num_records += 1
+            elif num_records:
                 break
             elif not line.startswith(b"#"):
                 continue
             written.write(line)
-    return output
+    return num_records
 
 
 @pytest.mark.slow
@@ -287,7 +299,9 @@ def test_each_respelling_of_hg002_chr20_passes_the_oracle_and_gives_the_outcomes
     tmp_path: Path, respelling: Respelling
 ) -> None:
     hg002_vcf, grch38 = _get_giab_paths()
-    vcf = _write_contig_vcf(hg002_vcf, _GIAB_CONTIG, tmp_path / "a.vcf")
+    vcf = tmp_path / "a.vcf"
+    num_records = _write_contig_vcf(hg002_vcf, _GIAB_CONTIG, vcf)
+    assert num_records > 0, f"{hg002_vcf} has no record on {_GIAB_CONTIG}"
     contig_bed = tmp_path / "contig.bed"
     with IndexedFasta(grch38) as reference:
         length = reference.get_length(_GIAB_CONTIG)
