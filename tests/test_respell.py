@@ -1524,6 +1524,31 @@ def test_the_merged_gt_is_phased_as_the_heterozygous_records_of_the_run(
             ["2 ACG TCC 1/1:.", "8 GTA TTC 1/1:."],
             id="two-runs",
         ),
+        # §6: a record with a symbolic allele, which parse_vcf does not read, does not stop
+        # the merge of the run whose stretch its REF lies next to.
+        pytest.param(
+            ["1 G <DEL> 0/1", "2 A T 1/1", "4 G C 0/1"],
+            ["1 G <DEL> 0/1", "2 ACG TCG,TCC 1/2:."],
+            id="a-symbolic-record-next-to-the-stretch",
+        ),
+        # The deletion of 3-5 and the SNP at 3 overlap on the two haplotypes of phase set 5,
+        # and the SNP at 7 joins the stretch 2-5 with one position between.
+        pytest.param(
+            ["2 ACGT A 1|0:5", "3 C G 0|1:5", "7 C T 1/1"],
+            ["2 ACGTAC AAT,AGGTAT 1|2:5"],
+            id="a-deletion-a-snp-under-it-and-a-snp-after",
+        ),
+        pytest.param(
+            ["2 ACGT A 1|0:5", "3 C G 0|1:5"],
+            ["2 ACGT A,AGGT 1|2:5"],
+            id="a-deletion-and-a-snp-under-it",
+        ),
+        # The edit of the first record, a SNP at 6, comes after that of the second, at 3.
+        pytest.param(
+            ["2 ACGTA A,ACGTT 2/2", "3 C G 1/1"],
+            ["2 ACGTA AGGTT 1/1:."],
+            id="edits-out-of-the-order-of-their-records",
+        ),
     ],
 )
 def test_neighbouring_records_make_a_run(
@@ -1534,11 +1559,12 @@ def test_neighbouring_records_make_a_run(
 
 def test_a_run_on_two_contigs_is_not_merged(case_files: CaseFiles, tmp_path: Path) -> None:
     reference = case_files.write_contigs({"chr1": "GACGTA", "chr2": "GACGTA"})
-    vcf = _write_vcf(tmp_path / "a.vcf", ["chr1 6 A T 1/1", "chr2 1 G C 1/1"], has_chrom=True)
+    # On one contig, the SNPs at 1 and 2 would be a run.
+    vcf = _write_vcf(tmp_path / "a.vcf", ["chr1 1 G C 1/1", "chr2 2 A T 1/1"], has_chrom=True)
     respell_by_merging(vcf, reference, tmp_path / "b.vcf")
     assert read_case_lines(tmp_path / "b.vcf", has_chrom=True) == [
-        "chr1 6 A T 1/1",
-        "chr2 1 G C 1/1",
+        "chr1 1 G C 1/1",
+        "chr2 2 A T 1/1",
     ]
 
 
