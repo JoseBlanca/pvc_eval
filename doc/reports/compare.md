@@ -65,7 +65,7 @@ reverted if you disagree:
 
 - In one of 15 full runs of the suite, a reviewer saw one test fail without keeping its name,
   while it was itself breaking the code on purpose in another copy; the session's 23 runs since
-  have had no failure. If it comes back, it is most likely one of the tests of the threads.
+  have had no failure.
 - `pvc_eval str-regions` still ends with a traceback on a full disk; since milestone 3 its Ctrl-C
   ends with "Stopped; nothing was written." and status 130, like `compare`'s.
 - Two tests that could be stronger: that the command puts its logger's level back, and that an
