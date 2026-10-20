@@ -15,6 +15,7 @@ PVC_STRATA, the value of CompareConfig.strata for --strata pvc; DEFAULT_FINDER_T
 
 import functools
 import logging
+import sys
 import threading
 import time
 from collections.abc import Callable, Container, Generator, Iterable, Iterator, Sequence
@@ -428,7 +429,13 @@ def _stop_threads(
     buffers down, which wakes a reader waiting for room; each reader then ends within one
     batch of parse_vcf's work. No thread is waited for: a stop run by the garbage collector,
     in a thread that may hold threading's lock on its list of threads, would wait forever
-    for a thread that ends, which takes that lock (doc/specs/compare.md, "The stop")."""
+    for a thread that ends, which takes that lock (doc/specs/compare.md, "The stop").
+
+    While Python is exiting it does nothing: shutting a buffer down takes a lock, which
+    Python then refuses, and every thread of compare() is a daemon thread, which ends with
+    the process."""
+    if sys.is_finalizing():
+        return
     stop.set()
     if finder is not None:
         finder.stop()
