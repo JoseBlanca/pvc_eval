@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from hypothesis import given, settings
 from tests.conftest import CaseFiles, write_case_vcf
-from tests.respell import respell_by_decomposing
+from tests.respell import _make_bgzf, respell_by_decomposing
 from tests.respell_cases import RespellingCase
 from tests.respell_check import _make_checked_rows, check_respelling_outcomes
 from tests.respell_generator import (
@@ -380,6 +380,29 @@ def _write_contig_vcf(vcf: Path, contig: str, output: Path) -> int:
                 continue
             written.write(line)
     return num_records
+
+
+def test_the_records_of_one_contig_are_written_with_the_header(tmp_path: Path) -> None:
+    header = [
+        "##fileformat=VCFv4.2",
+        "##contig=<ID=chr2>",
+        "##contig=<ID=chr20>",
+        "##contig=<ID=chr21>",
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tHG002",
+    ]
+    records = {
+        contig: [f"{contig}\t{pos}\t.\tA\tT\t.\t.\t.\tGT\t0/1" for pos in (5, 9)]
+        for contig in ("chr2", "chr20", "chr21")
+    }
+    lines = [*header, *records["chr2"], *records["chr20"], *records["chr21"]]
+    vcf = tmp_path / "all.vcf.gz"
+    vcf.write_bytes(_make_bgzf("".join(f"{line}\n" for line in lines).encode()))
+    output = tmp_path / "chr20.vcf"
+
+    num_records = _write_contig_vcf(vcf, "chr20", output)
+
+    assert num_records == 2
+    assert output.read_text(encoding="utf-8").splitlines() == [*header, *records["chr20"]]
 
 
 @pytest.mark.slow
