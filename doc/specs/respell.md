@@ -124,16 +124,19 @@ is the record's. `parse_vcf` compares PS values as text, so a PS of the input th
 number cannot equal one.
 
 **The header** is the input's, line by line, with one line added before `#CHROM` when the output
-writes a rewritten record and the header has no `##FORMAT=<ID=PS,` line:
+writes a rewritten record, the header has no `##FORMAT=<ID=PS,` line, and every PS of the input
+is a whole number:
 
 ```
 ##FORMAT=<ID=PS,Number=1,Type=Integer,Description="Phase set">
 ```
 
-with `Type=String` in place of `Type=Integer` when some PS of the input is not a whole number.
-bcftools 1.24 warns about a FORMAT field the header lacks, even with only `.` as its values, and
-stops with exit status 8 on a PS such as `chr1_5` declared `Integer` (both seen by the review on
-20 October 2026).
+bcftools 1.24 warns about a FORMAT field the header lacks, even with only `.` as its values. It
+stops with exit status 8 on a PS such as `chr1_5` declared `Integer`, and warns that PS "should be
+declared as Type=Integer" when it is declared `String`. An input with such a PS and no PS line
+already gets the warning that PS is not in its header, so the output adds no line and gets the
+same warnings (seen by the reviews on 20 October 2026, which found that the first version of this
+rule, a `Type=String` line, broke the rule of validity below).
 
 **The order.** Records are sorted by contig, in the input's order of contigs, and by POS, which is
 what `parse_vcf` asks (`doc/spec.md` §5.2). Records of one POS keep the order of the input

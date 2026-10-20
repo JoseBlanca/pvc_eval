@@ -55,8 +55,8 @@ what 1 builds.
   - `uv run pytest tests/test_respell.py -v` runs D1 to D12, each a test named for its case with
     its output lines as literals; for each row of §2.2, a test that the record is written as read
     beside a decomposed neighbour, and for a REF mismatch `PvcEvalInputError` with no output file;
-    the PS header line added once, and not when present, as `Type=String` when an input PS is
-    not a whole number; a bgzipped input giving a bgzipped output that `parse_vcf` reads; and an
+    the PS header line added once, and not when present or when an input PS is not a whole
+    number; a bgzipped input giving a bgzipped output that `parse_vcf` reads; and an
     output named as its input raising `ValueError`. At least 25 tests, all pass. On 9dbec00 the
     file does not exist (pytest exits with 4).
   - `uv run pytest tests/test_reconcile_property.py -v` passes, with file B made by
