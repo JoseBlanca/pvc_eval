@@ -136,9 +136,12 @@ def respell_by_decomposing(
             output_records.append(_keep(input_record))
             continue
         pieces = _make_pieces(vcf_record, reference)
-        refs = spanning_deletion_refs.get(input_record.contig)
-        if not pieces or (
-            refs is not None and _is_any_piece_near(vcf_record, pieces, refs, reference)
+        written = [
+            (vcf_record.start, vcf_record.alleles),
+            *((piece.start, (piece.ref, piece.alt)) for piece in pieces),
+        ]
+        if not pieces or _is_near_spanning_deletion(
+            vcf_record.contig, written, spanning_deletion_refs, reference
         ):
             output_records.append(_keep(input_record))
             continue
@@ -150,20 +153,26 @@ def respell_by_decomposing(
     _write_output(output, respelling_input, output_records)
 
 
-def _is_any_piece_near(
-    vcf_record: VcfRecord,
-    pieces: Iterable[_Piece],
-    refs: _SpanningDeletionRefs,
+def _is_near_spanning_deletion(
+    contig: str,
+    written: Iterable[tuple[int, Sequence[str]]],
+    spanning_deletion_refs: Mapping[str, _SpanningDeletionRefs],
     reference: IndexedFasta,
 ) -> bool:
-    """§2.2: the reach of the record, or of a piece it would be written as, touches the REF
-    of a record with a `*` ALT."""
-    contig = vcf_record.contig
-    reaches = [
-        _find_reach(reference, contig, vcf_record.start, vcf_record.alleles),
-        *(_find_reach(reference, contig, piece.start, (piece.ref, piece.alt)) for piece in pieces),
-    ]
-    return any(refs.is_touching(reach) for reach in reaches)
+    """§2.2: the reach of a record of contig, or of a record its rewriting would write,
+    touches the REF of a record with a `*` ALT.
+
+    written: the input record and those its rewriting would write, each as its start,
+        0-based, and its alleles, trimmed as parse_vcf trims them.
+    """
+    # A contig with no record with a `*` ALT has no REFs to touch.
+    refs = spanning_deletion_refs.get(contig)
+    if refs is None:
+        return False
+    return any(
+        refs.is_touching(_find_reach(reference, contig, start, alleles))
+        for start, alleles in written
+    )
 
 
 # --- Reading (§2.1) ---
