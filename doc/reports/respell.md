@@ -13,18 +13,19 @@ sample, the same result as the file against itself:
 - on GIAB's HG002 v4.2.1 benchmark VCF, chr20, against each re-spelling: all 81,257 rows *same
   genotype*, for all four (8 min 30 s together on the owner's Mac, 21 October 2026);
 - on 5,000 random small files with repeats for each re-spelling, run outside the suite at 630d173:
-  no failure of the oracle, none of the §7.4 check, and no window over the cap.
+  no failure of the oracle described below, and none of the §7.4 check.
 
 What exists now, all under `tests/`, nothing in `src/`:
 
 - `tests/respell.py`: four functions, each writing a VCF again in other words. Each record is
   decomposed into one-base and one-indel records; indels are shifted right within their repeats;
   `*` is added under deletions where the phase is known; and neighbouring records are merged
-  into complex ones. Each keeps as they are the records whose edits touch another record's on a
-  haplotype they may share, as you decided on 19 October 2026.
-- `tests/haplotype_oracle.py`: an oracle that rebuilds each sample's haplotypes from two files
-  without pvc_eval's reconciliation, loci or evaluation, and compares them window by window and
-  over the pairs of windows a phase set joins.
+  into complex ones. Each leaves unchanged a record whose edits overlap, or lie next to, the edits
+  of another record that may be on the same haplotype, as you decided on 19 October 2026.
+- `tests/haplotype_oracle.py`: an oracle, a check written apart from pvc_eval's reconciliation,
+  loci and evaluation, that rebuilds each sample's haplotypes from two files and compares them.
+  Where the phase is not known it compares the possible genotypes over each stretch where the two
+  files' records chain together, and over each two such stretches one phase set joins.
 - `tests/respell_check.py`: the check of §7.4 through `parse_vcf`, `build_loci`,
   `reconcile_loci` and `make_outcome_rows`.
 - A generator of small files with repeats, and the properties over it: the oracle, bcftools and
@@ -37,15 +38,17 @@ pytest (1,777 passed, 9 skipped), but `ty check` finds one call that no longer f
 calls it without one. The test is skipped unless the GIAB variables are set, so pytest does not
 see it.
 
-- **I merge `main` into `respell` first, add the argument, run the five checks and the GIAB
-  tests, and hand the branch back to you for its merge into `main` (recommended).** One small
-  commit on this branch, and `main` receives a branch that passes as it stands.
+- **I merge `main` into `respell` first, add the argument, run the five checks (`uv sync
+  --locked`, `ruff format --check`, `ruff check`, `ty check`, `pytest`) and the GIAB tests, and
+  hand the branch back to you for its merge into `main` (recommended).** A merge commit and one
+  small commit on this branch, about 15 minutes with the GIAB tests; `main` then receives a
+  branch that passes as it stands.
 - **You merge `respell` into `main` as it is**, and the call is fixed on `main` afterwards. `main`
   then has a failing `ty check` until the fix.
 
-With `compare()` on `main`, the plan's one deferred change can now be made: the check of §7.4
-taking its rows from `compare()` and the reference as a path. It changes no result, and is a
-plan of one milestone once you want it.
+With `compare()`, the function that runs a whole comparison, now on `main`, the plan's one
+deferred change can be made: the check of §7.4 taking its rows from `compare()`. It changes no
+result. I can write it as a plan of one milestone when you want it; nothing waits on it.
 
 Five things you may want to know, each in the milestone that found it:
 
@@ -61,10 +64,11 @@ Five things you may want to know, each in the milestone that found it:
   `#CHROM` line, not as damaged (milestone 1).
 - The spec changed during the work in a dozen places. Each change is a commit of its own, made
   before the code, and none changes what pvc_eval gives. The largest: a new phase set is the n-th
-  whole number the input does not use; the shift and the merge work only over plain bases; and a
-  merge that would make a heterozygous sample homozygous is not made, since it would remove a
-  block and turn a sample over the phasing cap in file A into one under it in file B
-  (milestones 4 to 6).
+  whole number the input does not use; the shift and the merge work only where the reference is
+  A, C, G or T; and a merge that would make a heterozygous sample homozygous is not made. Such a
+  merge would remove a block, a set of genotypes whose phase pvc_eval has to try both ways, so a
+  sample over the phasing cap (4,096 phase assignments) in file A would fall under it in file B
+  and the two would get different outcomes (milestones 4 to 6).
 - How sure this is: every case of the spec is a test with its output as a literal; in every
   milestone, reviewers broke the code on purpose, and each break they made now fails a test;
   four defects that changed a haplotype or a block were found by review and fixed, each with the
