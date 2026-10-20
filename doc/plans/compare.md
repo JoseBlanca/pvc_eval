@@ -188,6 +188,9 @@ it runs", the bounds of "What is held".
   other and the nine steps', with both files indexed, one, and neither, with `--regions`, and with
   `--str-regions`; an index that lists contig 4 with no record on it, and one that leaves out
   contig 2, give the same rows.
+- The contigs an index lists that the reference lacks are dropped from the planned contigs here,
+  since the reader of milestone 4 does not take the reference: an index that lists a contig the
+  FASTA lacks gives the same rows as no index, and no traceback.
 - The errors of milestone 1 again with 1, 2 and 4 threads: the same type and message after the same
   rows. A FASTA error on a contig no record is on, listed by an index, is not raised.
 - The bound and the stop, as the spec's "The bound and the stop" gives them: between 10,000 and
