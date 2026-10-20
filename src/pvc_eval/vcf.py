@@ -6,9 +6,10 @@ Positions are 0-based and half-open inside pvc_eval. The 1-based POS of a VCF li
 converted here, and nowhere else.
 
 Public: parse_vcf, which gives the VCF records; parse_vcf_samples, which gives the sample
-names; trim_alt, which trims an ALT against its REF; VcfRecord and VcfGenotype; Span, the type of VcfRecord.span; the sentinels a
-genotype is compared with, MISSING, MALFORMED_GT and OTHER_PLOIDY_GT; and the constants
-DEFAULT_PLOIDY, DEFAULT_SPAN_LIMIT and DEFAULT_NUM_THREADS.
+names; trim_alt, which trims an ALT against its REF; VcfRecord and VcfGenotype; Span, the
+type of VcfRecord.span; the sentinels a genotype is compared with, MISSING, MALFORMED_GT
+and OTHER_PLOIDY_GT; and the constants DEFAULT_PLOIDY, DEFAULT_SPAN_LIMIT and
+DEFAULT_NUM_THREADS.
 """
 
 import functools
