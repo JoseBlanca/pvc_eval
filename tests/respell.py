@@ -1264,7 +1264,8 @@ def _make_merged_record(
     reference: IndexedFasta,
 ) -> _OutputRecord | None:
     """The record a run of mergeable records is written as (§6), or None when it is not
-    merged: another record with an ALT touches its stretch; a sample's heterozygous VCF
+    merged: another record with an ALT touches its stretch; the reference over it is not
+    all A, C, G or T; a sample's heterozygous VCF
     genotypes in it are in two phase units; a sample with a heterozygous VCF genotype in it
     would get one merged allele on every haplotype; every haplotype gets REF; or the reach
     of the record touches the REF of a record with a `*` ALT (§2.2)."""
@@ -1281,6 +1282,10 @@ def _make_merged_record(
         return None
     stretch_start, stretch_end = stretch
     ref = reference.get_bases(contig, stretch_start, stretch_end)
+    if not _PLAIN_BASES.issuperset(ref):
+        # The bases between the records' REFs, which parse_vcf never checked, may hold a
+        # letter that is no IUPAC code, which it rejects in a REF.
+        return None
     alt_indices: dict[str, int] = {}
     sample_fields = []
     for sample in range(len(run[0].vcf_record.genotypes)):

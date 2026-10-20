@@ -336,6 +336,13 @@ MERGE_CASES = (
         input_lines=("2 ACA A 1|0:5", "4 ACA A 0|1:5"),
         output_lines=("2 ACA A 1|0:5", "4 ACA A 0|1:5"),
     ),
+    # §6: the merged REF would hold the X at 3, which parse_vcf rejects in a REF.
+    RespellingCase(
+        name="a-letter-that-is-no-base-between-the-records-kept",
+        bases="GAXGTA",
+        input_lines=("2 A T 1/1", "4 G C 0/1"),
+        output_lines=("2 A T 1/1", "4 G C 0/1"),
+    ),
 )
 
 
