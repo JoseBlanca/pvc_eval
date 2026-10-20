@@ -608,8 +608,8 @@ comparing each only with those whose REF touches it, since an edit lies within i
 shift's crossed stretch and the records near a `*` are found the same way over the reach. The
 square of the records, which `_make_decomposed_lines` took, would take some 40 minutes on a
 chromosome: 0.96 s for 2,000 records in the reconciliation work (`doc/reports/reconciliation.md`,
-19 October 2026, on the owner's Mac), times 2,500. The oracle holds the records of one contig of
-both files, as the re-spellings hold a file, and works on one window, or one pair, at a time,
+19 October 2026, on the owner's Mac), times 2,500. The oracle holds the records of both files, as
+the re-spellings hold a file, and works on one window, or one pair, at a time,
 with at most `ORACLE_CAP` assignments for each sample; on 20,000 one-sample records it took
 34 MB and 3.3 s (the review of milestone 2). Neither is measured yet;
 the real VCF's run is the first measurement.
