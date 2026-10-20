@@ -186,11 +186,27 @@ P4 on step 7, P5 and P6 on the peak memory.
   segments, and `_find_segments` returns before the first segment, which frees the candidates
   while the segments are written. tracemalloc on 4 Mb: the peak from 20.9 to 19.6 MB. Code:
   simpler, 4 lines fewer.
+
+  *Kept, commit 1bc0f7b.* `_make_segments` yields, and `_find_segments` returns its iterator
+  once steps 1 to 7 are done, so `segment_contig` still resolves the whole contig when called.
+  10 lines added, 13 removed. tracemalloc's peak on 4 Mb: 21.8 MiB instead of 23.1. In
+  alternating pairs against P4, the peak RSS on 64 Mb is 362.0 MB instead of 393.6 MB, and on
+  16 Mb 128.1 instead of 128.5; the wall time is the same (median ratios 0.998 on 64 Mb, 3
+  pairs, and 0.996 on 16 Mb, 5 pairs). Outputs equal; 924 tests pass.
 - **P6. Intern the motifs.** Each STR segment and bundle member holds its own copy of its motif,
   of at most 5,460 distinct ones. With P5: the peak 17.9 MB on 4 Mb. Code: one line.
+
+  *Kept, commit ea99a42.* `_get_motif` returns `sys.intern` of the motif, with a comment that
+  says the table is bounded and safe for threads. In alternating pairs against P5, the peak RSS
+  on 64 Mb is 333.5 MB instead of 362.0 MB, and on 16 Mb 122.8 instead of 128.1, at the same
+  wall time (median ratios 0.997 and 1.001). Outputs equal; 924 tests pass.
 - **P7. Step 1: the Ruzzo–Tompa helpers inlined, with tuples on the stack.** Measured only after
   P1 to P3, when what is left of their calls is known; it makes the loop longer and harder to
   read, so it needs a 20% gain.
+
+  *Not run: P2 left nothing for it.* After P2, `_make_open_subsequence` is called 63,126 times
+  on 4 Mb (4.6 million before), and it no longer appears among the 14 functions with the most
+  own time in cProfile.
 
 **Not tried.** A list comprehension in place of a generator in the loop of step 1 (under the
 noise on 1 Mb); a cache of `_is_primitive_motif` (about 2% of 4 Mb); running the six periods of
