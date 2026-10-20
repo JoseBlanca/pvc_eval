@@ -378,7 +378,8 @@ made. An error of the input in a contig stops the run with its message and remov
 with one thread, and it is the same error one thread would give, since earlier contigs' errors
 come first in order; but it is raised only once the contigs before it are written, and after the
 contigs already started have finished. Ctrl-C stops the run once the contigs being segmented at
-that moment have finished, which on a human chromosome can take a minute, and removes the `.tmp`;
+that moment have finished, which on human chromosomes can take minutes (chr1 alone takes about
+75 s on one thread, longer when threads compete), and removes the `.tmp`;
 a second Ctrl-C removes it at once, and the process then waits for those threads before it exits.
 
 The BED:
@@ -474,8 +475,14 @@ periods 2 to 6, copy floors (10, 5, 4, 3, 3, 3), bundle distance 50, `max_str_le
 - `--threads`: a FASTA of more contigs than threads, with STR regions in each, whose first contig
   is by far the longest, so that the others finish before it, gives the same BED with 1 thread and
   with 3; `--threads 0` and `257` stop with exit status 1 and a message naming `--threads`, and a
-  word gets argparse's usage message and status 2; an error of the input in a contig that is not
-  the first, under several threads, stops the run with its message and leaves no `.tmp`.
+  word gets argparse's usage message and status 2, and 1 and 256 are accepted; an error of the
+  input in a contig that is not the first, under several threads, stops the run with its message
+  and leaves no `.tmp`, the message of the first faulty contig in the `.fai` even when a later
+  one fails first; with `--threads 1` every contig is segmented in the calling thread, and with
+  N > 1 none is, on at most N threads; and with N threads at most 1 + 2N contigs have started
+  when the first is written (`Executor.map` submits one more before it waits on the first).
+  These are watched with `sys.monitoring` on `segment_contig`, which records its calls and
+  replaces nothing.
 
 **The whole-port check.** pvc_eval's STR regions and `pvc dev type-regions`'s are identical on the
 same sequences: same contig, start, end and type, and the same motif for each STR segment. During
