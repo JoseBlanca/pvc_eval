@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 from hypothesis import given, settings
 from tests.conftest import CaseFiles, write_case_vcf
+from tests.respell import respell_by_decomposing
 from tests.respell_cases import RespellingCase
 from tests.respell_check import _make_checked_rows, check_respelling_outcomes
 from tests.respell_generator import (
@@ -82,6 +83,28 @@ def test_an_insertion_shifted_through_an_at_repeat_is_one_str_locus_of_same_geno
     assert [(row.start, row.end, row.kind, row.str_regions, row.outcome) for row in rows] == [
         (24, 46, Kind.STR, (at_repeat,), Outcome.SAME_GENOTYPE)
     ]
+
+
+def test_a_file_whose_own_result_is_too_complex_passes_against_its_decomposition(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    # 14 unphased heterozygous SNPs two bases apart, one locus at the chain distance of 10:
+    # 2^13 phase assignments in A, over the cap of 4096, and as many in B, where each SNP is
+    # rewritten in a phase set of its own. Too complex comes from A's own result.
+    bases = "GACGTACGTACGTACGTACGTACGTACGTAC"
+    reference = case_files.write_reference(1, bases)
+    lines = [
+        f"{pos} {bases[pos - 1]} {'T' if bases[pos - 1] != 'T' else 'A'} 0/1"
+        for pos in range(2, 30, 2)
+    ]
+    vcf = _write_vcf(tmp_path / "a.vcf", lines)
+    output = tmp_path / "b.vcf"
+    respell_by_decomposing(vcf, reference, output)
+
+    rows = list(_make_checked_rows(vcf, output, reference, str_regions=None, ploidy=2))
+
+    assert is_rewritten(vcf, output)
+    assert [(row.start, row.end, row.outcome) for row in rows] == [(1, 28, Outcome.TOO_COMPLEX)]
 
 
 # Files B that are not re-spellings of A, on reference GACGTACGTACGTACGT from position 1:
