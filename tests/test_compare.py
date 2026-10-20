@@ -136,13 +136,26 @@ def _get_scan_messages(caplog: pytest.LogCaptureFixture) -> list[str]:
 def _make_config(option: str, directory: Path) -> CompareConfig:
     if option == "no option":
         return CompareConfig()
-    if option == "--regions chr3":
-        return CompareConfig(regions=write_bed(directory / "regions.bed", ["chr3 0 300"]))
+    if option.startswith("--regions "):
+        bed_line = option.removeprefix("--regions ")
+        return CompareConfig(regions=write_bed(directory / "regions.bed", [bed_line]))
     if option == "--strata pvc":
         return CompareConfig(strata=PVC_STRATA)
     if option == "--strata BED":
         strata_lines = ["chr1 0 120 low", "chr3 0 300 all", "chr3 100 130 repeat"]
         return CompareConfig(strata=write_bed(directory / "strata.bed", strata_lines))
+    if option == "--ploidy-a 1":
+        return CompareConfig(ploidy_a=1)
+    if option == "--ploidy-b 1":
+        return CompareConfig(ploidy_b=1)
+    if option == "--chain-distance 200 --phasing-cap 1":
+        return CompareConfig(chain_distance=200, phasing_cap=1)
+    if option == "--span-limit 1":
+        return CompareConfig(span_limit=1)
+    if option == "--sample-map":
+        sample_map = directory / "pairs.tsv"
+        sample_map.write_text("HG003\tHG004\n", encoding="utf-8")
+        return CompareConfig(sample_map=sample_map)
     assert option == "--str-regions"
     # Not the finder's: chr2's region left out, and one at chr3 241-260 the finder does
     # not find, which widens the locus of chr3:250.
@@ -168,16 +181,55 @@ def test_four_contig_case_str_regions_are_segment_contigs(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize(
-    "option", ["no option", "--regions chr3", "--strata pvc", "--strata BED", "--str-regions"]
+    ("option", "num_rows"),
+    [
+        ("no option", 7),
+        ("--regions chr3 0 300", 2),
+        # Within chr3, whose loci are 101-120 and 250 (1-based): none, the first, the second.
+        ("--regions chr3 0 50", 0),
+        ("--regions chr3 100 101", 1),
+        ("--regions chr3 200 300", 1),
+        # A region that ends where the locus 101-120 starts shares no position with it.
+        ("--regions chr3 90 100", 0),
+        ("--strata pvc", 7),
+        ("--strata BED", 7),
+        ("--str-regions", 7),
+        # File A's genotypes are diploid, so each sample of A is invalid; then of B.
+        ("--ploidy-a 1", 7),
+        ("--ploidy-b 1", 7),
+        # chr1's three records chain into one locus, whose two unphased heterozygous
+        # records give HG002 of file A two possible genotypes, over the cap; chr2 and chr3
+        # chain too.
+        ("--chain-distance 200 --phasing-cap 1", 3),
+        ("--span-limit 1", 7),
+        ("--sample-map", 7),
+    ],
 )
-def test_rows_are_those_of_the_nine_steps(tmp_path: Path, option: str) -> None:
-    case = write_compare_case(tmp_path)
+def test_rows_are_those_of_the_nine_steps(tmp_path: Path, option: str, num_rows: int) -> None:
+    # chr1:115 AC>A deletes a C of CCC at 116-118, so its span reaches two bases past its
+    # REF, which --span-limit 1 cuts.
+    lines_a = [*LINES_A[:2], "chr1 115 AC A 20 0/1:30 0/0:30", *LINES_A[2:]]
+    case = write_compare_case(tmp_path, lines_a=lines_a)
     config = _make_config(option, tmp_path)
     run = _run_compare(case, config)
     expected = _run_nine_steps(case, config, _CONTIGS_WITH_RECORDS)
-    assert expected[0]
+    assert len(expected[0]) == num_rows
     assert expected[1] is None
     _check_same_run(run, expected)
+
+
+def test_record_on_last_contig_gives_rows_of_the_nine_steps(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # build_loci asks for a segment past chr4:51, the last contig of the .fai.
+    lines_a = [*LINES_A, "chr4 51 C A 30 0/1:30 0/0:30"]
+    case = write_compare_case(tmp_path, lines_a=lines_a)
+    caplog.set_level(logging.INFO, logger=_LOGGER)
+    run = _run_compare(case, CompareConfig())
+    expected = _run_nine_steps(case, CompareConfig(), [*_CONTIGS_WITH_RECORDS, "chr4"])
+    assert [(row.contig, row.start, row.end) for row in expected[0]][-1] == ("chr4", 50, 51)
+    _check_same_run(run, expected)
+    assert _get_scan_messages(caplog)[-1] == "chr4: finding STR regions in 200 bases."
 
 
 def test_locus_widened_by_str_region_gives_its_row(tmp_path: Path) -> None:
@@ -234,7 +286,7 @@ def test_regions_naming_contig_3_scan_contig_3_alone(
 ) -> None:
     case = write_compare_case(tmp_path)
     caplog.set_level(logging.INFO, logger=_LOGGER)
-    list(compare(case.a, case.b, case.reference, _make_config("--regions chr3", tmp_path)))
+    list(compare(case.a, case.b, case.reference, _make_config("--regions chr3 0 300", tmp_path)))
     assert _get_scan_messages(caplog) == ["chr3: finding STR regions in 300 bases."]
 
 
@@ -362,7 +414,7 @@ def test_setting_out_of_range_raises_value_error_naming_it(
             ],
         ),
         (
-            "--regions chr3",
+            "--regions chr3 0 300",
             [
                 "chr1: 0 loci compared, 3 skipped by --regions; ",
                 "chr2: 0 loci compared, 2 skipped by --regions; ",
