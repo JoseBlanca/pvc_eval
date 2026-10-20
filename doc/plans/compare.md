@@ -197,6 +197,9 @@ it runs", the bounds of "What is held".
   10,000 plus two batches taken from a held reader; after a close, no reader thread alive within
   5 seconds and no scan started after it. No exception reaches `threading.excepthook` in any of
   these tests: a test sets a hook that fails it.
+- From the review of milestone 3: `compare()` is annotated as returning a `Generator`, which the
+  command closes, and the `cast` in `pvc_eval.cli` goes; a test at `main()` shows the command runs
+  `compare()` with two finder threads.
 - Each test that waits on a thread has a timeout, so that a hang fails it.
 - `uv run pytest tests/test_compare_threads.py -q` runs at least 12 tests and all pass, in each of
   ten runs in a row, made by a shell loop; the five checks pass.
