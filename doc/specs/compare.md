@@ -383,16 +383,25 @@ The table and the summary are each written to a temporary file beside it, `<path
 renamed to their path when every row is written, as `pvc_eval str-regions` writes its BED. A run
 stopped by an error or by Ctrl-C removes the temporary files and leaves the table and the summary
 as they were before it. A run killed by a signal that Python cannot catch leaves the `.tmp` files
-behind.
+behind. The summary is renamed first and the table last, so the one case two renames cannot
+cover, a failure between them, leaves this run's summary beside the earlier table, and the table
+the user reads is never newer than the summary.
 
 A path ending in `.gz` is written compressed with gzip, at level 6, which `zcat`, pandas and R
 read. It is not bgzipped, so tabix cannot index it; the owner decided on 20 October 2026 that gzip
-is enough (point 3).
+is enough (point 3). Its header holds no file name, so `gunzip -N` does not restore the `.tmp`
+name. Lines end in `\n` on every system.
 
 Before the first row is read, `write_table` opens both temporary files. It raises
 `PvcEvalInputError` naming the option for a path that is a directory, whose directory does not
-exist, or that cannot be written there, with the messages `str-regions` gives for `--output`, and
-for a `--summary` equal to `--output`.
+exist, or that cannot be written there, with the messages `str-regions` gives for `--output`, one
+function writing them for both commands. It also raises `PvcEvalInputError` when `--summary` and
+`--output` are one file however they are spelled, letter case on a file system that ignores it
+included, or when one is the other's `.tmp`. Any other error of the system while a file is opened,
+written or renamed, a full disk, a read-only file system, a name too long, is a
+`PvcEvalInputError` too, naming the option and giving the system's words: "--output loci.tsv
+could not be written: No space left on device. Free some space, or give another --output, and
+run again." It is a fault of where the output goes, not of pvc_eval, so it gets no traceback.
 
 ## The `compare` command
 
