@@ -16,6 +16,7 @@ from hypothesis import strategies as st
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
 from pvc_eval.segments import (
+    _CANONICAL,
     GenomeSegment,
     RegionType,
     StrFinderParameters,
@@ -39,6 +40,7 @@ from pvc_eval.segments import (
     _make_grown_satellites,
     _make_repeat_runs,
     _make_runs,
+    _make_score_blocks,
     _Rejection,
     _Segment,
     _StrSegment,
@@ -181,8 +183,15 @@ def _find_like_pvc(bases: str, min_period: int, max_period: int) -> list[_Candid
 
 
 def _find_rt_subsequences(scores: list[int], block_length: int) -> list[tuple[int, int, int]]:
-    """pvc's rt_segments (tandem_repeat.rs 1208), the scores fed in blocks of block_length."""
-    blocks = [scores[i : i + block_length] for i in range(0, len(scores), block_length)]
+    """pvc's rt_segments (tandem_repeat.rs 1208), the scores fed in blocks of block_length,
+    each block as its runs of scores of one sign, (their sum, how many)."""
+    blocks = [
+        [
+            (sum(run), len(run))
+            for run in (list(group) for _, group in itertools.groupby(block, key=lambda s: s > 0))
+        ]
+        for block in (scores[i : i + block_length] for i in range(0, len(scores), block_length))
+    ]
     subsequences = [
         subsequence
         for found, _ in _find_maximal_scoring_subsequences(iter(blocks))
@@ -312,6 +321,30 @@ def test_ruzzo_tompa_matches_brute_force_on_pseudo_random() -> None:
         expected = _find_brute_subsequences(scores)
         assert _find_rt_subsequences(scores, block_length=max(length, 1)) == expected, scores
         assert _find_rt_subsequences(scores, block_length=7) == expected, scores
+
+
+# Scored by hand at the defaults, a match 2 and a mismatch -7; score k is the base at k + period.
+_SCORE_BLOCK_CASES = [
+    # A=A, then N against A, N against N twice, A against N, then A=A.
+    ("n_never_matches_n", "AANNNAA", 1, 100, [[(2, 1), (-28, 4), (2, 1)]]),
+    # Blocks of 4 bases end after base 3 and base 7: the scores 0 to 2, then 3 to 6.
+    ("a_block_end_cuts_a_run_of_matches", "AAAAAAAA", 1, 4, [[(6, 3)], [(8, 4)]]),
+    # c=C, a=A, C=c, then T against a.
+    ("lower_case_matches_upper_case", "CAcaCT", 2, 100, [[(6, 3), (-7, 1)]]),
+]
+
+
+@pytest.mark.parametrize(
+    ("bases", "period", "block_bases", "expected"),
+    [case[1:] for case in _SCORE_BLOCK_CASES],
+    ids=[case[0] for case in _SCORE_BLOCK_CASES],
+)
+def test_the_scores_come_as_runs_of_one_sign_cut_at_the_blocks(
+    bases: str, period: int, block_bases: int, expected: list[list[tuple[int, int]]]
+) -> None:
+    canonical = bases.encode("ascii").translate(_CANONICAL)
+    got = _make_score_blocks(canonical, period, StrFinderParameters(), block_bases)
+    assert list(got) == expected
 
 
 def test_finds_a_clean_perfect_tract() -> None:

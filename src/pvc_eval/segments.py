@@ -11,6 +11,7 @@ the BED of the `pvc_eval str-regions` command.
 """
 
 import bisect
+import re
 from collections import deque
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, fields
@@ -70,6 +71,16 @@ _BLOCK_BASES = 1 << 12
 _CANONICAL = bytes(
     ord(letter.upper()) if letter in "ACGTacgt" else 0 for letter in map(chr, range(256))
 )
+
+# Step 1 compares each canonical base with the one period before it by an XOR, which is 0
+# when the two bytes are equal. The earlier base is read through this table, which turns 0,
+# a byte that is not A, C, G or T, into 1, and the later one keeps its 0. Read the same way,
+# two N would both be 0 and match; read this way they never do, as doc/specs/str_finder.md
+# step 1 says, while two equal A, C, G or T still XOR to 0.
+_EARLIER_BASES = bytes([1, *range(1, 256)])
+
+# A run of matches: the bytes at which an earlier and a later base XOR to 0.
+_MATCH_RUN = re.compile(rb"\x00+")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -179,6 +190,9 @@ class _Candidate:
 # A maximal scoring subsequence: the indices of its scores, `[start, end)`, and its score.
 type _Subsequence = tuple[int, int, int]
 
+# A run of consecutive scores of one sign: their sum and how many they are.
+type _ScoreRun = tuple[int, int]
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _OpenSubsequence:
@@ -201,10 +215,11 @@ class _OpenSubsequence:
 
 
 def _find_maximal_scoring_subsequences(
-    score_blocks: Iterator[Iterable[int]],
+    score_blocks: Iterator[Iterable[_ScoreRun]],
 ) -> Iterator[tuple[list[_Subsequence], int | None]]:
     """Find the maximal scoring subsequences of a score sequence (Ruzzo and Tompa, 1999),
-    given as consecutive blocks. pvc tandem_repeat.rs, maximal_scoring_subsequences.
+    given as consecutive blocks of runs of scores of one sign, no score 0. pvc
+    tandem_repeat.rs, maximal_scoring_subsequences.
 
     A subsequence is (start, end, score), `[start, end)` the indices of its scores in the
     whole sequence, 0-based and half-open. After each block it yields the subsequences that
@@ -212,6 +227,11 @@ def _find_maximal_scoring_subsequences(
     subsequence still open starts, or the next index when none is open: every subsequence
     yielded later starts there or after. After the last block it yields the subsequences
     left and None.
+
+    A maximal scoring subsequence never starts or ends inside a run of scores of one sign,
+    since no score is 0: a run of positive scores is taken whole or not at all, and a run
+    of negative ones only lowers the total, which is lowest at the run's end. So the loop
+    takes one step per run, and gives what one step per score gives.
 
     pvc holds every open subsequence to the end. Here, when the running total falls to or
     under the total before every open subsequence, those are final and are yielded: a later
@@ -223,12 +243,14 @@ def _find_maximal_scoring_subsequences(
     index = 0
     for block in score_blocks:
         final: list[_Subsequence] = []
-        for score in block:
+        for score, length in block:
             before = total
             total += score
-            index += 1
+            index += length
             if score > 0:
-                open_one, staying = _make_open_subsequence(stack, before, total, index - 1)
+                open_one, staying = _make_open_subsequence(
+                    stack, before, total, index - length, index
+                )
                 del stack[staying:]
                 stack.append(open_one)
                 # It takes the total before of a subsequence it absorbs, and absorbs none lower.
@@ -243,16 +265,15 @@ def _find_maximal_scoring_subsequences(
 
 
 def _make_open_subsequence(
-    stack: Sequence[_OpenSubsequence], before: int, through: int, index: int
+    stack: Sequence[_OpenSubsequence], before: int, through: int, start: int, end: int
 ) -> tuple[_OpenSubsequence, int]:
-    """The open subsequence that a positive score at index makes, and how many of the open
-    subsequences under it stay on the stack: the ones above those it absorbs. Rules 2 to 4
-    of Ruzzo and Tompa, as pvc's maximal_scoring_subsequences gives them."""
-    start = index
+    """The open subsequence that a run of positive scores at the indices `[start, end)`,
+    0-based and half-open, makes, and how many of the open subsequences under it stay on
+    the stack: the ones above those it absorbs. Rules 2 to 4 of Ruzzo and Tompa, as pvc's
+    maximal_scoring_subsequences gives them."""
     staying = len(stack)
     while True:
         found = _find_smaller_before(stack, before, staying)
-        end = index + 1
         if found < 0:  # rule 2: no subsequence to reach
             link = 0
             break
@@ -280,25 +301,38 @@ def _find_smaller_before(stack: Sequence[_OpenSubsequence], before: int, top: in
 
 def _make_score_blocks(
     canonical: bytes, period: int, parameters: StrFinderParameters, block_bases: int
-) -> Iterator[Iterator[int]]:
-    """The scores of one period, in blocks that end where the blocks of block_bases bases
-    end, so that every period gives the same number of blocks.
+) -> Iterator[list[_ScoreRun]]:
+    """The scores of one period as runs of one sign, in blocks that end where the blocks of
+    block_bases bases end, so that every period gives the same number of blocks. A run that
+    crosses the end of a block is cut there.
 
     The base at j >= period scores the match reward when it and the base period before it
     are the same A, C, G or T, and minus the mismatch penalty otherwise. Score k is the base
-    at k + period.
+    at k + period. Each block is translated on its own, so what is held is one block.
     """
     reward = parameters.match_reward
     penalty = -parameters.mismatch_penalty
     for block_start in range(0, len(canonical), block_bases):
         first = max(block_start - period, 0)
         last = max(min(block_start + block_bases, len(canonical)) - period, first)
-        back = canonical[first:last]
-        here = canonical[first + period : last + period]
-        yield (
-            reward if base and base == earlier else penalty
-            for earlier, base in zip(back, here, strict=True)
-        )
+        length = last - first
+        earlier = canonical[first:last].translate(_EARLIER_BASES)
+        later = canonical[first + period : last + period]
+        # A 0 byte where the two bases match, from one XOR of two ints, not a loop per base.
+        # With the runs, step 1 takes 9.2 million steps on 4 Mb of chr1 instead of 24 million,
+        # and str-regions 4.49 s instead of 5.73 s (doc/reports/perf-str-finder.md, P1).
+        compared = (int.from_bytes(earlier) ^ int.from_bytes(later)).to_bytes(length)
+        runs: list[_ScoreRun] = []
+        mismatches_from = 0
+        for match_run in _MATCH_RUN.finditer(compared):
+            start, end = match_run.span()
+            if start > mismatches_from:
+                runs.append((penalty * (start - mismatches_from), start - mismatches_from))
+            runs.append((reward * (end - start), end - start))
+            mismatches_from = end
+        if mismatches_from < length:
+            runs.append((penalty * (length - mismatches_from), length - mismatches_from))
+        yield runs
 
 
 def _is_primitive_motif(motif: bytes) -> bool:
