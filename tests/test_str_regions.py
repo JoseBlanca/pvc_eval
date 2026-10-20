@@ -330,9 +330,20 @@ def test_an_error_in_a_later_contig_stops_the_run_with_the_first_faulty_contigs_
     assert not Path(f"{output}.tmp").exists()
 
 
-@pytest.mark.parametrize("num_threads", [0, 257, True, 2.0], ids=["0", "257", "true", "float"])
+# A value of the wrong type gets the message of every parameter of the finder that must be a
+# whole number, and one outside the range gets the range.
+@pytest.mark.parametrize(
+    ("num_threads", "message"),
+    [
+        (0, "num_threads is 0; it must be a whole number from 1 to 256"),
+        (257, "num_threads is 257; it must be a whole number from 1 to 256"),
+        (True, "num_threads is True; it must be a whole number"),
+        (2.0, "num_threads is 2.0; it must be a whole number"),
+    ],
+    ids=["0", "257", "true", "float"],
+)
 def test_write_str_regions_refuses_threads_before_reading_the_regions(
-    num_threads: object, tmp_path: Path
+    num_threads: object, message: str, tmp_path: Path
 ) -> None:
     # The --regions BED does not exist, which would stop the run if it were read first.
     fasta = _write_fasta(tmp_path, {"four_a": _FOUR_A})
@@ -341,9 +352,7 @@ def test_write_str_regions_refuses_threads_before_reading_the_regions(
         IndexedFasta(fasta) as reference,
         pytest.raises(
             ValueError,
-            match=re.escape(
-                f"num_threads is {num_threads!r}; it must be a whole number from 1 to 256"
-            ),
+            match=f"^{re.escape(message)}$",
         ),
     ):
         write_str_regions(

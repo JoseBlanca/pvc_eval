@@ -7,8 +7,8 @@ VcfRecord.span are.
 Public: RegionType, the four types of a segment; GenomeSegment, one segment of a contig;
 StrFinderParameters, the parameters of the finder; segment_contig, the segmented genome of
 one contig; read_str_regions, the STR regions of a --str-regions BED; write_str_regions,
-the BED of the `pvc_eval str-regions` command; DEFAULT_NUM_THREADS, how many contigs it
-segments at once when not told.
+the BED of the `pvc_eval str-regions` command; DEFAULT_NUM_THREADS and MAX_NUM_THREADS,
+how many contigs it segments at once when not told and the most it takes.
 """
 
 import bisect
@@ -1255,7 +1255,7 @@ def _find_requested_spans(path: Path, reference: IndexedFasta) -> dict[str, list
 # pvc_eval.vcf (doc/spec.md, "Threads"), as doc/specs/str_finder.md, "The str-regions
 # command", gives them.
 DEFAULT_NUM_THREADS = 4
-_MAX_NUM_THREADS = 256
+MAX_NUM_THREADS = 256
 
 
 def write_str_regions(
@@ -1288,10 +1288,10 @@ def write_str_regions(
     order of the `.fai`; and, before any contig is segmented, for an output that is a
     directory or whose `.tmp` cannot be made.
     """
-    if not (_is_whole_number(num_threads) and 1 <= num_threads <= _MAX_NUM_THREADS):
+    _check_whole_number("num_threads", num_threads)
+    if not 1 <= num_threads <= MAX_NUM_THREADS:
         raise ValueError(
-            f"num_threads is {num_threads!r}; it must be a whole number from 1 to"
-            f" {_MAX_NUM_THREADS}"
+            f"num_threads is {num_threads!r}; it must be a whole number from 1 to {MAX_NUM_THREADS}"
         )
     if regions is None:
         # Without --regions, each whole contig is the one span requested of it.
@@ -1316,11 +1316,6 @@ def write_str_regions(
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
-
-
-def _is_whole_number(value: object) -> bool:
-    """Whether value is an int. A bool is not one."""
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _make_str_region_rows(
