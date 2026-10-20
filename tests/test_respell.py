@@ -843,6 +843,29 @@ def test_a_record_the_shift_keeps_is_written_as_read(
             ["1 GCAAAAT TCAAAAT,G 0/1", "5 AA A 0/1:."],
             id="an-edit-apart-on-the-left-in-a-ref-that-reaches-it",
         ),
+        # A SNP just past the last placement, 6: the deletion moves short of it, to 5, and
+        # the insertion's point to the one between 5 and 6.
+        pytest.param(
+            ["2 CA C 0/1", "7 T G 0/1"],
+            2,
+            ["4 AA A 0/1:.", "7 T G 0/1"],
+            id="deletion-short-of-a-snp-past-its-last-placement",
+        ),
+        pytest.param(
+            ["2 C CA 0/1", "7 T G 0/1"],
+            2,
+            ["5 A AA 0/1:.", "7 T G 0/1"],
+            id="insertion-short-of-a-snp-past-its-last-placement",
+        ),
+        # The SNP at 1 has a REF that ends before the deletion, sorted after the long REF of
+        # the record at 1, whose carried SNP at 7 stops the deletion at 5: the search by REF
+        # must go past the short REF to the long one.
+        pytest.param(
+            ["1 GCAAAAT GCAAAAC,G 0/1", "1 G T 0/1", "2 CA C 0/1"],
+            2,
+            ["1 GCAAAAT GCAAAAC,G 0/1", "1 G T 0/1", "4 AA A 0/1:."],
+            id="a-long-ref-behind-a-short-one-that-does-not-reach",
+        ),
         # Deletions of 3 and of 5 on the two haplotypes of one phase set: neither stops the
         # other, and both move to 6.
         pytest.param(
