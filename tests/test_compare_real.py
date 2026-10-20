@@ -113,8 +113,9 @@ def test_hg002_against_itself_over_chr20_gives_only_outcomes_of_one_file(
         if reason:
             broken.append(f"{reason}: {row}")
 
-    # The hand run of the command at 0c43267 gave 81,257 rows on chr20, so a run with no
-    # row, or with rows off chr20, means the regions were not read as meant.
-    assert row_count > 0
+    # The rows of HG002 v4.2.1 against itself over chr20, counted by the command
+    # `pvc_eval compare` at 0c43267 and by this test at 5bafe18, on 20 October 2026: a
+    # stage that drops or adds loci changes the count.
+    assert row_count == 81_257
     assert contigs == {_CONTIG}
     assert not broken, f"{len(broken)} rows break the property:\n" + "\n".join(broken[:_ROWS_SHOWN])
