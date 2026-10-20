@@ -1,23 +1,34 @@
-"""The `pvc_eval` command line (doc/spec.md §3). It has one command so far, `str-regions`
-(doc/specs/str_finder.md, "The str-regions command").
+"""The `pvc_eval` command line (doc/spec.md §3). It has two commands: `compare`
+(doc/specs/compare.md, "The `compare` command") and `str-regions` (doc/specs/str_finder.md,
+"The str-regions command").
 
 A fault of the input stops the run with its message on stderr and exit status 1, and no
-traceback; anything else is a defect of pvc_eval and rises with its traceback.
+traceback; anything else is a defect of pvc_eval and rises with its traceback. pvc_eval's
+log, its warnings and INFO lines, goes to stderr, the message alone on each line.
 
 Public: main, the `pvc_eval` entry point.
 """
 
 import argparse
+import logging
 import re
 import sys
 import textwrap
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Generator, Sequence
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, fields
 from pathlib import Path
+from typing import cast
 
+from pvc_eval.compare import PVC_STRATA, CompareConfig, compare
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
+from pvc_eval.loci import DEFAULT_CHAIN_DISTANCE
+from pvc_eval.outcome import OutcomeRow
+from pvc_eval.reconcile import PHASING_CAP
 from pvc_eval.segments import StrFinderParameters, write_str_regions
+from pvc_eval.table import write_table
+from pvc_eval.vcf import DEFAULT_PLOIDY, DEFAULT_SPAN_LIMIT
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -174,15 +185,107 @@ _STR_REGIONS_ABOUT = (
 )
 
 
+# The description of `pvc_eval compare --help`, one paragraph per item, in the words of
+# doc/spec.md and doc/specs/compare.md.
+_COMPARE_ABOUT = (
+    "Compare two VCF files, file A and file B, over a reference genome. For each sample"
+    " pair, the sequence each haplotype carries over each locus is rebuilt from the VCF"
+    " records of each file, so that two spellings of the same genotype agree, and the pair"
+    " gets one outcome at each locus.",
+    "A locus is a stretch of the reference holding VCF records of either file, chained by"
+    " overlap or by the chain distance, and widened to every STR region a VCF record"
+    " touches. The STR regions come from --str-regions or, without it, from the STR finder"
+    " run with its default parameters on the contigs with records; `pvc_eval str-regions`"
+    " finds them with other parameters.",
+    "The table has a line of column names and one row per sample pair and compared locus,"
+    " its fields separated by tabs, positions 1-based and inclusive. A path ending in .gz is"
+    " gzipped. Each file is written as PATH.tmp and renamed when complete.",
+    "Messages go to stderr: the warnings, a line when the STR finder starts a contig, and a"
+    " line when the loci of a contig are done.",
+)
+
+# What `pvc_eval compare` prints when Ctrl-C stops it, and its exit status then
+# (doc/specs/compare.md, "The `compare` command").
+_STOPPED_MESSAGE = "Stopped; nothing was written."
+_STOPPED_STATUS = 130
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Limit:
+    """The values an option of `compare` takes, checked before anything is read."""
+
+    option: str
+    field: str
+    is_allowed: Callable[[int | None], bool]
+    rule: str
+
+
+# doc/spec.md §3, in its order.
+_COMPARE_LIMITS = (
+    _Limit(
+        option="--ploidy-a",
+        field="ploidy_a",
+        is_allowed=lambda value: value in {1, 2},
+        rule="a ploidy is 1 or 2",
+    ),
+    _Limit(
+        option="--ploidy-b",
+        field="ploidy_b",
+        is_allowed=lambda value: value in {1, 2},
+        rule="a ploidy is 1 or 2",
+    ),
+    _Limit(
+        option="--phasing-cap",
+        field="phasing_cap",
+        is_allowed=lambda value: value is not None and value >= 1,
+        rule="a phasing cap is 1 or more",
+    ),
+    _Limit(
+        option="--chain-distance",
+        field="chain_distance",
+        is_allowed=lambda value: value is not None and value >= 0,
+        rule="a chain distance is 0 or more",
+    ),
+    _Limit(
+        option="--span-limit",
+        field="span_limit",
+        is_allowed=lambda value: value is None or value >= 1,
+        rule="a span limit is a whole number of 1 or more, or none",
+    ),
+)
+
+# The word --strata takes instead of a BED, and --span-limit instead of a number.
+_PVC_STRATA_WORD = "pvc"
+_NO_SPAN_LIMIT_WORD = "none"
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Run `pvc_eval` with these arguments, or those of the command line. A fault of the
     input prints its message to stderr and exits with status 1."""
     arguments = _make_parser().parse_args(argv)
+    with _log_to_stderr():
+        try:
+            arguments.run(arguments)
+        except PvcEvalInputError as err:
+            print(err, file=sys.stderr)
+            sys.exit(1)
+
+
+@contextmanager
+def _log_to_stderr() -> Generator[None]:
+    """Send pvc_eval's log, INFO and above, to stderr, the message alone on each line, until
+    the block ends."""
+    logger = logging.getLogger("pvc_eval")
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
     try:
-        _run_str_regions(arguments)
-    except PvcEvalInputError as err:
-        print(err, file=sys.stderr)
-        sys.exit(1)
+        yield
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(level)
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -191,6 +294,7 @@ def _make_parser() -> argparse.ArgumentParser:
         description="Compare two VCF files over a reference genome, haplotype by haplotype.",
     )
     commands = parser.add_subparsers(dest="command", required=True, metavar="command")
+    _add_compare_parser(commands)
     str_regions = commands.add_parser(
         "str-regions",
         help="find the STR regions of a reference and write them as a BED",
@@ -199,6 +303,7 @@ def _make_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    str_regions.set_defaults(run=_run_str_regions)
     str_regions.add_argument(
         "--reference",
         required=True,
@@ -235,6 +340,181 @@ def _make_parser() -> argparse.ArgumentParser:
             help=f"{finder_option.help} (default {shown})",
         )
     return parser
+
+
+def _add_compare_parser(commands: argparse._SubParsersAction) -> None:
+    """The `compare` command and its options, those of doc/spec.md §3 but --evaluator."""
+    compare_parser = commands.add_parser(
+        "compare",
+        help="compare two VCF files over a reference and write the outcome of each locus",
+        description="\n\n".join(
+            textwrap.fill(paragraph, break_on_hyphens=False) for paragraph in _COMPARE_ABOUT
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    compare_parser.set_defaults(run=_run_compare)
+    add = compare_parser.add_argument
+    add(
+        "--reference",
+        required=True,
+        type=Path,
+        metavar="FASTA",
+        help="the reference, an uncompressed FASTA with its .fai beside it (ref.fa.fai). The"
+        " contigs' names and order come from the .fai",
+    )
+    add("--a", required=True, type=Path, metavar="VCF", help="file A, plain or bgzipped")
+    add("--b", required=True, type=Path, metavar="VCF", help="file B, plain or bgzipped")
+    add(
+        "--output",
+        required=True,
+        type=Path,
+        metavar="TSV",
+        help="the table to write, one row per sample pair and compared locus",
+    )
+    add(
+        "--regions",
+        type=Path,
+        metavar="BED",
+        help="compare only the loci that overlap these regions by at least one position, each"
+        " whole; every other locus is skipped, with no row and no count in the summary"
+        " (default: every locus)",
+    )
+    add(
+        "--strata",
+        metavar="BED|pvc",
+        help="a BED whose fourth column names each interval's class; a locus takes the"
+        " classes of the intervals it overlaps, joined with ',', or '.' for none. The word"
+        " pvc instead gives each locus the type of the STR regions it holds: satellite,"
+        " str-bundle, str or generic. A file named pvc is given as ./pvc (default: no"
+        " stratum, written '.')",
+    )
+    add(
+        "--str-regions",
+        type=Path,
+        metavar="BED",
+        help="the STR regions to use instead of running the STR finder, as `pvc_eval"
+        " str-regions` writes them (default: the STR finder's, with its default parameters)",
+    )
+    add(
+        "--sample-map",
+        type=Path,
+        metavar="TSV",
+        help="two columns: a sample of file A and the sample of file B it is compared with"
+        " (default: samples paired by name)",
+    )
+    for option, file in (("--ploidy-a", "file A"), ("--ploidy-b", "file B")):
+        add(
+            option,
+            type=int,
+            default=DEFAULT_PLOIDY,
+            metavar="N",
+            help=f"the ploidy {file} is read with, the haplotypes of each of its samples: 1 or"
+            f" 2 (default {DEFAULT_PLOIDY})",
+        )
+    add(
+        "--phasing-cap",
+        type=int,
+        default=PHASING_CAP,
+        metavar="N",
+        help="the most phase assignments pvc_eval tries for one sample at one locus; a"
+        f" sample that needs more is too complex. 1 or more (default {PHASING_CAP})",
+    )
+    add(
+        "--span-limit",
+        type=_parse_span_limit,
+        default=DEFAULT_SPAN_LIMIT,
+        metavar="N|none",
+        help="how far, in bases, a VCF record's span may reach beyond its REF before it is cut"
+        " back to the REF: a whole number of 1 or more, or none for no limit (default"
+        f" {DEFAULT_SPAN_LIMIT})",
+    )
+    add(
+        "--chain-distance",
+        type=int,
+        default=DEFAULT_CHAIN_DISTANCE,
+        metavar="N",
+        help="the most reference positions that may lie between a locus and the span of a"
+        f" VCF record it still takes in: 0 or more (default {DEFAULT_CHAIN_DISTANCE})",
+    )
+    add(
+        "--summary",
+        type=Path,
+        metavar="TSV",
+        help="also write the counts of the rows over all sample pairs, one line per outcome"
+        " and stratum and one column per kind",
+    )
+    add(
+        "--all-rows",
+        action="store_true",
+        help="also write to the table the rows whose outcome is reference in both; the"
+        " summary counts them either way",
+    )
+
+
+def _parse_span_limit(text: str) -> int | None:
+    """The value of --span-limit: a whole number, or None for the word none."""
+    if text == _NO_SPAN_LIMIT_WORD:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"'{text}' is neither a whole number nor {_NO_SPAN_LIMIT_WORD}"
+        ) from None
+
+
+def _run_compare(arguments: argparse.Namespace) -> None:
+    """The `compare` command: compare the two files and write the table and the summary.
+    Ctrl-C prints that nothing was written and exits with status 130."""
+    config = _make_compare_config(arguments)
+    # compare is a generator function, so its rows have close(): closing them on the way out,
+    # whatever happens, closes their files.
+    rows = cast(
+        Generator[OutcomeRow], compare(arguments.a, arguments.b, arguments.reference, config)
+    )
+    try:
+        with closing(rows):
+            write_table(
+                rows, arguments.output, summary=arguments.summary, all_rows=arguments.all_rows
+            )
+    except KeyboardInterrupt:
+        print(_STOPPED_MESSAGE, file=sys.stderr)
+        sys.exit(_STOPPED_STATUS)
+
+
+def _make_compare_config(arguments: argparse.Namespace) -> CompareConfig:
+    """The CompareConfig the options give.
+
+    Raises PvcEvalInputError, naming the option, for a value outside its limit.
+    """
+    for limit in _COMPARE_LIMITS:
+        value = getattr(arguments, limit.field)
+        if not limit.is_allowed(value):
+            raise PvcEvalInputError(
+                f"{limit.option} {value}: {limit.rule}. Correct the option, and run again."
+            )
+    return CompareConfig(
+        regions=arguments.regions,
+        strata=_parse_strata(arguments.strata),
+        str_regions=arguments.str_regions,
+        sample_map=arguments.sample_map,
+        ploidy_a=arguments.ploidy_a,
+        ploidy_b=arguments.ploidy_b,
+        phasing_cap=arguments.phasing_cap,
+        span_limit=arguments.span_limit,
+        chain_distance=arguments.chain_distance,
+    )
+
+
+def _parse_strata(text: str | None) -> Path | PVC_STRATA | None:
+    """The value of CompareConfig.strata for the text of --strata: PVC_STRATA for the word
+    pvc, and a path for anything else, ./pvc included. It is told on the text, since
+    Path("./pvc") equals Path("pvc")."""
+    if text is None:
+        return None
+    if text == _PVC_STRATA_WORD:
+        return PVC_STRATA
+    return Path(text)
 
 
 def _run_str_regions(arguments: argparse.Namespace) -> None:
