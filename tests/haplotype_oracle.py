@@ -39,6 +39,7 @@ ORACLE_CAP = 4096
 _SPANNING_DELETION = "*"
 _MALFORMED_GT_REASON = "malformed GT"
 _PLOIDY_MISMATCH_REASON = "ploidy mismatch"
+_MAX_LISTED = 10  # the genotypes a message lists of each file, so that it stays readable
 
 _IMPOSSIBLE = sentinel("_IMPOSSIBLE")
 """A haplotype whose edits collide, or that carries a `*` no edit covers (§8)."""
@@ -147,8 +148,7 @@ def check_same_haplotypes(
                 if result_a != result_b:
                     where = _format_windows(contig, [windows[index] for index in window_indices])
                     raise AssertionError(
-                        f"{where}, sample {sample}: file A gives {_format_result(result_a)},"
-                        f" file B gives {_format_result(result_b)}"
+                        f"{where}, sample {sample}: {_format_difference(result_a, result_b)}"
                     )
                 if is_pair:
                     num_linked_pairs += 1
@@ -411,15 +411,33 @@ def _format_windows(contig: str, windows: Sequence[_Window]) -> str:
     return f"{contig}:" + " and ".join(f"{window.start + 1}-{window.end}" for window in windows)
 
 
-def _format_result(result: _SampleResult) -> str:
-    """The possible genotypes, each a multiset `{A, T}` of haplotypes, a haplotype over a pair
-    written `(A, G)`, `.` for missing and `-` for an empty sequence; or the reason."""
+def _format_difference(result_a: _SampleResult, result_b: _SampleResult) -> str:
+    """What each file gives, its reason or how many possible genotypes, and then the
+    genotypes each file gives that the other does not, ten at most for each (§8)."""
+    texts = [f"file A gives {_format_count(result_a)} and file B {_format_count(result_b)}"]
+    for name, result, other in (("A", result_a, result_b), ("B", result_b, result_a)):
+        if isinstance(result, frozenset):
+            other_genotypes = other if isinstance(other, frozenset) else frozenset()
+            only = sorted(_format_genotype(genotype) for genotype in result - other_genotypes)
+            if only:
+                texts.append(f"only in {name}: {_format_list(only)}")
+    return "; ".join(texts)
+
+
+def _format_count(result: _SampleResult) -> str:
+    assert result is not _OVER_CAP, "a window over the cap is not compared"
     if isinstance(result, str):
         return result
-    assert result is not _OVER_CAP, "a window over the cap is not compared"
     if not result:
         return "no genotype"
-    return " or ".join(sorted(_format_genotype(genotype) for genotype in result))
+    return "1 genotype" if len(result) == 1 else f"{len(result)} genotypes"
+
+
+def _format_list(genotypes: Sequence[str]) -> str:
+    """The first ten genotypes, and how many more there are."""
+    text = " or ".join(genotypes[:_MAX_LISTED])
+    num_more = len(genotypes) - _MAX_LISTED
+    return f"{text} and {num_more} more" if num_more > 0 else text
 
 
 def _format_genotype(genotype: _Genotype) -> str:
