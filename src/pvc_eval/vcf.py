@@ -342,12 +342,27 @@ def _map_in_order[T, R](
 ) -> Generator[R]:
     """function over items, its results in the order of the items: in this thread when
     num_threads is 1, or else on a pool of num_threads threads, which take at most two items
-    each ahead of the result given. items is read in this thread."""
+    each ahead of the result given. items is read in this thread.
+
+    Closed before its last result, it cancels the items not started and does not wait for
+    the workers, each of which ends once its item is done.
+    """
     if num_threads == 1:
         yield from map(function, items)
         return
-    with ThreadPoolExecutor(max_workers=num_threads) as pool:
+    pool = ThreadPoolExecutor(max_workers=num_threads)
+    is_closed_early = False
+    try:
         yield from pool.map(function, items, buffersize=2 * num_threads)
+    except GeneratorExit:
+        is_closed_early = True
+        raise
+    finally:
+        # A stream dropped unclosed is closed by the garbage collector, in whichever thread
+        # it runs, which may hold threading's lock on its list of threads, inside
+        # threading.enumerate() or Thread.start(); a worker that ends takes that lock to
+        # leave the list, so waiting for the workers there would wait forever.
+        pool.shutdown(wait=not is_closed_early, cancel_futures=is_closed_early)
 
 
 @dataclass(slots=True)

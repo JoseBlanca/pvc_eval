@@ -2,7 +2,10 @@ import gzip
 import itertools
 import logging
 import random
+import subprocess
+import sys
 import threading
+import time
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import ExitStack
 from pathlib import Path
@@ -2165,3 +2168,76 @@ def test_contigs_given_as_one_string_raises_type_error(
         match=r"^contigs must be a collection of contig names or None, not the string 'chr1'$",
     ):
         list(parse_vcf(path, four_contigs, contigs="chr1"))
+
+
+# A parse_vcf stream with a pool, dropped unclosed in a reference cycle and finalized by the
+# garbage collector in a thread that holds threading's _active_limbo_lock, as
+# threading.enumerate() and Thread.start() hold it. threading has no public way to hold that
+# lock, and holding it is what makes a finalizer that joins the pool's workers wait forever:
+# a worker that ends takes the lock to leave threading's list of threads. It runs in a
+# process of its own, so that a hang fails the test at its timeout and leaves the lock of
+# this process free.
+_FINALIZED_STREAM_SCRIPT = """
+import gc, sys, threading
+from pathlib import Path
+from pvc_eval.fasta import IndexedFasta
+from pvc_eval.vcf import parse_vcf
+
+directory = Path(sys.argv[1])
+gc.disable()
+with IndexedFasta(directory / "ref.fa") as reference:
+    records = parse_vcf(directory / "a.vcf", reference, num_threads=2, span_limit=1)
+    next(records)
+    cycle = [records]
+    cycle.append(cycle)
+    del records, cycle
+    with threading._active_limbo_lock:
+        gc.collect()
+print("collected")
+"""
+# Seconds the process is given; it takes well under one when nothing waits.
+_FINALIZED_STREAM_TIMEOUT = 30
+
+
+def test_stream_finalized_while_threads_are_listed_does_not_hang(tmp_path: Path) -> None:
+    # 5,000 records one base apart, so that with a span limit of 1 the first record comes
+    # out while the pool still has batches to parse.
+    fasta, fai = make_fasta({"chr1": "A" * 5000})
+    (tmp_path / "ref.fa").write_text(fasta, encoding="utf-8")
+    (tmp_path / "ref.fa.fai").write_text(fai, encoding="utf-8")
+    lines = (f"chr1\t{pos}\t.\tA\tC\t.\t.\t.\tGT\t0/1\t0/1\n" for pos in range(1, 5000))
+    (tmp_path / "a.vcf").write_text(HEADER + "".join(lines), encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "-c", _FINALIZED_STREAM_SCRIPT, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=_FINALIZED_STREAM_TIMEOUT,
+    )
+
+    assert (completed.returncode, completed.stdout, completed.stderr) == (0, "collected\n", "")
+
+
+# Seconds a worker of the test below parses its item for; close() must not wait for it.
+_SLOW_ITEM_SECONDS = 5
+
+
+def test_stream_closed_early_does_not_wait_for_a_worker_still_parsing() -> None:
+    release = threading.Event()
+
+    def parse_item(item: int) -> int:
+        # Item 1 is still being parsed when the stream is closed, until released or for
+        # _SLOW_ITEM_SECONDS at most, so that a close() that waits for it ends.
+        if item == 1:
+            release.wait(_SLOW_ITEM_SECONDS)
+        return item
+
+    results = vcf._map_in_order(parse_item, range(10), 2)
+    assert next(results) == 0
+    started = time.monotonic()
+    results.close()
+    close_seconds = time.monotonic() - started
+    release.set()
+
+    assert close_seconds < 1
