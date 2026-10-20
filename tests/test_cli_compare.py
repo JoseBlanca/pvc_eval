@@ -452,34 +452,53 @@ def test_the_logger_is_set_back_after_the_run(
 # ---- --help and the installed command ----------------------------------------------------
 
 
-def test_help_names_every_option_with_its_default(capsys: pytest.CaptureFixture[str]) -> None:
+def _read_option_help(help_text: str) -> dict[str, str]:
+    """The help of each option of a --help, by the option and its metavar, its lines joined."""
+    options = help_text.split("\noptions:\n")[1]
+    option_help: dict[str, str] = {}
+    for entry in re.split(r"\n(?=  -)", options):
+        # Two spaces, or a new line, end the option and its metavar.
+        head, _, rest = entry.strip().partition("  ")
+        option, _, first_line = head.partition("\n")
+        option_help[option.strip()] = " ".join(f"{first_line} {rest}".split())
+    return option_help
+
+
+@pytest.mark.parametrize(
+    ("option", "default"),
+    [
+        ("--reference FASTA", None),
+        ("--a VCF", None),
+        ("--b VCF", None),
+        ("--output TSV", None),
+        ("--regions BED", "(default: every locus)"),
+        ("--strata BED|pvc", "(default: no stratum, written '.')"),
+        ("--str-regions BED", "(default: the STR finder's, with its default parameters)"),
+        ("--sample-map TSV", "(default: samples paired by name)"),
+        ("--ploidy-a N", "(default 2)"),
+        ("--ploidy-b N", "(default 2)"),
+        ("--phasing-cap N", "(default 4096)"),
+        ("--span-limit N|none", "(default 10000)"),
+        ("--chain-distance N", "(default 10)"),
+        ("--summary TSV", "(default: no summary)"),
+        ("--all-rows", "(default: not written)"),
+    ],
+)
+def test_help_names_each_option_with_its_default(
+    option: str, default: str | None, capsys: pytest.CaptureFixture[str]
+) -> None:
     status, stdout, _ = _run(["compare", "--help"], capsys)
     assert status == 0
-    help_text = " ".join(stdout.split())
-    for option in (
-        "--reference FASTA",
-        "--a VCF",
-        "--b VCF",
-        "--output TSV",
-        "--regions BED",
-        "--strata BED|pvc",
-        "--str-regions BED",
-        "--sample-map TSV",
-        "--summary TSV",
-        "--all-rows",
-    ):
-        assert option in help_text
-    for option_and_default in (
-        "--ploidy-a N",
-        "--ploidy-b N",
-        "--phasing-cap N",
-        "--span-limit N|none",
-        "--chain-distance N",
-    ):
-        assert option_and_default in help_text
-    for default in ("(default 2)", "(default 4096)", "(default 10000)", "(default 10)"):
-        assert default in help_text
-    assert "--evaluator" not in help_text
+    option_help = _read_option_help(stdout)
+    assert option in option_help
+    if default is not None:
+        assert option_help[option].endswith(default)
+
+
+def test_help_has_no_evaluator(capsys: pytest.CaptureFixture[str]) -> None:
+    status, stdout, _ = _run(["compare", "--help"], capsys)
+    assert status == 0
+    assert "--evaluator" not in stdout
 
 
 def test_the_installed_command_runs(tmp_path: Path) -> None:

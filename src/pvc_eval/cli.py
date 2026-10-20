@@ -449,13 +449,13 @@ def _add_compare_parser(commands: argparse._SubParsersAction) -> None:
         type=Path,
         metavar="TSV",
         help="also write the counts of the rows over all sample pairs, one line per outcome"
-        " and stratum and one column per kind",
+        " and stratum and one column per kind (default: no summary)",
     )
     add(
         "--all-rows",
         action="store_true",
         help="also write to the table the rows whose outcome is reference in both; the"
-        " summary counts them either way",
+        " summary counts them either way (default: not written)",
     )
 
 
