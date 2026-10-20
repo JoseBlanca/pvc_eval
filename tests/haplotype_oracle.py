@@ -215,15 +215,19 @@ def _find_window_records(
     """The records of one file in each window: those with an ALT whose span it holds, and
     those with no ALT whose REF overlaps it, where only their `.` matters."""
     starts = [window.start for window in windows]
+    ends = [window.end for window in windows]
     window_records: list[list[VcfRecord]] = [[] for _ in windows]
     for vcf_record in records:
         if _has_alt(vcf_record):
             start, _ = _find_window_span(vcf_record)
             window_records[bisect.bisect_right(starts, start) - 1].append(vcf_record)
             continue
-        for index, window in enumerate(windows):
-            if window.start < vcf_record.end and vcf_record.start < window.end:
-                window_records[index].append(vcf_record)
+        # The windows are sorted and apart, so those the REF overlaps are consecutive, from
+        # the first that ends after the REF starts.
+        index = bisect.bisect_right(ends, vcf_record.start)
+        while index < len(windows) and windows[index].start < vcf_record.end:
+            window_records[index].append(vcf_record)
+            index += 1
     return window_records
 
 

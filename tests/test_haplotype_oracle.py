@@ -7,6 +7,7 @@ describes.
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -444,6 +445,31 @@ def test_files_of_different_samples_raise_value_error_naming_both(
     message = f"{vcf_a} has the samples S0, S1 and {vcf_b} the samples {samples_b}"
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         check_same_haplotypes(vcf_a, vcf_b, reference)
+
+
+# The records with no ALT are placed in windows by their REF, not by looking at every
+# window: with 20,000 of each, looking at every window took 34.6 s on the owner's Mac on
+# 20 October 2026, and finding them by bisection 0.6 s.
+@pytest.mark.slow
+def test_a_file_of_20000_windows_and_20000_records_with_no_alt_takes_under_5_seconds(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    num_windows = 20_000
+    bases = "GATTACA" * (10 * num_windows // 7 + 1)
+    reference = case_files.write_contigs({"chr1": bases})
+    lines = []
+    for index in range(num_windows):
+        pos = 10 * index + 2
+        ref = bases[pos - 1]
+        lines += [f"{pos} {ref} {'C' if ref == 'A' else 'A'} 0/1", f"{pos} {ref} . ./."]
+    vcf = write_case_vcf(tmp_path / "a.vcf", lines, fills_ps=False)
+    started = time.perf_counter()
+    comparison = check_same_haplotypes(vcf, vcf, reference)
+    elapsed = time.perf_counter() - started
+    assert comparison == HaplotypeComparison(
+        num_windows=num_windows, num_linked_pairs=0, num_over_cap=0
+    )
+    assert elapsed < 5, f"{elapsed:.1f} s"
 
 
 def test_the_oracle_imports_nothing_of_what_the_check_of_7_4_tests() -> None:
