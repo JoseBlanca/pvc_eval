@@ -1,7 +1,7 @@
 # Compare
 
-*Status: draft, 20 October 2026; the owner answered its seven open points that day, and it waits
-for the owner's approval. No code of this part exists yet. It
+*Status: approved by the owner on 20 October 2026, with the answers to its seven open points
+listed at the end. No code of this part exists yet. It
 joins stages that exist on `main` and are tested: the readers (`doc/spec.md` §5.2), the STR finder
 (`doc/specs/str_finder.md`), the loci, kind, strata and regions (`doc/specs/loci.md`), and the
 sample pairs, reconciliation and evaluation (`doc/specs/reconciliation.md`). It builds what
