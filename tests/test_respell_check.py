@@ -16,7 +16,12 @@ from pathlib import Path
 
 import pytest
 from tests.conftest import CaseFiles, write_case_vcf
-from tests.respell import make_bgzf, respell_by_decomposing, respell_by_shifting
+from tests.respell import (
+    make_bgzf,
+    respell_by_decomposing,
+    respell_by_merging,
+    respell_by_shifting,
+)
 from tests.respell_cases import RespellingCase, read_case_lines
 from tests.respell_check import _make_checked_rows, check_respelling_outcomes
 from tests.respell_generator import (
@@ -74,6 +79,27 @@ def test_an_insertion_shifted_through_an_at_repeat_is_one_str_locus_of_same_geno
     assert [(row.start, row.end, row.kind, row.str_regions, row.outcome) for row in rows] == [
         (24, 46, Kind.STR, (at_repeat,), Outcome.SAME_GENOTYPE)
     ]
+
+
+def test_a_merge_keeps_a_block_that_puts_file_a_over_the_phasing_cap(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    # doc/specs/respell.md §6: 13 unphased heterozygous SNPs two bases apart and, at 30, one
+    # SNP on both haplotypes of phase set 5, one locus: 14 blocks, 2^13 phase assignments in
+    # A, over the cap of 4096, so A is too complex. Merged, the two records at 30 would be
+    # one homozygous record, leaving B 13 blocks and 4096 genotypes.
+    bases = "GACGTACGTACGTACGTACGTACGTACGTAC"
+    reference = case_files.write_reference(1, bases)
+    lines = [
+        f"{pos} {bases[pos - 1]} {'T' if bases[pos - 1] != 'T' else 'A'} 0/1"
+        for pos in range(2, 28, 2)
+    ]
+    lines += ["30 A T 1|0:5", "30 A T 0|1:5"]
+    vcf = _write_vcf(tmp_path / "a.vcf", lines)
+    output = tmp_path / "b.vcf"
+    respell_by_merging(vcf, reference, output)
+
+    check_respelling_outcomes(vcf, output, reference)
 
 
 def test_a_file_whose_own_result_is_too_complex_passes_against_its_decomposition(

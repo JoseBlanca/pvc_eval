@@ -1265,8 +1265,9 @@ def _make_merged_record(
 ) -> _OutputRecord | None:
     """The record a run of mergeable records is written as (§6), or None when it is not
     merged: another record with an ALT touches its stretch; a sample's heterozygous VCF
-    genotypes in it are in two phase units; every haplotype gets REF; or the reach of the
-    record touches the REF of a record with a `*` ALT (§2.2)."""
+    genotypes in it are in two phase units; a sample with a heterozygous VCF genotype in it
+    would get one merged allele on every haplotype; every haplotype gets REF; or the reach
+    of the record touches the REF of a record with a `*` ALT (§2.2)."""
     contig = run[0].vcf_record.contig
     stretch = (
         min(record_edits.vcf_record.start for record_edits in run),
@@ -1288,11 +1289,16 @@ def _make_merged_record(
         if phase is None:
             return None
         phased, phase_set = phase
+        merged_alleles = list(_make_merged_alleles(genotypes, run, ref, stretch_start))
+        is_heterozygous = any(len(set(genotype.alleles)) > 1 for genotype in genotypes)
+        if is_heterozygous and len(set(merged_alleles)) == 1:
+            # Merged, the sample would be homozygous and lose a block.
+            return None
         alleles = [
             0
             if merged_allele == ref
             else alt_indices.setdefault(merged_allele, len(alt_indices) + 1)
-            for merged_allele in _make_merged_alleles(genotypes, run, ref, stretch_start)
+            for merged_allele in merged_alleles
         ]
         sample_fields.append(_format_genotype(alleles, phased=phased, phase_set=phase_set))
     alts = list(alt_indices)

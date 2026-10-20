@@ -322,6 +322,20 @@ MERGE_CASES = (
         input_lines=("2 A T 0/0", "4 G C 0/0"),
         output_lines=("2 A T 0/0", "4 G C 0/0"),
     ),
+    # §6: merged, these heterozygous phased records would give both haplotypes one allele
+    # and remove a block.
+    RespellingCase(
+        name="one-snp-on-both-haplotypes-kept",
+        bases="GACGTA",
+        input_lines=("2 A T 1|0:5", "2 A T 0|1:5"),
+        output_lines=("2 A T 1|0:5", "2 A T 0|1:5"),
+    ),
+    RespellingCase(
+        name="one-deletion-at-two-placements-kept",
+        bases="GACACAT",
+        input_lines=("2 ACA A 1|0:5", "4 ACA A 0|1:5"),
+        output_lines=("2 ACA A 1|0:5", "4 ACA A 0|1:5"),
+    ),
 )
 
 
