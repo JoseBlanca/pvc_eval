@@ -1,16 +1,25 @@
 """The re-spelling program of doc/specs/respell.md: what every re-spelling does (§2) and the
 decomposition (§3), at respell_by_decomposing, with the expected records as literals in the
-notation of the cases, which tests.respell_cases describes.
+notation of the cases, which tests.respell_cases describes; each case's output against its
+input through the oracle of §8 and through bcftools; and the properties of §9.2 over the
+files of tests.respell_generator.
 """
 
 import gzip
+import re
+import shutil
 import struct
+import subprocess
 import time
+from collections import Counter
 from collections.abc import Sequence
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
+from hypothesis import given, settings
 from tests.conftest import CONTIG, FILEFORMAT_LINE, CaseFiles, make_chrom_line, write_case_vcf
+from tests.haplotype_oracle import check_same_haplotypes
 from tests.respell import _find_reach, _make_bgzf, respell_by_decomposing
 from tests.respell_cases import (
     DECOMPOSITION_CASES,
@@ -19,6 +28,7 @@ from tests.respell_cases import (
     read_header,
     read_vcf_lines,
 )
+from tests.respell_generator import GeneratedVcf, make_generated_vcf, write_generated_vcf
 
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
@@ -649,3 +659,135 @@ def test_decomposing_20000_snps_with_touching_records_takes_under_10_seconds(
     assert len(output_lines) == 22_200
     assert sum(line.endswith("0/1") for line in output_lines) == 4_800
     assert elapsed < 10, f"{elapsed:.1f} s"
+
+
+# --- The oracle and bcftools (§2.3, §8, §9) ---
+
+_BCFTOOLS = shutil.which("bcftools")
+_needs_bcftools = pytest.mark.skipif(
+    _BCFTOOLS is None, reason="bcftools is not on the path, so its reading is not checked"
+)
+# A position in a message of bcftools, `chr1:5`, which differs between a file and its
+# re-spelling since a re-spelling moves records (§2.3).
+_MESSAGE_POSITION = re.compile(r"[^\s:]+:\d+")
+_ORACLE_EXAMPLES = 300  # §9.2
+_BCFTOOLS_EXAMPLES = 50  # §9.2
+
+
+def _write_and_decompose_case(
+    case_files: CaseFiles, directory: Path, case: RespellingCase
+) -> tuple[IndexedFasta, Path, Path]:
+    """A case's reference and input, and its decomposition beside the input."""
+    reference = case_files.write_reference(1, case.bases)
+    vcf = _write_vcf(directory / "a.vcf", case.input_lines)
+    output = directory / "b.vcf"
+    respell_by_decomposing(vcf, reference, output, ploidy=case.ploidy)
+    return reference, vcf, output
+
+
+@pytest.mark.parametrize("case", [pytest.param(case, id=case.name) for case in DECOMPOSITION_CASES])
+def test_the_decomposition_of_a_case_passes_the_oracle(
+    case_files: CaseFiles, tmp_path: Path, case: RespellingCase
+) -> None:
+    reference, vcf, output = _write_and_decompose_case(case_files, tmp_path, case)
+    comparison = check_same_haplotypes(vcf, output, reference, ploidy=case.ploidy)
+    assert comparison.num_windows >= 1
+
+
+def _read_bcftools_messages(vcf: Path) -> set[str]:
+    """What `bcftools view` writes to standard error for vcf, each line with its positions
+    removed; it must exit with 0."""
+    assert _BCFTOOLS is not None, "the test is skipped without bcftools"
+    result = subprocess.run(
+        [_BCFTOOLS, "view", str(vcf)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, (vcf, result.stderr)
+    return {_MESSAGE_POSITION.sub("<position>", line) for line in result.stderr.splitlines()}
+
+
+def _check_bcftools_reads_as_input(vcf: Path, output: Path) -> None:
+    """§2.3, valid: bcftools 1.24 reads output with exit status 0 and no message it does not
+    also give for vcf."""
+    new_messages = _read_bcftools_messages(output) - _read_bcftools_messages(vcf)
+    assert not new_messages, (read_vcf_lines(vcf), read_vcf_lines(output), new_messages)
+
+
+@_needs_bcftools
+@pytest.mark.parametrize("case", [pytest.param(case, id=case.name) for case in DECOMPOSITION_CASES])
+def test_bcftools_reads_the_decomposition_of_a_case_as_its_input(
+    case_files: CaseFiles, tmp_path: Path, case: RespellingCase
+) -> None:
+    _, vcf, output = _write_and_decompose_case(case_files, tmp_path, case)
+    _check_bcftools_reads_as_input(vcf, output)
+
+
+def _is_rewritten(vcf: Path, output: Path) -> bool:
+    """Whether output has a record line vcf does not: some record was rewritten. A record
+    rewritten into the line it had is not counted."""
+
+    def read_record_lines(path: Path) -> list[str]:
+        return [line for line in read_vcf_lines(path) if not line.startswith("#")]
+
+    return read_record_lines(vcf) != read_record_lines(output)
+
+
+def _write_and_decompose(
+    generated: GeneratedVcf, directory: Path, stack: ExitStack
+) -> tuple[IndexedFasta, Path, Path]:
+    """A generated file's reference and VCF, and its decomposition beside the VCF."""
+    reference, vcf = write_generated_vcf(generated, directory, stack)
+    output = directory / "b.vcf"
+    respell_by_decomposing(vcf, reference, output, ploidy=generated.ploidy)
+    return reference, vcf, output
+
+
+# The properties count, in a Counter of their own test, the files whose re-spelling rewrote a
+# record, and assert the share once hypothesis has run every example (§9.2: at least one file
+# in ten, so that a re-spelling that kept everything would fail). A counter in the module would
+# be state that changes between tests (python.md, threads) and would tie the assertion to the
+# order the tests run in; hypothesis's own statistics are reported and cannot be asserted.
+def test_the_decomposition_of_a_generated_file_passes_the_oracle(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    tally: Counter[str] = Counter()
+
+    @settings(max_examples=_ORACLE_EXAMPLES, deadline=None)
+    @given(generated=make_generated_vcf())
+    def check_decomposition(generated: GeneratedVcf) -> None:
+        with ExitStack() as stack:
+            directory = tmp_path_factory.mktemp("generated")
+            reference, vcf, output = _write_and_decompose(generated, directory, stack)
+            comparison = check_same_haplotypes(vcf, output, reference, ploidy=generated.ploidy)
+        tally["files"] += 1
+        tally["rewritten"] += _is_rewritten(vcf, output)
+        tally["linked pairs"] += comparison.num_linked_pairs
+
+    check_decomposition()
+    assert tally["files"] >= _ORACLE_EXAMPLES
+    assert tally["rewritten"] * 10 >= tally["files"], tally
+    # Pairs of windows were compared, so a re-spelling that lost a phase could be seen.
+    assert tally["linked pairs"] > 0, tally
+
+
+@_needs_bcftools
+def test_bcftools_reads_the_decomposition_of_a_generated_file_as_its_input(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    tally: Counter[str] = Counter()
+
+    @settings(max_examples=_BCFTOOLS_EXAMPLES, deadline=None)
+    @given(generated=make_generated_vcf())
+    def check_decomposition(generated: GeneratedVcf) -> None:
+        with ExitStack() as stack:
+            directory = tmp_path_factory.mktemp("generated")
+            _, vcf, output = _write_and_decompose(generated, directory, stack)
+        _check_bcftools_reads_as_input(vcf, output)
+        tally["files"] += 1
+        tally["rewritten"] += _is_rewritten(vcf, output)
+
+    check_decomposition()
+    assert tally["rewritten"] * 10 >= tally["files"], tally
