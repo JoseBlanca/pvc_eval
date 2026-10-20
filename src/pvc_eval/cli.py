@@ -204,7 +204,7 @@ _COMPARE_ABOUT = (
     " line when the loci of a contig are done.",
 )
 
-# What `pvc_eval compare` prints when Ctrl-C stops it, and its exit status then
+# What `pvc_eval` prints when Ctrl-C stops it, and its exit status then
 # (doc/specs/compare.md, "The `compare` command").
 _STOPPED_MESSAGE = "Stopped; nothing was written."
 _STOPPED_STATUS = 130
@@ -261,14 +261,18 @@ _NO_SPAN_LIMIT_WORD = "none"
 
 def main(argv: Sequence[str] | None = None) -> None:
     """Run `pvc_eval` with these arguments, or those of the command line. A fault of the
-    input prints its message to stderr and exits with status 1."""
-    arguments = _make_parser().parse_args(argv)
-    with _log_to_stderr():
-        try:
+    input prints its message to stderr and exits with status 1; Ctrl-C prints that nothing
+    was written and exits with status 130, the temporary files removed by their writers."""
+    try:
+        arguments = _make_parser().parse_args(argv)
+        with _log_to_stderr():
             arguments.run(arguments)
-        except PvcEvalInputError as err:
-            print(err, file=sys.stderr)
-            sys.exit(1)
+    except PvcEvalInputError as err:
+        print(err, file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print(_STOPPED_MESSAGE, file=sys.stderr)
+        sys.exit(_STOPPED_STATUS)
 
 
 @contextmanager
@@ -468,22 +472,15 @@ def _parse_span_limit(text: str) -> int | None:
 
 
 def _run_compare(arguments: argparse.Namespace) -> None:
-    """The `compare` command: compare the two files and write the table and the summary.
-    Ctrl-C prints that nothing was written and exits with status 130."""
+    """The `compare` command: compare the two files and write the table and the summary."""
     config = _make_compare_config(arguments)
     # compare is a generator function, so its rows have close(): closing them on the way out,
     # whatever happens, closes their files.
     rows = cast(
         Generator[OutcomeRow], compare(arguments.a, arguments.b, arguments.reference, config)
     )
-    try:
-        with closing(rows):
-            write_table(
-                rows, arguments.output, summary=arguments.summary, all_rows=arguments.all_rows
-            )
-    except KeyboardInterrupt:
-        print(_STOPPED_MESSAGE, file=sys.stderr)
-        sys.exit(_STOPPED_STATUS)
+    with closing(rows):
+        write_table(rows, arguments.output, summary=arguments.summary, all_rows=arguments.all_rows)
 
 
 def _make_compare_config(arguments: argparse.Namespace) -> CompareConfig:

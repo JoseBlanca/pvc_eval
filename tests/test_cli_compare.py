@@ -2,6 +2,7 @@
 four-contig case of tests/compare_case.py: the table and the summary it writes, its
 options, the values it refuses, its messages on stderr and its exit statuses."""
 
+import argparse
 import inspect
 import logging
 import re
@@ -300,6 +301,18 @@ def test_ctrl_c_stops_with_130_and_writes_nothing(
         "ref.fa",
         "ref.fa.fai",
     ]
+
+
+def test_ctrl_c_while_the_options_are_parsed_stops_with_130(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def parse_args(*_args: object, **_kwargs: object) -> argparse.Namespace:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", parse_args)
+    case = write_compare_case(tmp_path)
+    status, _, stderr = _run(_make_argv(case, tmp_path / "loci.tsv"), capsys)
+    assert (status, stderr) == (130, "Stopped; nothing was written.\n")
 
 
 def test_rows_are_closed_when_the_output_is_refused(
