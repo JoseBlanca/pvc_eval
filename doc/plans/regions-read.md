@@ -1,6 +1,6 @@
 # Plan: reading only the contigs `--regions` names
 
-*Status: under way, 20 October 2026. The owner asked for the spec, `doc/specs/regions_read.md`,
+*Status: done, 20 October 2026. The owner asked for the spec, `doc/specs/regions_read.md`,
 to be reviewed and built without waiting for their approval. On the branch `regions-read`, in
 `.claude/worktrees/regions-read`; the report is `doc/reports/regions-read.md`.*
 
@@ -13,7 +13,7 @@ On c90733e: the five checks of `python.md` pass, with "1306 passed, 5 skipped".
 
 ## Milestones
 
-- [ ] 1. `parse_vcf` reads only the contigs it is given, and `compare()` gives it those
+- [x] 1. `parse_vcf` reads only the contigs it is given, and `compare()` gives it those
   `--regions` names
 
 **What it gives.** A run with `--regions` reads the records of the contigs the regions name, and

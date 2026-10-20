@@ -1,6 +1,6 @@
 # Reading only the contigs `--regions` names
 
-*Status: written and reviewed on 20 October 2026. The owner agreed that day that `--regions`
+*Status: written, reviewed and built on 20 October 2026, on the branch `regions-read`; not approved by the owner, who asked for it to be built without waiting. The owner agreed that day that `--regions`
 should limit what is read, and asked for the spec to be reviewed and built without waiting for
 their approval. No code of this change exists yet. It changes `parse_vcf` (`doc/spec.md` §5.2)
 and `compare()` (`doc/specs/compare.md`).*
