@@ -338,7 +338,11 @@ stretch runs from the first position of its REFs to the last; the REFs are the n
 
 - no record of it is kept, has a `*` ALT, or gives any sample a `.`. A `.` would make the merged
   allele of its haplotype missing and drop what the other records say;
-- no other record with an ALT has a REF overlapping or touching the run's stretch, since the
+- the reference over the run's stretch is A, C, G or T. The merged REF holds the bases between
+  the records' REFs, which no input REF covered and `parse_vcf` never checked; a letter that is no
+  IUPAC code there, such as `X`, makes `parse_vcf` reject the output (the review of milestone 6);
+- no other record with an ALT, symbolic ones aside, since `parse_vcf` does not read them, has a
+  REF overlapping or touching the run's stretch, since the
   merged record replaces the whole stretch, gaps included, and its edit would touch it;
 - for every sample, the heterozygous VCF genotypes of the run are all in one phase unit: one
   phase set, or a single unphased record. Two unphased heterozygous records give two possible
