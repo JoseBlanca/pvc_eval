@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
-from tests.conftest import CaseFiles, write_case_vcf
+from tests.conftest import CaseFiles, make_chrom_line, write_case_vcf
 from tests.haplotype_oracle import ORACLE_CAP, HaplotypeComparison, check_same_haplotypes
 
 from pvc_eval.fasta import IndexedFasta
@@ -283,13 +283,28 @@ def test_the_message_of_many_genotypes_gives_ten_and_how_many_more(
     assert "only in B" not in message
 
 
-def test_files_of_different_samples_raise_value_error(
-    case_files: CaseFiles, tmp_path: Path
+@pytest.mark.parametrize(
+    ("line_b", "chrom_line_b", "samples_b"),
+    [
+        pytest.param("2 A T 0/1", make_chrom_line(1), "S0", id="another-number"),
+        pytest.param(
+            "2 A T 0/1 0/1",
+            make_chrom_line(2).replace("S0\tS1", "S1\tS0"),
+            "S1, S0",
+            id="the-same-names-in-another-order",
+        ),
+    ],
+)
+def test_files_of_different_samples_raise_value_error_naming_both(
+    case_files: CaseFiles, tmp_path: Path, line_b: str, chrom_line_b: str, samples_b: str
 ) -> None:
     reference = case_files.write_reference(1, _O_BASES)
-    vcf_a = write_case_vcf(tmp_path / "a.vcf", ["2 A T 0/1"], fills_ps=False)
-    vcf_b = write_case_vcf(tmp_path / "b.vcf", ["2 A T 0/1 0/1"], fills_ps=False)
-    with pytest.raises(ValueError, match="different samples"):
+    vcf_a = write_case_vcf(tmp_path / "a.vcf", ["2 A T 0/1 0/1"], fills_ps=False)
+    vcf_b = write_case_vcf(tmp_path / "b.vcf", [line_b], fills_ps=False)
+    num_samples_b = len(line_b.split()) - 3
+    vcf_b.write_text(vcf_b.read_text().replace(make_chrom_line(num_samples_b), chrom_line_b))
+    message = f"{vcf_a} has the samples S0, S1 and {vcf_b} the samples {samples_b}"
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         check_same_haplotypes(vcf_a, vcf_b, reference)
 
 

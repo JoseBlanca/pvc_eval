@@ -110,8 +110,12 @@ def check_same_haplotypes(
     two headers name different samples.
     """
     samples = parse_vcf_samples(vcf_a)
-    if parse_vcf_samples(vcf_b) != samples:
-        raise ValueError(f"{vcf_a} and {vcf_b} have different samples")
+    samples_b = parse_vcf_samples(vcf_b)
+    if samples_b != samples:
+        raise ValueError(
+            f"{vcf_a} has the samples {', '.join(samples)}"
+            f" and {vcf_b} the samples {', '.join(samples_b)}"
+        )
     records_a = _read_records_by_contig(vcf_a, reference, ploidy)
     records_b = _read_records_by_contig(vcf_b, reference, ploidy)
     num_windows = num_linked_pairs = num_over_cap = 0
