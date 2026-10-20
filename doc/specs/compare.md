@@ -247,9 +247,10 @@ for that reason, and keeps its rule that a thread's exception reaches the caller
 the stages. `strata` is a path to a BED, or `PVC_STRATA` for `--strata pvc`. A sentinel is used
 because a path named `pvc` is a BED (`doc/spec.md` §3). The command line tells them apart by the
 text of the option, before it makes a path of it: `Path("./pvc")` equals `Path("pvc")`, so the
-`./` that `doc/spec.md` §3 asks of a file named `pvc` is lost once it is a path. `compare()` checks the ploidies, the
-phasing cap, the span limit and the chain distance when the stream starts, and raises
-`ValueError` naming the field. The command line checks the same values first, and turns a wrong
+`./` that `doc/spec.md` §3 asks of a file named `pvc` is lost once it is a path. The ploidies, the phasing cap, the span
+limit and the chain distance are checked by the stages that take them, which raise `ValueError`
+naming the field before any row, after the errors of steps 1 to 3; `compare()` does not check
+them again, so that their rule is written once (decided after the review of milestone 1). The command line checks the same values first, and turns a wrong
 one into its own message (see "The `compare` command").
 
 ```python
