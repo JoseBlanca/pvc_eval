@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 from tests.conftest import CONTIG, FILEFORMAT_LINE, CaseFiles, make_chrom_line, write_case_vcf
-from tests.respell import _compress_bgzf, _find_reach, respell_by_decomposing
+from tests.respell import _find_reach, _make_bgzf, respell_by_decomposing
 from tests.respell_cases import (
     DECOMPOSITION_CASES,
     RespellingCase,
@@ -528,7 +528,7 @@ def test_a_gzipped_input_gives_a_bgzipped_output_that_parse_vcf_reads(
 
 def test_bgzf_blocks_hold_at_most_65280_bytes_of_text_each() -> None:
     text = b"".join(b"chr1\t%d\t.\tA\tT\t.\t.\t.\n" % position for position in range(10_000))
-    compressed = _compress_bgzf(text)
+    compressed = _make_bgzf(text)
     block_text_sizes = []
     offset = 0
     while offset < len(compressed):

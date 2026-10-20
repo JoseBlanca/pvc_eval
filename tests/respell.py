@@ -34,7 +34,13 @@ from pvc_eval.vcf import (
 
 _GZIP_MAGIC = b"\x1f\x8b"  # the first two bytes of a gzip file, and so of a bgzipped one
 _SPANNING_DELETION = "*"
-_NUM_FIXED_COLUMNS = 9  # CHROM to FORMAT
+# The columns of a VCF line, from 0; the samples' start after FORMAT.
+_CHROM_COLUMN = 0
+_POS_COLUMN = 1
+_REF_COLUMN = 3
+_QUAL_COLUMN = 5
+_FORMAT_COLUMN = 8
+_NUM_FIXED_COLUMNS = 9
 _PS_LINE_START = "##FORMAT=<ID=PS,"
 _PS_LINE = '##FORMAT=<ID=PS,Number=1,Type=Integer,Description="Phase set">'
 
@@ -57,11 +63,11 @@ class _InputRecord:
 
     @property
     def contig(self) -> str:
-        return self.fields[0]
+        return self.fields[_CHROM_COLUMN]
 
     @property
     def pos_1based(self) -> int:
-        return int(self.fields[1])
+        return int(self.fields[_POS_COLUMN])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -126,14 +132,16 @@ def respell_by_decomposing(
     vcf itself.
     """
     _check_output(vcf, output)
-    respelling_input = _read_input(vcf, reference, ploidy)
+    respelling_input = _parse_input(vcf, reference, ploidy)
     touched_places = _find_touched_places(respelling_input.input_records)
     spanning_deletion_refs = _find_spanning_deletion_refs(respelling_input.input_records)
     output_records = []
     for input_record in respelling_input.input_records:
         vcf_record = input_record.vcf_record
-        if vcf_record is None or _is_kept_by_every_respelling(input_record, touched_places):
-            output_records.append(_keep(input_record))
+        if vcf_record is None or _is_kept_whatever_is_written(
+            vcf_record, input_record.place, touched_places
+        ):
+            output_records.append(_make_kept_record(input_record))
             continue
         pieces = _make_pieces(vcf_record, reference)
         written = [
@@ -143,7 +151,7 @@ def respell_by_decomposing(
         if not pieces or _is_near_spanning_deletion(
             vcf_record.contig, written, spanning_deletion_refs, reference
         ):
-            output_records.append(_keep(input_record))
+            output_records.append(_make_kept_record(input_record))
             continue
         new_phase_set = str(respelling_input.max_phase_set + input_record.place)
         output_records.extend(
@@ -170,7 +178,7 @@ def _is_near_spanning_deletion(
     if refs is None:
         return False
     return any(
-        refs.is_touching(_find_reach(reference, contig, start, alleles))
+        _is_touching_any_ref(refs, _find_reach(reference, contig, start, alleles))
         for start, alleles in written
     )
 
@@ -185,7 +193,7 @@ def _check_output(vcf: Path, output: Path) -> None:
         raise ValueError(f"the output {output} is the input VCF; give another path to write to")
 
 
-def _read_input(vcf: Path, reference: IndexedFasta, ploidy: int) -> _RespellingInput:
+def _parse_input(vcf: Path, reference: IndexedFasta, ploidy: int) -> _RespellingInput:
     """vcf read with parse_vcf, which raises before anything is written for an input pvc_eval
     cannot read, and as lines, each record line matched to its record by its number."""
     records_by_line = {
@@ -239,7 +247,7 @@ def _find_phase_sets(fields: Sequence[str]) -> Iterator[str]:
     parse_vcf."""
     if len(fields) <= _NUM_FIXED_COLUMNS:
         return
-    key_indices = {key: index for index, key in enumerate(fields[8].split(":"))}
+    key_indices = {key: index for index, key in enumerate(fields[_FORMAT_COLUMN].split(":"))}
     if "PS" not in key_indices:
         return
     ps_index = key_indices["PS"]
@@ -256,18 +264,19 @@ def _is_whole(text: str) -> bool:
 # --- The records every re-spelling keeps (§2.2) ---
 
 
-def _is_kept_by_every_respelling(input_record: _InputRecord, touched_places: set[int]) -> bool:
-    """Whether a record is kept for a row of §2.2 that does not depend on what the
-    re-spelling writes: all but the reach near a `*`."""
-    vcf_record = input_record.vcf_record
-    if vcf_record is None:
-        return True
+def _is_kept_whatever_is_written(
+    vcf_record: VcfRecord, place: int, touched_places: set[int]
+) -> bool:
+    """Whether a record that parse_vcf gives, at place among the record lines, is kept for a
+    row of §2.2 that does not depend on what the re-spelling writes: no ALT, a `*` ALT, an
+    invalid GT or a touch. The record with a symbolic allele, which parse_vcf does not give,
+    and the record near a `*` are left to the caller."""
     alts = vcf_record.alleles[1:]
     if not alts or _SPANNING_DELETION in alts:
         return True
     if any(not isinstance(genotype, VcfGenotype) for genotype in vcf_record.genotypes):
         return True
-    return input_record.place in touched_places
+    return place in touched_places
 
 
 def _find_edits(vcf_record: VcfRecord) -> tuple[_Edit | None, ...]:
@@ -288,7 +297,7 @@ def _is_edit_touching(edit: _Edit, other: _Edit) -> bool:
     return edit.start <= other.end and other.start <= edit.end
 
 
-def _may_share_haplotype(
+def _is_haplotype_shareable(
     genotype: VcfGenotype, haplotype: int, other_genotype: VcfGenotype, other_haplotype: int
 ) -> bool:
     """§1: two VCF alleles of one sample may be on one haplotype unless both VCF genotypes
@@ -345,7 +354,7 @@ def _is_carried_edit_touching(first: _RecordEdits, second: _RecordEdits) -> bool
             continue
         for haplotype, edit in _find_carried_edits(genotype, first.edits):
             for other_haplotype, other_edit in _find_carried_edits(other_genotype, second.edits):
-                if _is_edit_touching(edit, other_edit) and _may_share_haplotype(
+                if _is_edit_touching(edit, other_edit) and _is_haplotype_shareable(
                     genotype, haplotype, other_genotype, other_haplotype
                 ):
                     return True
@@ -364,27 +373,30 @@ def _find_carried_edits(
             yield haplotype, edit
 
 
+@dataclass(frozen=True, slots=True)
 class _SpanningDeletionRefs:
-    """The REFs of a contig's records with a `*` ALT, as parse_vcf trims them, sorted by
-    start, each with the furthest end of those up to it."""
+    """The REFs of a contig's records with a `*` ALT, as parse_vcf trims them: their starts,
+    sorted, and for each the furthest end of the REFs up to it."""
 
-    def __init__(self, refs: Iterable[Span]) -> None:
-        sorted_refs = sorted(refs)
-        self._starts = [start for start, _ in sorted_refs]
-        self._furthest_ends = []
-        furthest_end = 0
-        for _, end in sorted_refs:
-            furthest_end = max(furthest_end, end)
-            self._furthest_ends.append(furthest_end)
+    starts: tuple[int, ...]
+    furthest_ends: tuple[int, ...]
 
-    def is_touching(self, stretch: Span) -> bool:
-        """Whether a REF overlaps or lies next to stretch."""
-        stretch_start, stretch_end = stretch
-        num_starting_by_end = bisect.bisect_right(self._starts, stretch_end)
-        return (
-            num_starting_by_end > 0
-            and self._furthest_ends[num_starting_by_end - 1] >= stretch_start
-        )
+
+def _make_spanning_deletion_refs(refs: Iterable[Span]) -> _SpanningDeletionRefs:
+    sorted_refs = sorted(refs)
+    furthest_ends = []
+    furthest_end = 0
+    for _, end in sorted_refs:
+        furthest_end = max(furthest_end, end)
+        furthest_ends.append(furthest_end)
+    return _SpanningDeletionRefs(tuple(start for start, _ in sorted_refs), tuple(furthest_ends))
+
+
+def _is_touching_any_ref(refs: _SpanningDeletionRefs, stretch: Span) -> bool:
+    """Whether a REF overlaps or lies next to stretch."""
+    stretch_start, stretch_end = stretch
+    num_starting_by_end = bisect.bisect_right(refs.starts, stretch_end)
+    return num_starting_by_end > 0 and refs.furthest_ends[num_starting_by_end - 1] >= stretch_start
 
 
 def _find_spanning_deletion_refs(
@@ -396,7 +408,9 @@ def _find_spanning_deletion_refs(
         vcf_record = input_record.vcf_record
         if vcf_record is not None and _SPANNING_DELETION in vcf_record.alleles[1:]:
             refs.setdefault(vcf_record.contig, []).append((vcf_record.start, vcf_record.end))
-    return {contig: _SpanningDeletionRefs(contig_refs) for contig, contig_refs in refs.items()}
+    return {
+        contig: _make_spanning_deletion_refs(contig_refs) for contig, contig_refs in refs.items()
+    }
 
 
 # --- The reach (§1) ---
@@ -477,12 +491,12 @@ def _make_pieces(vcf_record: VcfRecord, reference: IndexedFasta) -> dict[_Piece,
     for allele_index, edit in enumerate(_find_edits(vcf_record)):
         if edit is None:
             continue
-        for piece in _split_edit(vcf_record.contig, edit, reference):
+        for piece in _make_edit_pieces(vcf_record.contig, edit, reference):
             allele_indices_of_piece.setdefault(piece, set()).add(allele_index)
     return allele_indices_of_piece
 
 
-def _split_edit(contig: str, edit: _Edit, reference: IndexedFasta) -> Iterator[_Piece]:
+def _make_edit_pieces(contig: str, edit: _Edit, reference: IndexedFasta) -> Iterator[_Piece]:
     """The pieces of one edit: its replaced bases and its new ones aligned from the left, a
     SNP where they differ, then the bases left over, inserted after the last aligned
     position or deleted, with the base before as the anchor."""
@@ -528,14 +542,19 @@ def _make_piece_record(
         phase_set = genotype.phase_set if genotype.phased else new_phase_set
         sample_fields.append(_format_sample(alleles, phased=True, phase_set=phase_set))
     return _make_rewritten_record(
-        input_record, piece.start + 1, piece.ref, [piece.alt], input_record.fields[5], sample_fields
+        input_record,
+        piece.start + 1,
+        piece.ref,
+        [piece.alt],
+        input_record.fields[_QUAL_COLUMN],
+        sample_fields,
     )
 
 
 # --- Writing (§2.3) ---
 
 
-def _keep(input_record: _InputRecord) -> _OutputRecord:
+def _make_kept_record(input_record: _InputRecord) -> _OutputRecord:
     return _OutputRecord(
         contig=input_record.contig,
         pos_1based=input_record.pos_1based,
@@ -577,7 +596,7 @@ def _write_output(
 ) -> None:
     """The header and the records, sorted by contig in the input's order and by POS; records
     of one POS keep the order they are given in, which is the input's."""
-    contig_ranks = _rank_contigs(record.contig for record in respelling_input.input_records)
+    contig_ranks = _make_contig_ranks(record.contig for record in respelling_input.input_records)
     sorted_records = sorted(
         output_records, key=lambda record: (contig_ranks[record.contig], record.pos_1based)
     )
@@ -586,10 +605,10 @@ def _write_output(
     )
     lines = [*header_lines, *(record.line for record in sorted_records)]
     data = "".join(f"{line}\n" for line in lines).encode("utf-8")
-    output.write_bytes(_compress_bgzf(data) if respelling_input.is_gzipped else data)
+    output.write_bytes(_make_bgzf(data) if respelling_input.is_gzipped else data)
 
 
-def _rank_contigs(contigs: Iterable[str]) -> Mapping[str, int]:
+def _make_contig_ranks(contigs: Iterable[str]) -> Mapping[str, int]:
     return {contig: rank for rank, contig in enumerate(dict.fromkeys(contigs))}
 
 
@@ -619,7 +638,7 @@ _BGZF_HEADER = struct.Struct("<4BI2BH2BHH")
 _BGZF_FOOTER = struct.Struct("<II")  # CRC32 and ISIZE, the size of the text
 
 
-def _compress_bgzf(data: bytes) -> bytes:
+def _make_bgzf(data: bytes) -> bytes:
     """data as a BGZF file."""
     blocks = []
     for offset in range(0, len(data), _BGZF_TEXT_BYTES):
