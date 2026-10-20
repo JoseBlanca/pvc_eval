@@ -117,13 +117,14 @@ none or the GT is unphased. Nothing else of the input record is kept: pvc_eval r
 FILTER or INFO, and of the FORMAT fields only GT, PS and GQ, the genotype quality, which only
 fills the `gq` columns of `doc/spec.md` §6, which §7.4 does not check.
 
-**A new phase set** is a PS that no record of the input uses: M + n, where M is the largest PS of
-the input that is a whole number, 0 when there is none, and n is the place of the record it is
+**A new phase set** is a PS that no record of the input uses: the n-th whole number, counting
+from 1, that is not the PS of any record of the input, where n is the place of the record it is
 made for among the input's record lines, from 1. Each record gets its own, and a sample's new PS
-is the record's. `parse_vcf` compares PS values as text, so a PS of the input that is not a whole
-number cannot equal one. Python turns text of at most 4,300 digits into a number, so a PS of more
-digits, leading zeros aside, counts as one that is not a whole number; no new phase set reaches
-its length.
+is the record's. A PS of the input is compared as `parse_vcf` compares it, as text, so `007`
+does not take 7. A new phase set is at most the number of record lines plus the number of
+distinct PS values of the input, whatever those values are; numbering from the input's largest
+PS, as the spec first said, went past bcftools' 32-bit limit and Python's 4,300 digits on inputs
+with a PS near either (the review of milestone 5). Where the input has no PS, the n-th number is n.
 
 **The header** is the input's, line by line, with up to two lines added before `#CHROM` when the
 output writes a rewritten record. The first, when a rewritten record has sample columns and the
