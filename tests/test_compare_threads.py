@@ -11,6 +11,8 @@ import gzip
 import logging
 import random
 import struct
+import subprocess
+import sys
 import threading
 from collections.abc import Callable, Generator, Iterator, Sequence
 from concurrent.futures import Future
@@ -687,3 +689,44 @@ def test_file_of_50000_records_read_to_its_last_row_gives_the_rows_without_threa
     expected = _run_compare(case, _BIG_CONFIG, 0)
     assert len(expected[0]) > 10_000
     _check_same_run(_run_compare(case, _BIG_CONFIG, 1), expected)
+
+
+def test_ctrl_c_while_the_indexes_are_read_rises_as_it_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = write_compare_case(tmp_path)
+
+    def parse_index_contigs_interrupted(vcf_path: Path) -> frozenset[str]:  # noqa: ARG001 -- the signature of parse_index_contigs
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(compare_module, "parse_index_contigs", parse_index_contigs_interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        _call_with_timeout(lambda: list(compare(case.a, case.b, case.reference)))
+
+
+_UNCLOSED_SCRIPT = """
+import sys
+from pathlib import Path
+from pvc_eval.compare import CompareConfig, compare
+
+directory = Path(sys.argv[1])
+rows = compare(
+    directory / "a.vcf", directory / "b.vcf", directory / "ref.fa", CompareConfig(chain_distance=0)
+)
+print(next(rows).contig)
+"""
+
+
+def test_stream_never_closed_ends_python_with_no_error(tmp_path: Path) -> None:
+    # Python closes the stream as it exits, with a reader waiting on its full buffer.
+    _write_big_case(tmp_path)
+    completed = subprocess.run(
+        [sys.executable, "-c", _UNCLOSED_SCRIPT, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=_TIMEOUT,
+    )
+    assert (completed.returncode, completed.stdout) == (0, "chr1\n")
+    assert "Error" not in completed.stderr
+    assert "Exception" not in completed.stderr

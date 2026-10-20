@@ -15,6 +15,7 @@ PVC_STRATA, the value of CompareConfig.strata for --strata pvc; DEFAULT_FINDER_T
 
 import functools
 import logging
+import sys
 import threading
 import time
 from collections import deque
@@ -333,8 +334,8 @@ def _start_threads(
     reader, as the loci side takes them, and the finder (doc/specs/compare.md, "Which thread
     does what").
 
-    When stack exits, the stop is set, and the readers are waited for (doc/specs/compare.md,
-    "Errors, and stopping early").
+    When stack exits, the stop is set, and the readers started are waited for
+    (doc/specs/compare.md, "Errors, and stopping early").
     """
     stop = threading.Event()
     finder = None
@@ -376,12 +377,17 @@ def _stop_threads(
     waiting_on_stop: Iterable[_RecordBuffer | _Finder],
 ) -> None:
     """Sets the stop, wakes the threads that wait on a buffer or on the finder's line, and
-    waits for the readers to end. A scan in progress is not waited for."""
+    waits for the readers started to end. A scan in progress is not waited for."""
     stop.set()
     for buffer_or_finder in waiting_on_stop:
         buffer_or_finder.stop()
+    # A stream that Python closes as it exits cannot wait for a thread; the readers end with
+    # Python, and the reference is no longer read.
+    if sys.is_finalizing():
+        return
     for reader in readers:
-        reader.join()
+        if reader.ident is not None:
+            reader.join()
 
 
 class _RecordBuffer:
