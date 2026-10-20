@@ -94,6 +94,22 @@ P4 on step 7, P5 and P6 on the peak memory.
   slices and `re.finditer`), and the Ruzzo–Tompa loop takes one step per run: 9.2 million runs
   instead of 24 million scores on 4 Mb. Tried by the algorithms reviewer: step 1 from 5.6 s to 4.3
   s on 4 Mb. Code: about the same size.
+
+  *Kept, commit 7c3294a.* The code adds 65 lines to segments.py and removes 23: the score
+  function finds the runs (about 15 lines, with the translation table and a comment on why the
+  earlier base is read through it), and the loop takes a run's length. Three tests of the runs
+  were added; a deliberate break, N matching N, failed two of them. The BEDs and the digests of
+  every segment equal the baseline's on 4, 16 and 64 Mb, and 912 tests pass. On 4 Mb, cProfile
+  counts 4,598,463 calls of `_make_open_subsequence` instead of 6,762,676, and the loop takes
+  9,199,504 steps instead of 23,999,979. In alternating pairs against the baseline:
+
+  | input | baseline | P1 | median ratio | peak RSS |
+  |---|---|---|---|---|
+  | 4 Mb, 10 pairs | 5.732 ± 0.017 s | 4.487 ± 0.013 s | 0.783 | 57.1 → 57.0 MB |
+  | 16 Mb, 5 pairs | 24.042 ± 0.120 s | 18.942 ± 0.045 s | 0.787 | 128.7 → 128.6 MB |
+
+  The code is somewhat more complicated and the gain is over 20%, so it is kept, with a comment
+  at the change that gives these numbers.
 - **P2. Step 1: a run alone on an empty stack becomes final without an open subsequence.** It is
   held as plain numbers until the gap after it decides it. The open subsequences built on 4 Mb
   fall from 6.76 million to 113,000. Tried with P1: step 1 2.4 s on 4 Mb. Code: about 15 lines and
