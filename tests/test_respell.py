@@ -23,7 +23,6 @@ from pvc_eval.vcf import VcfGenotype, parse_vcf
 
 _FILEFORMAT = "##fileformat=VCFv4.3"
 _PS_INTEGER = '##FORMAT=<ID=PS,Number=1,Type=Integer,Description="Phase set">'
-_PS_STRING = '##FORMAT=<ID=PS,Number=1,Type=String,Description="Phase set">'
 # The 28 bytes that end a BGZF file, an empty block (the SAM/BAM format specification, §4.1.2).
 _BGZF_EOF = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
 
@@ -485,8 +484,8 @@ def test_a_new_phase_set_is_one_no_record_of_the_input_uses(
         pytest.param(
             ["2 A T 0|1:chr1_5", "5 T G 0/1"],
             [_FILEFORMAT],
-            [_FILEFORMAT, _PS_STRING],
-            id="string-when-a-ps-is-no-number",
+            [_FILEFORMAT],
+            id="not-added-when-a-ps-is-no-number",
         ),
     ],
 )

@@ -36,9 +36,7 @@ _GZIP_MAGIC = b"\x1f\x8b"  # the first two bytes of a gzip file, and so of a bgz
 _SPANNING_DELETION = "*"
 _NUM_FIXED_COLUMNS = 9  # CHROM to FORMAT
 _PS_LINE_START = "##FORMAT=<ID=PS,"
-# §2.3: Type=String when some PS of the input is not a whole number, which bcftools 1.24
-# refuses under Type=Integer.
-_PS_LINE = '##FORMAT=<ID=PS,Number=1,Type={},Description="Phase set">'
+_PS_LINE = '##FORMAT=<ID=PS,Number=1,Type=Integer,Description="Phase set">'
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -587,16 +585,18 @@ def _rank_contigs(contigs: Iterable[str]) -> Mapping[str, int]:
 
 
 def _make_header(respelling_input: _RespellingInput, *, has_rewritten: bool) -> list[str]:
-    """The input's header, with a PS line before #CHROM when a rewritten record needs one."""
+    """The input's header, with a PS line before #CHROM when a rewritten record needs one
+    and every PS of the input is a whole number (§2.3): bcftools 1.24 stops on a PS such as
+    `chr1_5` declared Integer and warns on one declared String, and an input with such a PS
+    and no PS line already gets its warning."""
     header_lines = list(respelling_input.header_lines)
     has_ps_line = any(line.startswith(_PS_LINE_START) for line in header_lines)
-    if not has_rewritten or has_ps_line:
+    if not has_rewritten or has_ps_line or respelling_input.has_text_phase_set:
         return header_lines
-    ps_type = "String" if respelling_input.has_text_phase_set else "Integer"
     chrom_index = next(
         index for index, line in enumerate(header_lines) if line.startswith("#CHROM")
     )
-    header_lines.insert(chrom_index, _PS_LINE.format(ps_type))
+    header_lines.insert(chrom_index, _PS_LINE)
     return header_lines
 
 
