@@ -14,7 +14,7 @@ import bisect
 from collections import deque
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, fields
-from enum import Enum
+from enum import Enum, StrEnum
 from importlib.metadata import version
 from pathlib import Path
 from typing import TextIO
@@ -24,7 +24,7 @@ from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
 
 
-class RegionType(Enum):
+class RegionType(StrEnum):
     """The type of a segment of the segmented genome (doc/spec.md §5.1)."""
 
     GENERIC = "generic"
