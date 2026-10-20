@@ -1693,6 +1693,7 @@ _needs_bcftools = pytest.mark.skipif(
 # re-spelling since a re-spelling moves records (§2.3).
 _MESSAGE_POSITION = re.compile(r"[^\s:]+:\d+")
 _ORACLE_EXAMPLES = 300  # §9.2
+_REWRITTEN_SHARE_EXAMPLES = 1000  # §9.2: the fixed files the rewritten share is counted on
 _BCFTOOLS_EXAMPLES = 50  # §9.2
 
 
@@ -1773,23 +1774,19 @@ def test_the_gts_of_a_generated_record_with_no_alt_are_of_0_and_dot(
 
 # §9.2: at least one generated file in ten has a record each re-spelling rewrites, so that a
 # re-spelling that kept everything fails. As for the pairs below, the count is of fixed
-# files: the files with a shifted record ranged from 22 to 77 over 30 random runs of 300 on
-# 20 October 2026, around the 30 asserted, since hypothesis draws the files of one run
-# alike, and the fixed run gives 216 for the decomposition, 31 for the shift, 32 for the
-# spanning deletions and 49 for the merge (21 October 2026); the properties stay random.
-# The generator draws deletions over other records, pairs of SNPs past the other records and
-# indels of planted repeats more often than the other kinds, so that the spanning
-# deletions, the merge and the shift each rewrite more than one random file in ten on
-# average (tests.respell_generator). The fixed files change with any change to how the
-# generator draws, even one that draws the same values through another strategy: making a
-# SNP of the pair with a strategy of its own took the merge's fixed count from 49 to 24.
+# files, and the properties stay random: hypothesis draws the files of one run alike, so
+# runs of 300 random files ranged from 7.3% to 19.3% for the `*` re-spelling around a mean
+# of 11.7% (tests.respell_generator), and any change to how the generator draws, even of
+# the same values through another strategy, reshuffles the fixed files. On 1,000 fixed
+# files (21 October 2026), the decomposition rewrites 736, the shift 142, the spanning
+# deletions 110 and the merge 156; each re-spelling takes some 5 s.
 @pytest.mark.parametrize("respelling", RESPELLING_PARAMS)
 def test_a_tenth_of_the_generated_files_have_a_record_each_respelling_rewrites(
     tmp_path_factory: pytest.TempPathFactory, respelling: Respelling
 ) -> None:
     tally: Counter[str] = Counter()
 
-    @settings(max_examples=_ORACLE_EXAMPLES, deadline=None, derandomize=True)
+    @settings(max_examples=_REWRITTEN_SHARE_EXAMPLES, deadline=None, derandomize=True)
     @given(generated=make_generated_vcf())
     def count_rewritten(generated: GeneratedVcf) -> None:
         with ExitStack() as stack:
