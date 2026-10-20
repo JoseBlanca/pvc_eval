@@ -1,7 +1,7 @@
 # The re-spelling program — specification
 
-*Status: approved by the owner on 20 October 2026, with Open 1 not yet answered, so that the
-implementer keeps the rule meanwhile. No code of it exists yet. The tests
+*Status: approved by the owner on 20 October 2026, who answered Open 1 the same day: keep the
+rule. No code of it exists yet. The tests
 of reconciliation already decompose records, in `_make_decomposed_lines` of
 `tests/test_reconcile_property.py`, and the decomposition here replaces it. It builds the program
 `doc/spec.md` §7.4 asks for, and stands on `doc/spec.md` §2, §5.2, §5.4 and §7, on
@@ -33,8 +33,8 @@ on the same haplotype. Beyond that rule, this spec decides:
 - that a rewritten record keeps only CHROM, POS, REF, ALT, QUAL and the GT and PS of each sample;
 - what the oracle compares where the phase is not known (§8).
 
-One point is the owner's, **Open 1**, at the end: whether the `*` re-spelling may write GATK's
-commonest case, a deletion and a SNP under it, both heterozygous and unphased.
+The owner decided on 20 October 2026 (**Open 1**, at the end) that the `*` re-spelling does not
+write GATK's commonest case, a deletion and a SNP under it, both heterozygous and unphased.
 
 Positions in the cases are 1-based and inclusive, as in a VCF. In the Python interface they are
 0-based and half-open, as everywhere inside pvc_eval.
@@ -295,7 +295,7 @@ The cases use the reference of `doc/spec.md` §5.4, `CAGTC` at 9–13, with `N` 
 | 4 | `9 CAGT C 0\|1:5`, `11 G A 0/0` | `9 CAGT C 0\|1:5` as read, `11 G A,* 0\|2:5` |
 | 5 | `9 CAGT C 1`, `11 G A 0`, ploidy 1 | `9 CAGT C 1` as read, `11 G A,* 2:.` |
 | 6 | `9 CAGT C 1\|0:5`, `11 G A .\|1:5` | both as read: the haplotype with the deletion is `.` at 11 |
-| 7 | `9 CAGT C 0/1`, `11 G A 0/1` | both as read: unphased, the SNP may share the deletion's haplotype, where it collides with it (**Open 1**) |
+| 7 | `9 CAGT C 0/1`, `11 G A 0/1` | both as read: unphased, the SNP may share the deletion's haplotype, where it collides with it (Open 1, answered) |
 | 8 | `9 CAGT C 0/1`, `11 G A,* 1/2` | both as read: a `*` is there already |
 
 Only records already in the file get a `*`. GATK writes a `*` only at a record some sample needs
@@ -600,7 +600,8 @@ the real VCF's run is the first measurement.
 
 ## 11. Open points
 
-**Open 1. GATK's commonest `*`.** GATK writes a deletion `9 CAGT C 0/1` and a SNP under it
+No point is open. **Open 1. GATK's commonest `*`**, answered by the owner on 20 October 2026: keep
+the rule. The question was this. GATK writes a deletion `9 CAGT C 0/1` and a SNP under it
 `11 G A 0/1` as `11 G A,* 1/2`, both unphased. Unphased, the SNP may share the deletion's
 haplotype, where the two collide, so by the rule of 19 October 2026 the `*` re-spelling keeps
 both records (T7) and never writes this case. Reconciliation already gives the two spellings the
@@ -617,7 +618,7 @@ them on one haplotype is impossible in both.
   rule that departs from "edits that touch are kept" and that the oracle has to follow too: one
   more condition in §5, its cases, and a property that draws the case.
 
-Meanwhile the implementer keeps the rule.
+The owner chose to keep the rule, on 20 October 2026.
 
 ## 12. Not in this spec
 

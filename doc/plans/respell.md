@@ -25,10 +25,8 @@ Out, with where it goes:
   rows to `compare()` is a change for when it arrives.
 - Chaining re-spellings, and anything in `src/` or on the command line (spec §12).
 
-**Open 1** of the spec, GATK's unphased `*`, is not answered; milestone 5 builds the rule the spec
-keeps meanwhile. An answer of "allow it" changes the spec's §5 first; it is built in milestone 5
-when it comes before milestone 5 starts, and as a milestone 7 when it comes later. Milestones 1 to
-4 and 6 do not depend on it.
+The spec has no open point: the owner answered Open 1 on 20 October 2026, keep the rule, which
+milestone 5 builds.
 
 ## Before the first milestone
 
