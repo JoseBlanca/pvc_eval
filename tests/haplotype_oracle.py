@@ -18,6 +18,7 @@ import bisect
 import itertools
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from enum import Enum, StrEnum
 from pathlib import Path
 
 from pvc_eval.fasta import IndexedFasta
@@ -37,14 +38,28 @@ from pvc_eval.vcf import (
 ORACLE_CAP = 4096
 
 _SPANNING_DELETION = "*"
-_MALFORMED_GT_REASON = "malformed GT"
-_PLOIDY_MISMATCH_REASON = "ploidy mismatch"
 _MAX_LISTED = 10  # the genotypes a message lists of each file, so that it stays readable
 
 _IMPOSSIBLE = sentinel("_IMPOSSIBLE")
 """A haplotype whose edits collide, or that carries a `*` no edit covers (§8)."""
 _OVER_CAP = sentinel("_OVER_CAP")
 """A window or a pair with more than ORACLE_CAP phase assignments."""
+
+
+class _InvalidReason(StrEnum):
+    """Why a sample is invalid over a window, in the words of doc/spec.md §6."""
+
+    MALFORMED_GT = "malformed GT"
+    PLOIDY_MISMATCH = "ploidy mismatch"
+
+
+class _UnitKind(Enum):
+    """How a phase unit is named: by the phase set of its phased GTs, or by the line of its
+    one unphased GT."""
+
+    PHASE_SET = "phase set"
+    LINE = "line"
+
 
 # What one haplotype gives over one window: a sequence, or MISSING.
 type _HaplotypeValue = str | MISSING
@@ -53,10 +68,10 @@ type _HaplotypeValue = str | MISSING
 type _Genotype = tuple[tuple[_HaplotypeValue, ...], ...]
 # What a sample gives over a window or a pair: its possible genotypes, the reason it is
 # invalid there, or _OVER_CAP.
-type _SampleResult = frozenset[_Genotype] | str | _OVER_CAP
+type _SampleResult = frozenset[_Genotype] | _InvalidReason | _OVER_CAP
 # A phase unit of a sample (doc/specs/reconciliation.md §4.1): the phase set of a phased GT,
 # None for a phased GT with no PS, or the line of an unphased one, a unit of its own.
-type _UnitKey = tuple[str, str | int | None]
+type _UnitKey = tuple[_UnitKind, str | int | None]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -131,38 +146,59 @@ def check_same_haplotypes(
                     for pair in _find_linked_pairs(window_records, sample_index)
                 }
             )
-            comparisons: list[tuple[tuple[int, ...], bool]] = [
-                ((index,), False) for index in range(len(windows))
+            are_windows_compared = [
+                _check_windows(
+                    contig, windows, windows_records, (index,), sample_index, sample, ploidy
+                )
+                for index in range(len(windows))
             ]
-            comparisons += [(pair, True) for pair in pairs]
-            for window_indices, is_pair in comparisons:
-                results = [
-                    _find_sample_result(
-                        [windows[index] for index in window_indices],
-                        [window_records[index] for index in window_indices],
-                        sample_index,
-                        ploidy,
-                    )
-                    for window_records in windows_records
-                ]
-                # A reason needs no phase assignment, and is compared whatever the cap.
-                has_reason = any(isinstance(result, str) for result in results)
-                if any(result is _OVER_CAP for result in results) and not has_reason:
-                    num_over_cap += 1
-                    continue
-                result_a, result_b = results
-                if result_a != result_b:
-                    where = _format_windows(contig, [windows[index] for index in window_indices])
-                    raise AssertionError(
-                        f"{where}, sample {sample}: {_format_difference(result_a, result_b)}"
-                    )
-                if is_pair:
-                    num_linked_pairs += 1
-                else:
-                    num_windows += 1
+            are_pairs_compared = [
+                _check_windows(contig, windows, windows_records, pair, sample_index, sample, ploidy)
+                for pair in pairs
+            ]
+            num_windows += are_windows_compared.count(True)
+            num_linked_pairs += are_pairs_compared.count(True)
+            num_over_cap += are_windows_compared.count(False) + are_pairs_compared.count(False)
     return HaplotypeComparison(
         num_windows=num_windows, num_linked_pairs=num_linked_pairs, num_over_cap=num_over_cap
     )
+
+
+def _check_windows(
+    contig: str,
+    windows: Sequence[_Window],
+    windows_records: Sequence[Sequence[Sequence[VcfRecord]]],
+    window_indices: Sequence[int],
+    sample_index: int,
+    sample: str,
+    ploidy: int,
+) -> bool:
+    """Check that a sample gives the same in both files over one window, or over a pair of
+    them together, and say whether it was compared: not when it is over the cap in either
+    file and invalid in neither, since a reason needs no phase assignment.
+
+    windows_records: for each file, the records of each window.
+    """
+    selected_windows = [windows[index] for index in window_indices]
+    results = [
+        _find_sample_result(
+            selected_windows,
+            [window_records[index] for index in window_indices],
+            sample_index,
+            ploidy,
+        )
+        for window_records in windows_records
+    ]
+    has_reason = any(isinstance(result, _InvalidReason) for result in results)
+    if any(result is _OVER_CAP for result in results) and not has_reason:
+        return False
+    result_a, result_b = results
+    if result_a != result_b:
+        raise AssertionError(
+            f"{_format_windows(contig, selected_windows)}, sample {sample}:"
+            f" {_format_difference(result_a, result_b)}"
+        )
+    return True
 
 
 def _read_records_by_contig(
@@ -181,21 +217,14 @@ def _has_alt(vcf_record: VcfRecord) -> bool:
     return len(vcf_record.alleles) > 1
 
 
-def _find_window_span(vcf_record: VcfRecord) -> tuple[int, int]:
-    """The stretch a record with an ALT adds to the windows: its span, or its REF when its
-    only ALT is `*`."""
-    if all(alt == _SPANNING_DELETION for alt in vcf_record.alleles[1:]):
-        return vcf_record.start, vcf_record.end
-    return vcf_record.span
-
-
 def _make_windows(
     reference: IndexedFasta, contig: str, contig_records: Sequence[Sequence[VcfRecord]]
 ) -> list[_Window]:
     """The windows of a contig: the spans of the records with an ALT of both files, sorted,
     joined while they overlap or lie next to each other."""
+    # A record whose only ALT is `*` has its REF as its span (§8), as parse_vcf gives it.
     spans = sorted(
-        _find_window_span(vcf_record)
+        vcf_record.span
         for records in contig_records
         for vcf_record in records
         if _has_alt(vcf_record)
@@ -219,8 +248,8 @@ def _find_window_records(
     window_records: list[list[VcfRecord]] = [[] for _ in windows]
     for vcf_record in records:
         if _has_alt(vcf_record):
-            start, _ = _find_window_span(vcf_record)
-            window_records[bisect.bisect_right(starts, start) - 1].append(vcf_record)
+            span_start, _ = vcf_record.span
+            window_records[bisect.bisect_right(starts, span_start) - 1].append(vcf_record)
             continue
         # The windows are sorted and apart, so those the REF overlaps are consecutive, from
         # the first that ends after the REF starts.
@@ -233,8 +262,8 @@ def _find_window_records(
 
 def _find_unit_key(vcf_record: VcfRecord, genotype: VcfGenotype) -> _UnitKey:
     if genotype.phased:
-        return "phase set", genotype.phase_set
-    return "line", vcf_record.line_number
+        return _UnitKind.PHASE_SET, genotype.phase_set
+    return _UnitKind.LINE, vcf_record.line_number
 
 
 def _is_heterozygous(genotype: VcfGenotype) -> bool:
@@ -284,9 +313,9 @@ def _find_sample_result(
         vcf_record.genotypes[sample] for records in windows_records for vcf_record in records
     ]
     if any(genotype is MALFORMED_GT for genotype in genotypes):
-        return _MALFORMED_GT_REASON
+        return _InvalidReason.MALFORMED_GT
     if any(genotype is OTHER_PLOIDY_GT for genotype in genotypes):
-        return _PLOIDY_MISMATCH_REASON
+        return _InvalidReason.PLOIDY_MISMATCH
     blocks = _find_blocks(windows_records, sample)
     # The first block keeps the order written, since a genotype is a multiset.
     orders = list(itertools.permutations(range(ploidy)))
@@ -306,6 +335,11 @@ def _find_sample_result(
         else:
             possible_genotypes.add(tuple(sorted(haplotypes, key=_make_sort_key)))
     return frozenset(possible_genotypes)
+
+
+def _make_sort_key(values: Sequence[_HaplotypeValue]) -> tuple[tuple[bool, str], ...]:
+    """A haplotype's values in an order that puts MISSING after every sequence."""
+    return tuple((value is MISSING, "" if value is MISSING else value) for value in values)
 
 
 def _find_haplotype_values(
@@ -425,10 +459,6 @@ def _apply_edits(window: _Window, edits: Sequence[_Edit]) -> str:
 # --- Messages ---
 
 
-def _make_sort_key(values: Sequence[_HaplotypeValue]) -> tuple[tuple[bool, str], ...]:
-    return tuple((value is MISSING, "" if value is MISSING else value) for value in values)
-
-
 def _format_windows(contig: str, windows: Sequence[_Window]) -> str:
     return f"{contig}:" + " and ".join(f"{window.start + 1}-{window.end}" for window in windows)
 
@@ -449,8 +479,8 @@ def _format_difference(result_a: _SampleResult, result_b: _SampleResult) -> str:
 def _format_count(result: _SampleResult) -> str:
     if result is _OVER_CAP:
         return f"more than {ORACLE_CAP} phase assignments"
-    if isinstance(result, str):
-        return result
+    if isinstance(result, _InvalidReason):
+        return result.value
     if not result:
         return "no genotype"
     return "1 genotype" if len(result) == 1 else f"{len(result)} genotypes"

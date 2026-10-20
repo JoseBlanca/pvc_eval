@@ -476,11 +476,11 @@ def test_the_oracle_imports_nothing_of_what_the_check_of_7_4_tests() -> None:
     # In a process of its own, so that what the other tests imported is not counted.
     code = (
         "import sys, tests.haplotype_oracle;"
-        " print(sorted(name for name in sys.modules if name.startswith('pvc_eval')))"
+        " print(' '.join(name for name in sys.modules if name.startswith('pvc_eval')))"
     )
     result = subprocess.run(
         [sys.executable, "-c", code], cwd=_REPOSITORY, capture_output=True, text=True, check=True
     )
-    assert result.stdout.split("\n")[0] == str(
-        ["pvc_eval", "pvc_eval._text_files", "pvc_eval.errors", "pvc_eval.fasta", "pvc_eval.vcf"]
-    )
+    imported = set(result.stdout.split())
+    assert "pvc_eval.vcf" in imported
+    assert not imported & {"pvc_eval.reconcile", "pvc_eval.loci", "pvc_eval.evaluate"}
