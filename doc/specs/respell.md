@@ -468,10 +468,10 @@ possible genotypes over some such pair, of A's blocks or of B's, and the oracle 
   common position, an insertion lies between two positions one edit replaces, or two insertions
   go in at one point), or when it carries a `*` and no edit it carries replaces, as written, a
   position of that record's REF; the assignment then gives no genotype;
-- **missing**, when it is not impossible and is `.` at some record of the window. A `*` that no
-  edit covers does not make the haplotype impossible when the haplotype is `.` at another record
-  of the window: that `.` might be the deletion that covers it, so the haplotype is missing, as
-  in reconciliation;
+- **missing**, when it is not impossible and is `.` at some record of the window. A `*` is also
+  covered, as in reconciliation, by an edit of any ALT of a record at which the haplotype is
+  `.`, since the haplotype might carry it; a `.` at a record none of whose ALTs covers the `*`
+  leaves the haplotype impossible (found by the review of milestone 2);
 - otherwise **a sequence**: the reference over the window with its edits applied in position
   order, an insertion before a replacement that starts at its point.
 
@@ -485,9 +485,12 @@ A sample with a malformed GT, or a GT of another ploidy, at a record of the wind
 window is compared the same way, by that reason. With ploidy 1 there
 are no assignments and a window has one possible genotype.
 
-A window, or a pair, whose blocks give more than `ORACLE_CAP` assignments is not compared and is
-counted in `num_over_cap`. The tests' generated files never reach it; the check over a real VCF
-reports the count.
+A window, or a pair, whose blocks give more than `ORACLE_CAP` assignments in either file is not
+compared and is counted in `num_over_cap`, unless a sample is `malformed GT` or `ploidy mismatch`
+there, which needs no assignment and is compared whatever the cap. The tests of the re-spellings
+assert that the count is 0 (§9.2), since a re-spelling that lost a phase set over 14 pieces was
+otherwise passed (the review of milestone 2); the check over a real VCF reports it. A message
+gives, for each file, how many genotypes it has and those the other lacks, ten at most.
 
 **The cases**, at `check_same_haplotypes`, on reference `GACGTACGTAC` from position 1, or on
 `CAGTC` at 9–13 for O3:
@@ -531,9 +534,10 @@ records interact:
 - a reference of 12 to 60 bases, made of 2 to 5 pieces, each either 3 to 8 random bases or a
   repeat of a unit of 1 to 3 bases in 3 to 6 copies; in one file of four the contig is exactly
   those bases, so that records reach its ends, and otherwise it is padded with `N`;
-- 1 to 6 records sorted by POS, each with 1 or 2 ALTs: a SNP, a replacement of 2 to 4 bases, the
+- 1 to 6 records on each contig, sorted by POS, each with 1 or 2 ALTs: a SNP, a replacement of 2 to 4 bases, the
   insertion or the deletion of whole units of a repeat at its edge, or a random indel; one record
-  in twenty with no ALT, and one in twenty with a `*` ALT;
+  in twenty with no ALT, whose GTs are drawn from `0` and `.` alone, and one in twenty with a
+  `*` ALT;
 - 1 to 3 samples, ploidy 2 in four files of five and 1 otherwise; each GT phased in one draw of
   two, with a PS of `1`, `2` or none, `.` in one allele of ten, malformed in one GT of fifty, and
   of the other ploidy in one GT of fifty;
@@ -551,7 +555,14 @@ merge is drawn too:
 - **the re-spellings do something**: of the 300 files of each property, at least one in ten has
   a record its re-spelling rewrites, so that a re-spelling that kept everything would fail. The
   count is made in the property and asserted after it; the generator is tuned until each
-  re-spelling reaches it, the `*` one by drawing deletions over other records.
+  re-spelling reaches it, the `*` one by drawing deletions over other records;
+- **the oracle sees phase between windows**: of the 300 files, at least one in five has a pair
+  of windows a block joins (§8), so that a re-spelling that loses or invents a phase set between
+  windows is likely to be caught in one run. With phase drawn as above, one file in fourteen had
+  one, and a defect seen only over a pair was missed by a run of 300 about one time in nine (the
+  review of milestone 2); the generator draws a shared phase set more often to reach it.
+  Every test that checks a re-spelling with the oracle asserts that no window and no pair was
+  over `ORACLE_CAP`.
 
 A failure the properties find, once shrunk, is written into §3 to §6 as a case, and its test is
 kept with its literals.
@@ -597,8 +608,10 @@ comparing each only with those whose REF touches it, since an edit lies within i
 shift's crossed stretch and the records near a `*` are found the same way over the reach. The
 square of the records, which `_make_decomposed_lines` took, would take some 40 minutes on a
 chromosome: 0.96 s for 2,000 records in the reconciliation work (`doc/reports/reconciliation.md`,
-19 October 2026, on the owner's Mac), times 2,500. The oracle holds one window, or one
-pair, at a time, with at most `ORACLE_CAP` assignments for each sample. Neither is measured yet;
+19 October 2026, on the owner's Mac), times 2,500. The oracle holds the records of one contig of
+both files, as the re-spellings hold a file, and works on one window, or one pair, at a time,
+with at most `ORACLE_CAP` assignments for each sample; on 20,000 one-sample records it took
+34 MB and 3.3 s (the review of milestone 2). Neither is measured yet;
 the real VCF's run is the first measurement.
 
 ## 11. Open points
