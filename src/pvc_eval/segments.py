@@ -193,6 +193,10 @@ type _Subsequence = tuple[int, int, int]
 # A run of consecutive scores of one sign: their sum and how many they are.
 type _ScoreRun = tuple[int, int]
 
+# A run of positive scores held over an empty stack: the running totals before and after
+# it, and the indices of its scores, `[start, end)`.
+type _HeldRun = tuple[int, int, int, int]
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _OpenSubsequence:
@@ -236,8 +240,18 @@ def _find_maximal_scoring_subsequences(
     pvc holds every open subsequence to the end. Here, when the running total falls to or
     under the total before every open subsequence, those are final and are yielded: a later
     subsequence starts from a total that low, so it can never reach back into them.
+
+    A run of positive scores that comes to an empty stack is held as plain numbers, and
+    only while one is held is the stack empty. On the stack it would have no subsequence to
+    reach, so it would be open as it is, with link 0, and the least total before would be
+    its own. So the next run that brings the total to or under its total before makes it
+    final, as the stack would, without an open subsequence being made; any other run, or
+    the end of the block, puts it on the stack as it would have been. On 4 Mb of chr1 this
+    leaves 112,962 open subsequences made instead of 4.6 million, and str-regions takes 2.31 s
+    instead of 4.48 s (doc/reports/perf-str-finder.md, P2).
     """
     stack: list[_OpenSubsequence] = []
+    held: _HeldRun | None = None  # a run of positive scores over an empty stack
     lowest_before = 0  # the least total before any open subsequence, when there is one
     total = 0
     index = 0
@@ -247,7 +261,18 @@ def _find_maximal_scoring_subsequences(
             before = total
             total += score
             index += length
-            if score > 0:
+            if held is not None and total <= held[0]:  # a positive run never gets here
+                held_before, through, start, end = held
+                final.append((start, end, through - held_before))
+                held = None
+                continue
+            if held is not None:
+                stack.append(_make_held_open(held))
+                lowest_before = held[0]
+                held = None
+            if score > 0 and not stack:
+                held = (before, total, index - length, index)
+            elif score > 0:
                 open_one, staying = _make_open_subsequence(
                     stack, before, total, index - length, index
                 )
@@ -260,8 +285,18 @@ def _find_maximal_scoring_subsequences(
             elif stack and total <= lowest_before:
                 final.extend(open_one.get_subsequence() for open_one in stack)
                 stack.clear()
+        if held is not None:  # the next block and the index yielded see it on the stack
+            stack.append(_make_held_open(held))
+            lowest_before = held[0]
+            held = None
         yield final, (stack[0].start if stack else index)
     yield [open_one.get_subsequence() for open_one in stack], None
+
+
+def _make_held_open(held: _HeldRun) -> _OpenSubsequence:
+    """The open subsequence of a held run, as the empty stack it is held over makes it."""
+    before, through, start, end = held
+    return _OpenSubsequence(before=before, through=through, start=start, end=end, link=0)
 
 
 def _make_open_subsequence(
