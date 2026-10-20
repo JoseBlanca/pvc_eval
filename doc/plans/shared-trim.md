@@ -1,6 +1,6 @@
 # Plan: one trim of an ALT against its REF
 
-*Status: under way, 20 October 2026. A change with no spec, planned as one milestone, on the
+*Status: done, 20 October 2026. A change with no spec, planned as one milestone, on the
 branch `shared-trim`; the owner asked for it on 20 October 2026.*
 
 Three places trim an ALT against its REF, removing the bases they share first at the left end and
@@ -13,7 +13,7 @@ three one function. It changes no result.
 
 ## Milestone
 
-- [ ] 1. One function that trims an ALT against its REF
+- [x] 1. One function that trims an ALT against its REF
 
 **Deliverables.**
 
@@ -32,3 +32,13 @@ three one function. It changes no result.
 
 **What could go wrong.** `_find_indel_span` runs once per ALT of every record, so the function call
 must not add measurable time to `parse_vcf`.
+
+## Done
+
+`trim_alt(ref, alt) -> tuple[int, str, str]` in `src/pvc_eval/vcf.py` (`ad9d880`, `32e697b`) is
+used by `kind.py`, `reconcile.py` and `vcf.py`. Nine new tests; the checks gave "914 passed, 4
+skipped". The review ran the old and new `_get_edit_kind`, `_make_edit` and `_find_indel_span` on
+85,268 REF/ALT pairs and found their outputs byte-identical, and each fault it put into `trim_alt`
+made a new test fail. `parse_vcf` on the small benchmark input took 297–302 ms before and after,
+within the noise. Not changed: `tests/test_reconcile_property.py` keeps its own trim, because a
+property test's reference version is written apart from the code it checks.
