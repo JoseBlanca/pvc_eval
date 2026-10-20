@@ -1629,6 +1629,29 @@ def test_seeds_write_runs_of_every_length(case_files: CaseFiles, tmp_path: Path)
     }
 
 
+# §6: each record joins the run before it with probability 1/2, so each of the four outputs
+# of the three SNPs comes one time in four, some 500 of 2,000 seeds, with a standard
+# deviation of 19. With a probability of joining of 1/4 or 3/4, all three merged, or none,
+# would come one time in sixteen, some 125.
+def test_a_record_joins_the_run_before_it_one_time_in_two(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    reference = case_files.write_reference(1, "GACGTACGTA")
+    vcf = _write_vcf(tmp_path / "a.vcf", _MERGE_SEEDED_LINES)
+    output = tmp_path / "b.vcf"
+    outputs: Counter[tuple[str, ...]] = Counter()
+    for seed in range(2000):
+        respell_by_merging(vcf, reference, output, seed=seed)
+        outputs[tuple(read_case_lines(output))] += 1
+    assert set(outputs) == {
+        ("2 A T 1/1", "4 G C 1/1", "6 A G 1/1"),
+        ("2 ACG TCC 1/1:.", "6 A G 1/1"),
+        ("2 A T 1/1", "4 GTA CTG 1/1:."),
+        ("2 ACGTA TCCTG 1/1:.",),
+    }
+    assert all(400 <= count <= 600 for count in outputs.values()), outputs
+
+
 # --- The oracle and bcftools (§2.3, §8, §9) ---
 
 _BCFTOOLS = shutil.which("bcftools")
