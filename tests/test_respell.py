@@ -1209,6 +1209,45 @@ def test_a_record_gets_a_star_where_its_haplotype_carries_a_deletion_in_known_ph
     )
 
 
+# §5, the first way the phase is known: both VCF genotypes phased in one phase set. On
+# reference CAGTCAGTCA at 9-18, `11 GTC ATC,GTA` keeps its REF 11-13 when trimmed, with a SNP
+# at 11 and one at 13, and `12 TC T` deletes 13; the SNP at 11 and the deletion of 13 do not
+# touch, so neither record is kept for a touch.
+@pytest.mark.parametrize(
+    ("case_lines", "expected"),
+    [
+        pytest.param(
+            ["11 GTC ATC,GTA 1|0:5", "12 TC T 0|1:6"],
+            ["11 GTC ATC,GTA 1|0:5", "12 TC T 0|1:6"],
+            id="two-phase-sets-give-no-star",
+        ),
+        pytest.param(
+            ["11 GTC ATC,GTA 1/0", "12 TC T 0|1"],
+            ["11 GTC ATC,GTA 1/0", "12 TC T 0|1"],
+            id="the-record-unphased-gives-no-star",
+        ),
+        # Phased with no PS and unphased: neither has a phase set, and they are not in one.
+        pytest.param(
+            ["11 GTC ATC,GTA 1|0", "12 TC T 0/1"],
+            ["11 GTC ATC,GTA 1|0", "12 TC T 0/1"],
+            id="the-deletion-unphased-gives-no-star",
+        ),
+        pytest.param(
+            ["11 GTC ATC,GTA 1|0:5", "12 TC T 0|1:5"],
+            ["11 GTC ATC,GTA,* 1|3:5", "12 TC T 0|1:5"],
+            id="one-phase-set-gives-a-star",
+        ),
+    ],
+)
+def test_a_record_not_all_ref_gets_a_star_only_in_the_phase_set_of_the_deletion(
+    case_files: CaseFiles, tmp_path: Path, case_lines: Sequence[str], expected: Sequence[str]
+) -> None:
+    assert (
+        _respell(case_files, tmp_path, _SPANNING_DELETIONS, "NNNNNNNNCAGTCAGTCA", case_lines)
+        == expected
+    )
+
+
 def test_a_record_given_a_star_is_written_with_its_qual_and_its_gt_and_ps(
     case_files: CaseFiles, tmp_path: Path
 ) -> None:
