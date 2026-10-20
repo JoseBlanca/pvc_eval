@@ -128,7 +128,7 @@ def _check_row(reconciled: ReconciledLocus, sample_pair: SamplePair, row: Outcom
     elif outcome is Outcome.TOO_COMPLEX and result_a is not TOO_COMPLEX:
         problem = f"{outcome}, where file A's own result is not too complex"
     elif result_b != result_a:
-        problem = "file B's result is not file A's"
+        problem = f"{outcome}, and file B's result is not file A's"
     if problem is None:
         return
     locus = reconciled.locus

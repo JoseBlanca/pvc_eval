@@ -124,7 +124,7 @@ _NOT_RESPELLINGS = [
         # outcome is still same genotype, and only the results tell them apart.
         ["2 A T 0|1:5", "4 G C 0|1:5"],
         ["2 A T 0/1", "4 G C 0/1"],
-        "chr1:2-4, sample S0: file B's result is not file A's;"
+        "chr1:2-4, sample S0: same genotype, and file B's result is not file A's;"
         " file A gives ACG/TCC and file B ACG/TCC or ACC/TCG",
         id="lost-phase-assignment",
     ),
