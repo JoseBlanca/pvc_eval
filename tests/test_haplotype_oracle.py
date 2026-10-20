@@ -169,6 +169,65 @@ def _check(
             " only in B: {GT, GT}",
             id="two-replacements-of-one-position-collide",
         ),
+        pytest.param(
+            1,
+            _O_BASES,
+            ["2 A AT 1/1", "2 A AG 1/1", "3 C G ./."],
+            ["2 A AT 1/1", "3 C G ./."],
+            "chr1:2-3, sample S0: file A gives no genotype and file B 1 genotype; only in B: {., .}",
+            id="a-collision-comes-before-a-missing-haplotype",
+        ),
+        # §8: a `*` is covered only by an edit that replaces a base of its REF.
+        pytest.param(
+            1,
+            _O_BASES,
+            ["3 C CT 0|1:5", "3 CGT *,AGA 0|1:5"],
+            ["3 C CT 0|1:5", "3 CGT *,AGA 0|0:5"],
+            "chr1:3-5, sample S0: file A gives no genotype and file B 1 genotype; only in B: {CGT, CTGT}",
+            id="an-insertion-covers-no-star",
+        ),
+        # `.` counts as an allele, so `.|1` is heterozygous and its phase set joins 2 and 10.
+        pytest.param(
+            1,
+            _O_BASES,
+            ["2 A T .|1:5", "10 A G 0|1:5"],
+            ["2 A T .|1:5", "10 A G 0|1:6"],
+            "chr1:2-2 and 10-10, sample S0: file A gives 1 genotype and file B 2 genotypes; only in B: {(T, A), (., G)}",
+            id="a-missing-allele-makes-a-block",
+        ),
+        pytest.param(
+            1,
+            _O_BASES,
+            ["2 A T 0|1:5", "6 A C 0|1:5", "10 A G 0|1:5"],
+            ["2 A T 0|1:5", "6 A C 0|1:6", "10 A G 0|1:5"],
+            "chr1:2-2 and 6-6, sample S0: file A gives 1 genotype and file B 2 genotypes; only in B: {(A, C), (T, A)}",
+            id="a-block-in-three-windows",
+        ),
+        pytest.param(
+            1,
+            _O_BASES,
+            ["2 A T 0|1", "10 A G 0|1"],
+            ["2 A T 0|1", "10 A G 0/1"],
+            "chr1:2-2 and 10-10, sample S0: file A gives 1 genotype and file B 2 genotypes; only in B: {(A, G), (T, A)}",
+            id="phased-gts-with-no-ps-are-one-unit",
+        ),
+        pytest.param(
+            1,
+            _O_BASES,
+            ["3 C CC 1/1", "3 CGT A 1/1"],
+            ["3 CGT A 1/1"],
+            "chr1:2-5, sample S0: file A gives no genotype and file B 1 genotype; only in B: {AA, AA}",
+            id="an-insertion-inside-a-later-replacement-collides",
+        ),
+        # doc/specs/reconciliation.md §4: a malformed GT is the reason before a ploidy mismatch.
+        pytest.param(
+            1,
+            _O_BASES,
+            ["2 A T 0/5", "3 C G 1"],
+            ["2 A T 0/1", "3 C G 1"],
+            "chr1:2-3, sample S0: file A gives malformed GT and file B ploidy mismatch",
+            id="malformed-gt-comes-before-ploidy-mismatch",
+        ),
     ],
 )
 def test_a_file_whose_haplotypes_differ_raises_with_the_window_and_both_sets(
@@ -226,6 +285,38 @@ def test_a_file_whose_haplotypes_differ_raises_with_the_window_and_both_sets(
             ["2 A T 1", "4 G C 1"],
             HaplotypeComparison(num_windows=2, num_linked_pairs=0, num_over_cap=0),
             id="ploidy-mismatch-in-both",
+        ),
+        # §8: an insertion goes before a replacement that starts at its point, ATG and not AGT.
+        pytest.param(
+            ["2 AC AG 1/1", "2 A AT 1/1"],
+            ["2 AC ATG 1/1"],
+            HaplotypeComparison(num_windows=1, num_linked_pairs=0, num_over_cap=0),
+            id="an-insertion-goes-before-a-replacement-at-its-point",
+        ),
+        pytest.param(
+            ["2 A AT 1/1", "3 C G 1/1"],
+            ["2 AC ATG 1/1"],
+            HaplotypeComparison(num_windows=1, num_linked_pairs=0, num_over_cap=0),
+            id="an-insertion-before-the-snp-after-it",
+        ),
+        pytest.param(
+            ["2 ACG A 1/1", "3 C TC 1/1"],
+            ["2 ACG AT 1/1"],
+            HaplotypeComparison(num_windows=1, num_linked_pairs=0, num_over_cap=0),
+            id="an-insertion-at-the-first-base-of-a-deletion",
+        ),
+        # TCG is A to T at 2 once trimmed at the right; untrimmed it would collide with 3.
+        pytest.param(
+            ["2 ACG TCG,ACC 1/1", "3 C T 1/1"],
+            ["2 AC TT 1/1"],
+            HaplotypeComparison(num_windows=1, num_linked_pairs=0, num_over_cap=0),
+            id="the-edit-of-one-alt-of-several-is-trimmed-at-the-right",
+        ),
+        pytest.param(
+            ["2 A T 0|1:5", "6 A C 0|1:5", "10 A G 0|1:5"],
+            ["2 A T 0|1:5", "6 A C 0|1:5", "10 A G 0|1:5"],
+            HaplotypeComparison(num_windows=3, num_linked_pairs=2, num_over_cap=0),
+            id="a-block-in-three-windows-gives-two-pairs",
         ),
     ],
 )
