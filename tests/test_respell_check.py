@@ -120,6 +120,14 @@ _NOT_RESPELLINGS = [
         id="wrong-sequence",
     ),
     pytest.param(
+        # B's GT names an allele past its ALTs, so B is invalid where A is not.
+        ["2 A T 0/1"],
+        ["2 A T 0/3"],
+        "chr1:2-2, sample S0: invalid in B, an outcome a file does not give against itself;"
+        " file A gives 1 genotype and file B invalid, malformed GT; only in A: A/T",
+        id="invalid-in-b-alone",
+    ),
+    pytest.param(
         # Only the second sample differs, so a check of the first sample alone passes it.
         ["2 A T 0/1 0/1"],
         ["2 A T 0/1 1/1"],
