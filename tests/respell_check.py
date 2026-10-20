@@ -80,7 +80,7 @@ def _make_checked_rows(
 ) -> Iterator[OutcomeRow]:
     """The rows of check_respelling_outcomes, each yielded once checked, so that a test can
     see them."""
-    sample_pairs = _pair_samples(vcf_a, vcf_b)
+    sample_pairs = _make_sample_pairs(vcf_a, vcf_b)
     segments: Iterator[GenomeSegment]
     if str_regions is None:
         segments = itertools.chain.from_iterable(
@@ -106,7 +106,7 @@ def _make_checked_rows(
             yield row
 
 
-def _pair_samples(vcf_a: Path, vcf_b: Path) -> tuple[SamplePair, ...]:
+def _make_sample_pairs(vcf_a: Path, vcf_b: Path) -> tuple[SamplePair, ...]:
     """Each sample paired with itself; ValueError when the headers name different samples."""
     samples = parse_vcf_samples(vcf_a)
     samples_b = parse_vcf_samples(vcf_b)
