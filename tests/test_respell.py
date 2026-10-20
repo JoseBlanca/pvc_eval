@@ -785,8 +785,10 @@ def _write_and_decompose(
 
 
 # The properties count, in a Counter of their own test, the files whose re-spelling rewrote a
-# record, and assert the share once hypothesis has run every example (§9.2: at least one file
-# in ten, so that a re-spelling that kept everything would fail). A counter in the module would
+# record, and the oracle's the files with a pair of windows a block joins, and assert the
+# shares once hypothesis has run every example (§9.2: at least one file in ten rewritten, so
+# that a re-spelling that kept everything would fail, and one in five with a pair, so that one
+# that lost a phase set between windows is likely to be caught). A counter in the module would
 # be state that changes between tests (python.md, threads) and would tie the assertion to the
 # order the tests run in; hypothesis's own statistics are reported and cannot be asserted.
 def test_the_decomposition_of_a_generated_file_passes_the_oracle(
@@ -803,13 +805,12 @@ def test_the_decomposition_of_a_generated_file_passes_the_oracle(
             comparison = check_respelled_haplotypes(vcf, output, reference, ploidy=generated.ploidy)
         tally["files"] += 1
         tally["rewritten"] += _is_rewritten(vcf, output)
-        tally["linked pairs"] += comparison.num_linked_pairs
+        tally["with a linked pair"] += comparison.num_linked_pairs > 0
 
     check_decomposition()
     assert tally["files"] >= _ORACLE_EXAMPLES
     assert tally["rewritten"] * 10 >= tally["files"], tally
-    # Pairs of windows were compared, so a re-spelling that lost a phase could be seen.
-    assert tally["linked pairs"] > 0, tally
+    assert tally["with a linked pair"] * 5 >= tally["files"], tally
 
 
 @_needs_bcftools
