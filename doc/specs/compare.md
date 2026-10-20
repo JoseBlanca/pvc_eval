@@ -222,8 +222,13 @@ the last row, and when the caller stops reading the rows early, by closing the i
 exception in the code that reads it, or by Ctrl-C. Once it is set:
 
 - a reader blocked on its full buffer wakes, closes its `parse_vcf` stream, which closes its file
-  and its pool, and ends. `compare()` waits for both readers to end, which takes at most one batch
-  of `parse_vcf`'s work, before it closes the reference;
+  and its pool, and ends, within one batch of `parse_vcf`'s work. Each reader reads the reference
+  through a handle of its own, which it opens and closes, as the finder's threads do, so
+  `compare()` does not wait for the readers before it closes its own. The stop waits for no
+  thread: a stop run by the garbage collector, as when a stream is dropped without being closed,
+  would otherwise wait inside the collector, which can hang Python (found on 20 October 2026,
+  `doc/reports/regions-read.md`). While Python is exiting, the stop does nothing, since every
+  thread of `compare()` is a daemon thread and ends with the process;
 - the finder starts no new contig. A contig already being scanned is not waited for. Its thread
   ends when the scan does, up to 89 s later on GRCh38 with the faster finder (below),
   and its segments are dropped. A scan that calls `segment_contig` after the reference is closed
@@ -232,7 +237,7 @@ exception in the code that reads it, or by Ctrl-C. Once it is set:
   as above; after the stop it drops it. So nothing reaches Python's handler of exceptions in
   threads, which would print a traceback after "Stopped; nothing was written."
 
-The finder's threads are daemon threads, `threading.Thread(daemon=True)`, so that a scan in
+The finder's threads and the readers are daemon threads, `threading.Thread(daemon=True)`, so that a scan in
 progress does not keep Python from exiting for up to 89 s after Ctrl-C, and several minutes with
 the finder on `main`. A
 `ThreadPoolExecutor`, which `.claude/skills/coding/python.md` asks for, makes threads that Python
