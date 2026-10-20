@@ -2077,6 +2077,19 @@ def test_line_on_a_contig_not_read_gives_the_error_of_its_first_fault(
             {"chr2"},
             "chr1:2 (line 4) comes after chr1:5 (line 3).",
         ),
+        (
+            # The line before is not the line of the record before: a blank line and a
+            # comment line come between.
+            "chr2\t5\t.\tG\tT\t.\t.\t.\n\n# a comment\nchr2\t4\t.\tG\tT\t.\t.\t.\n",
+            {"chr1"},
+            "chr2:4 (line 6) comes after chr2:5 (line 3).",
+        ),
+        (
+            "chr1\t5\t.\tA\tG\t.\t.\t.\tGT\t0/1\t0/1\n\n# a comment\n"
+            "chr1\t2\t.\tC\tA\t.\t.\t.\tGT\t0/1\t0/1\n",
+            None,
+            "chr1:2 (line 6) comes after chr1:5 (line 3).",
+        ),
     ],
     ids=[
         "not_read_after_not_read",
@@ -2084,13 +2097,15 @@ def test_line_on_a_contig_not_read_gives_the_error_of_its_first_fault(
         "not_read_after_not_read_of_a_later_contig",
         "read_after_not_read",
         "same_contig_neither_read",
+        "blank_and_comment_lines_between_neither_read",
+        "blank_and_comment_lines_between_both_read",
     ],
 )
 def test_line_out_of_order_with_a_contig_not_read_stops_the_run(
     tmp_path: Path,
     four_contigs: IndexedFasta,
     body: str,
-    contigs: set[str],
+    contigs: set[str] | None,
     out_of_order: str,
 ) -> None:
     path = write_vcf(tmp_path, body)
