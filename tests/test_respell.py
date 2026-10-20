@@ -45,6 +45,7 @@ from pvc_eval.fasta import IndexedFasta
 from pvc_eval.vcf import VcfGenotype, parse_vcf
 
 _PS_INTEGER = '##FORMAT=<ID=PS,Number=1,Type=Integer,Description="Phase set">'
+_GT_STRING = '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">'
 # The 28 bytes that end a BGZF file, an empty block (the SAM/BAM format specification, §4.1.2).
 _BGZF_EOF = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
 
@@ -461,14 +462,21 @@ def test_a_new_phase_set_is_one_no_record_of_the_input_uses(
         pytest.param(
             ["2 A T 0/1", "5 T G 0/1"],
             [FILEFORMAT_LINE, "##contig=<ID=chr1>"],
-            [FILEFORMAT_LINE, "##contig=<ID=chr1>", _PS_INTEGER],
+            [FILEFORMAT_LINE, "##contig=<ID=chr1>", _GT_STRING, _PS_INTEGER],
             id="added-once",
         ),
         pytest.param(
             ["2 A T 0/1", "5 T G 0/1"],
-            [FILEFORMAT_LINE, _PS_INTEGER, "##contig=<ID=chr1>"],
-            [FILEFORMAT_LINE, _PS_INTEGER, "##contig=<ID=chr1>"],
+            [FILEFORMAT_LINE, _GT_STRING, _PS_INTEGER, "##contig=<ID=chr1>"],
+            [FILEFORMAT_LINE, _GT_STRING, _PS_INTEGER, "##contig=<ID=chr1>"],
             id="not-added-when-present",
+        ),
+        # §2.3: a rewritten record writes GT, so a header with no GT line gains one.
+        pytest.param(
+            ["2 A T 0/1", "5 T G 0/1"],
+            [FILEFORMAT_LINE, _PS_INTEGER],
+            [FILEFORMAT_LINE, _PS_INTEGER, _GT_STRING],
+            id="gt-added-when-ps-is-present",
         ),
         pytest.param(
             ["2 AC GT 0/1", "4 G A 0/1"],
@@ -479,31 +487,31 @@ def test_a_new_phase_set_is_one_no_record_of_the_input_uses(
         pytest.param(
             ["2 A T 0|1:chr1_5", "5 T G 0/1"],
             [FILEFORMAT_LINE],
-            [FILEFORMAT_LINE],
+            [FILEFORMAT_LINE, _GT_STRING],
             id="not-added-when-a-ps-is-no-number",
         ),
         # bcftools 1.24 keeps a PS of 2,147,483,647 in an Integer and sets one more to missing.
         pytest.param(
             ["2 A T 0|1:2147483645", "5 T G 0/1"],
             [FILEFORMAT_LINE],
-            [FILEFORMAT_LINE, _PS_INTEGER],
+            [FILEFORMAT_LINE, _GT_STRING, _PS_INTEGER],
             id="added-when-the-new-phase-set-is-2147483647",
         ),
         pytest.param(
             ["2 A T 0|1:2147483646", "5 T G 0/1"],
             [FILEFORMAT_LINE],
-            [FILEFORMAT_LINE],
+            [FILEFORMAT_LINE, _GT_STRING],
             id="not-added-when-the-new-phase-set-is-2147483648",
         ),
         pytest.param(
             ["2 A T 0|1:2147483648", "4 G <DEL> 0/1"],
             [FILEFORMAT_LINE],
-            [FILEFORMAT_LINE],
+            [FILEFORMAT_LINE, _GT_STRING],
             id="not-added-when-a-ps-of-the-input-is-2147483648",
         ),
     ],
 )
-def test_the_header_gains_a_ps_line_where_a_rewritten_record_needs_one(
+def test_the_header_gains_the_gt_and_ps_lines_a_rewritten_record_needs(
     case_files: CaseFiles,
     tmp_path: Path,
     case_lines: Sequence[str],
@@ -533,6 +541,8 @@ def test_kept_records_are_written_byte_for_byte_and_rewritten_ones_with_their_co
     respell_by_decomposing(vcf, reference, tmp_path / "b.vcf")
     assert (tmp_path / "b.vcf").read_bytes() == (
         b"##fileformat=VCFv4.3\n"
+        + _GT_STRING.encode()
+        + b"\n"
         + _PS_INTEGER.encode()
         + b"\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS0\n"
         b"chr1\t2\trs1\tAC\tGT\t50\tPASS\tDP=10\tGT:GQ\t0/1:30\n"
@@ -547,6 +557,8 @@ def test_a_file_with_no_samples_is_written_with_no_format_column(
     reference = case_files.write_reference(1, "GACGTA")
     vcf = _write_vcf(tmp_path / "a.vcf", ["2 AC GT"])
     respell_by_decomposing(vcf, reference, tmp_path / "b.vcf")
+    # With no sample column, no GT is written and the header gains no GT line.
+    assert read_header(tmp_path / "b.vcf") == [FILEFORMAT_LINE, _PS_INTEGER, make_chrom_line(0)]
     assert read_vcf_lines(tmp_path / "b.vcf")[-2:] == [
         "chr1\t2\t.\tA\tG\t.\t.\t.",
         "chr1\t3\t.\tC\tT\t.\t.\t.",
@@ -915,6 +927,7 @@ def test_a_shifted_record_is_written_with_its_qual_and_its_gt_and_ps(
     respell_by_shifting(vcf, reference, tmp_path / "b.vcf")
     assert read_vcf_lines(tmp_path / "b.vcf") == [
         FILEFORMAT_LINE,
+        _GT_STRING,
         _PS_INTEGER,
         "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS0",
         "chr1\t5\t.\tAA\tA\t50\t.\t.\tGT:PS\t0/1:.",

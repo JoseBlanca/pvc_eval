@@ -45,6 +45,8 @@ _REF_COLUMN = 3
 _QUAL_COLUMN = 5
 _FORMAT_COLUMN = 8
 _NUM_FIXED_COLUMNS = 9
+_GT_LINE_START = "##FORMAT=<ID=GT,"
+_GT_LINE = '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">'
 _PS_LINE_START = "##FORMAT=<ID=PS,"
 _PS_LINE = '##FORMAT=<ID=PS,Number=1,Type=Integer,Description="Phase set">'
 # The largest PS bcftools 1.24 keeps in an Integer; it sets 2,147,483,648 to missing (§2.3).
@@ -869,29 +871,35 @@ def _make_contig_ranks(contigs: Iterable[str]) -> Mapping[str, int]:
 def _make_header(
     respelling_input: _RespellingInput, rewritten_records: Sequence[_OutputRecord]
 ) -> list[str]:
-    """The input's header, with a PS line before #CHROM when a rewritten record needs one,
-    and every PS of the input and of the rewritten records is a whole number of at most
-    _MAX_INTEGER_PHASE_SET (§2.3): bcftools 1.24 stops on a PS such as `chr1_5` declared
-    Integer, warns on one declared String, and sets a larger number to missing; an input with
-    such a PS and no PS line already gets its warning."""
+    """The input's header, with the FORMAT lines of GT and PS before #CHROM where the
+    rewritten records need them (§2.3).
+
+    GT, when a rewritten record has sample columns, since it writes GT whatever the input's
+    FORMAT holds. PS, when every PS of the input and of the rewritten records is a whole
+    number of at most _MAX_INTEGER_PHASE_SET: bcftools 1.24 stops on a PS such as `chr1_5`
+    declared Integer, warns on one declared String, and sets a larger number to missing; an
+    input with such a PS and no PS line already gets its warning.
+    """
     header_lines = list(respelling_input.header_lines)
-    has_ps_line = any(line.startswith(_PS_LINE_START) for line in header_lines)
+    rewritten_fields = [record.line.split("\t") for record in rewritten_records]
+    added_lines = []
+    has_samples = any(len(fields) > _NUM_FIXED_COLUMNS for fields in rewritten_fields)
+    if has_samples and not any(line.startswith(_GT_LINE_START) for line in header_lines):
+        added_lines.append(_GT_LINE)
     written_phase_sets = (
-        phase_set
-        for record in rewritten_records
-        for phase_set in _find_phase_sets(record.line.split("\t"))
+        phase_set for fields in rewritten_fields for phase_set in _find_phase_sets(fields)
     )
     if (
-        not rewritten_records
-        or has_ps_line
-        or not respelling_input.are_phase_sets_integer
-        or not all(map(_is_integer_phase_set, written_phase_sets))
+        rewritten_records
+        and not any(line.startswith(_PS_LINE_START) for line in header_lines)
+        and respelling_input.are_phase_sets_integer
+        and all(map(_is_integer_phase_set, written_phase_sets))
     ):
-        return header_lines
+        added_lines.append(_PS_LINE)
     chrom_index = next(
         index for index, line in enumerate(header_lines) if line.startswith("#CHROM")
     )
-    header_lines.insert(chrom_index, _PS_LINE)
+    header_lines[chrom_index:chrom_index] = added_lines
     return header_lines
 
 
