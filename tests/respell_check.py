@@ -7,7 +7,8 @@ result in A.
 Positions are 0-based and half-open, but in the messages, which give a locus 1-based and
 inclusive as a VCF does.
 
-Public: check_respelling_outcomes.
+Public: check_respelling_outcomes; check_outcome_row, its check of one row, which the
+reconciliation property of tests/test_reconcile_property.py uses too.
 """
 
 import itertools
@@ -101,7 +102,7 @@ def _make_checked_rows(
             reconciled, sample_pairs, kind=locus_kind(reconciled.locus), stratum=None
         )
         for sample_pair, row in zip(sample_pairs, rows, strict=True):
-            _check_row(reconciled, sample_pair, row)
+            check_outcome_row(reconciled, sample_pair, row)
             yield row
 
 
@@ -117,9 +118,13 @@ def _make_sample_pairs(vcf_a: Path, vcf_b: Path) -> tuple[SamplePair, ...]:
     )
 
 
-def _check_row(reconciled: ReconciledLocus, sample_pair: SamplePair, row: OutcomeRow) -> None:
-    """Raise AssertionError when a row is not what file A gives against itself, or when the
-    sample's result in B is not its result in A."""
+def check_outcome_row(
+    reconciled: ReconciledLocus, sample_pair: SamplePair, row: OutcomeRow
+) -> None:
+    """Check a row of a reconciled locus, file A against a re-spelling of itself: raise
+    AssertionError, with the locus, the sample, the outcome and what each file gives, when
+    the outcome is not one a file gives against itself, when it is too complex where A's
+    own result is not, or when the sample's result in B is not its result in A."""
     result_a = reconciled.results_a[sample_pair.index_a]
     result_b = reconciled.results_b[sample_pair.index_b]
     outcome = row.outcome

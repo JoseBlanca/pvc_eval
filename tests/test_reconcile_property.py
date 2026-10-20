@@ -14,13 +14,13 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from tests.conftest import CONTIG, CaseFiles, get_locus_bases, pair_samples
 from tests.respell import respell_by_decomposing
+from tests.respell_check import check_outcome_row
 
 from pvc_eval.evaluate import make_outcome_rows
 from pvc_eval.kind import Kind
 from pvc_eval.locus import Locus
-from pvc_eval.outcome import InvalidReason, Outcome
-from pvc_eval.reconcile import PHASING_CAP, TOO_COMPLEX, reconcile
-from pvc_eval.vcf import MISSING, parse_vcf
+from pvc_eval.reconcile import PHASING_CAP, reconcile
+from pvc_eval.vcf import parse_vcf
 
 _BASES = "ACGT"
 
@@ -59,15 +59,6 @@ def _make_case(draw: st.DrawFn) -> tuple[str, list[str], int, int]:
     return bases, [line for _, line in lines], num_samples, phasing_cap
 
 
-_ALLOWED = {
-    Outcome.SAME_GENOTYPE,
-    Outcome.REFERENCE_IN_BOTH,
-    Outcome.MISSING_IN_BOTH,
-    Outcome.INVALID_IN_BOTH,
-    Outcome.TOO_COMPLEX,
-}
-
-
 @settings(max_examples=300, deadline=None)
 @given(case=_make_case())
 def test_a_file_against_its_decomposition_gives_only_the_outcomes_of_itself(
@@ -80,7 +71,6 @@ def test_a_file_against_its_decomposition_gives_only_the_outcomes_of_itself(
         vcf_a = case_files.write_vcf(lines_a, num_samples=num_samples)
         vcf_b = vcf_a.with_name("b.vcf")
         respell_by_decomposing(vcf_a, reference, vcf_b)
-        lines_b = vcf_b.read_text(encoding="utf-8").splitlines()
         records_a = tuple(parse_vcf(vcf_a, reference))
         records_b = tuple(parse_vcf(vcf_b, reference))
         spans = [vcf_record.span for vcf_record in (*records_a, *records_b)]
@@ -96,23 +86,8 @@ def test_a_file_against_its_decomposition_gives_only_the_outcomes_of_itself(
         reconciled = reconcile(
             locus, get_locus_bases(reference, locus), sample_pairs, phasing_cap=phasing_cap
         )
-    # B has A's blocks and its haplotypes A's sequences, so each sample's result is A's, the
-    # same possible genotypes with the same indices or the same reason (§9): the outcome alone
-    # would let a B that lost phase assignments pass.
-    assert reconciled.results_b == reconciled.results_a, (lines_a, lines_b)
+    # B has A's blocks and its haplotypes A's sequences, so each row is one a file gives
+    # against itself and each sample's result is A's (doc/specs/respell.md §9.3).
     rows = make_outcome_rows(reconciled, sample_pairs, kind=Kind.SNP, stratum=None)
     for sample_pair, row in zip(sample_pairs, rows, strict=True):
-        assert row.outcome in _ALLOWED, (lines_a, lines_b, row)
-        # A's own sample result, which does not depend on file B: what A gives against itself.
-        result_a = reconciled.results_a[sample_pair.index_a]
-        if row.outcome is Outcome.TOO_COMPLEX:
-            assert result_a is TOO_COMPLEX, (lines_a, lines_b, row)
-        elif row.outcome is Outcome.INVALID_IN_BOTH:
-            assert isinstance(result_a, InvalidReason), (lines_a, lines_b, row)
-        elif row.outcome is Outcome.MISSING_IN_BOTH:
-            assert isinstance(result_a, tuple), (lines_a, lines_b, row)
-            assert all(any(allele is MISSING for allele in genotype) for genotype in result_a), (
-                lines_a,
-                lines_b,
-                row,
-            )
+        check_outcome_row(reconciled, sample_pair, row)
