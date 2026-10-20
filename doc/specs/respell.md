@@ -590,9 +590,10 @@ merge is drawn too:
   skipped without bcftools;
 - **the re-spellings do something**: of the 300 files of each property, at least one in ten has
   a record its re-spelling rewrites, so that a re-spelling that kept everything would fail. The
-  count is made, for each re-spelling, on a fixed set of 300 generated files, in a test of its
+  count is made, for each re-spelling, on a fixed set of 1,000 generated files, in a test of its
   own, and the properties stay random: in random runs of 300 the shifted files ranged from 22 to
-  77, around the 30 asserted (the review of milestone 4). The generator is tuned until each
+  77, around the 30 asserted (the review of milestone 4), and a fixed set of 300 left the shift and
+  the `*` 1 and 2 files above it after the generator changed in milestone 6, so the set is 1,000. The generator is tuned until each
   re-spelling reaches it, the `*` one by drawing deletions over other records;
 - **the oracle sees phase between windows**: of the 300 files, at least one in five has a pair
   of windows a block joins (§8), so that a re-spelling that loses or invents a phase set between
