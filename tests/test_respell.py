@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 from hypothesis import given, settings
 from tests.conftest import CONTIG, FILEFORMAT_LINE, CaseFiles, make_chrom_line, write_case_vcf
+from tests.haplotype_oracle import check_same_haplotypes
 from tests.respell import _find_reach, _make_bgzf, respell_by_decomposing
 from tests.respell_cases import (
     DECOMPOSITION_CASES,
@@ -34,6 +35,7 @@ from tests.respell_generator import (
     check_respelled_haplotypes,
     make_generated_vcf,
     write_and_respell,
+    write_generated_vcf,
 )
 
 from pvc_eval.errors import PvcEvalInputError
@@ -775,6 +777,32 @@ def test_the_gts_of_a_generated_record_with_no_alt_are_of_0_and_dot(
             assert alleles <= {"0", "."}, line
 
 
+# §9.2: at least one generated file in five has a pair of windows a block joins, so that a
+# re-spelling that loses or invents a phase set between windows is likely to be caught. The
+# count is of the generator alone, a file against itself, on fixed files: over random runs
+# of 300 it ranged from 57 to 102 files on 20 October 2026, around the 60 asserted, as
+# hypothesis varies its draws between runs, and the fixed run gives 73; the oracle property
+# stays random.
+def test_a_fifth_of_the_generated_files_have_a_pair_of_windows_a_block_joins(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    tally: Counter[str] = Counter()
+
+    @settings(max_examples=_ORACLE_EXAMPLES, deadline=None, derandomize=True)
+    @given(generated=make_generated_vcf())
+    def count_linked_pairs(generated: GeneratedVcf) -> None:
+        with ExitStack() as stack:
+            reference, vcf = write_generated_vcf(
+                generated, tmp_path_factory.mktemp("generated"), stack
+            )
+            comparison = check_same_haplotypes(vcf, vcf, reference, ploidy=generated.ploidy)
+        tally["files"] += 1
+        tally["with a linked pair"] += comparison.num_linked_pairs > 0
+
+    count_linked_pairs()
+    assert tally["with a linked pair"] * 5 >= tally["files"], tally
+
+
 def _is_rewritten(vcf: Path, output: Path) -> bool:
     """Whether output has a record line vcf does not: some record was rewritten. A record
     rewritten into the line it had is not counted."""
@@ -786,37 +814,30 @@ def _is_rewritten(vcf: Path, output: Path) -> bool:
 
 
 # The properties count, in a Counter of their own test, the files whose re-spelling rewrote a
-# record, and the oracle's the files with a pair of windows a block joins, and assert the
-# shares once hypothesis has run every example (§9.2: at least one file in ten rewritten, so
-# that a re-spelling that kept everything would fail, and one in five with a pair, so that one
-# that lost a phase set between windows is likely to be caught). A counter in the module would
-# be state that changes between tests (python.md, threads) and would tie the assertion to the
-# order the tests run in; hypothesis's own statistics are reported and cannot be asserted.
-# The oracle property is derandomized, the same 300 files at every run: how many files had a
-# pair varied from 61 to 121 of 300 over twelve runs, with the fifth asserted at 60, as
-# hypothesis varies its draws between runs; the fixed run gives 106. Runs of 5,000 files
-# outside the suite explore further.
+# record, and assert the share once hypothesis has run every example (§9.2: at least one file
+# in ten, so that a re-spelling that kept everything would fail). A counter in the module
+# would be state that changes between tests (python.md, threads) and would tie the assertion
+# to the order the tests run in; hypothesis's own statistics are reported and cannot be
+# asserted.
 @pytest.mark.parametrize("respelling", _RESPELLINGS)
 def test_the_respelling_of_a_generated_file_passes_the_oracle(
     tmp_path_factory: pytest.TempPathFactory, respelling: Respelling
 ) -> None:
     tally: Counter[str] = Counter()
 
-    @settings(max_examples=_ORACLE_EXAMPLES, deadline=None, derandomize=True)
+    @settings(max_examples=_ORACLE_EXAMPLES, deadline=None)
     @given(generated=make_generated_vcf())
     def check_respelling(generated: GeneratedVcf) -> None:
         with ExitStack() as stack:
             directory = tmp_path_factory.mktemp("generated")
             reference, vcf, output = write_and_respell(generated, respelling, directory, stack)
-            comparison = check_respelled_haplotypes(vcf, output, reference, ploidy=generated.ploidy)
+            check_respelled_haplotypes(vcf, output, reference, ploidy=generated.ploidy)
         tally["files"] += 1
         tally["rewritten"] += _is_rewritten(vcf, output)
-        tally["with a linked pair"] += comparison.num_linked_pairs > 0
 
     check_respelling()
     assert tally["files"] >= _ORACLE_EXAMPLES
     assert tally["rewritten"] * 10 >= tally["files"], tally
-    assert tally["with a linked pair"] * 5 >= tally["files"], tally
 
 
 @_needs_bcftools
