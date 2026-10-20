@@ -113,6 +113,9 @@ def compare(
         plan the contigs to scan. Closing the stream stops the threads; it waits for the
         readers, and not for a scan in progress.
 
+    With config.regions, the VCF records of a contig the regions do not name are not read,
+    and their lines are checked only for their place (doc/specs/regions_read.md).
+
     Without config.str_regions, the STR regions of a contig reach the loci only once a
     record on it has reached them and, with config.regions, the regions name it. A thread
     of the finder may scan a contig earlier, or one that turns out not to be needed, and
@@ -135,13 +138,25 @@ def compare(
         sample_pairs = make_sample_pairs(a, b, sample_map=config.sample_map)
         regions = None if config.regions is None else read_regions(config.regions, contigs)
         get_stratum = _make_get_stratum(config.strata, contigs)
+        contigs_read = _find_contigs_read(indexed_fasta, regions)
         if finder_threads == 0:
-            records_a = _parse_vcf_until_exit(stack, a, indexed_fasta, config, config.ploidy_a)
-            records_b = _parse_vcf_until_exit(stack, b, indexed_fasta, config, config.ploidy_b)
+            records_a = _parse_vcf_until_exit(
+                stack, a, indexed_fasta, config, config.ploidy_a, contigs_read
+            )
+            records_b = _parse_vcf_until_exit(
+                stack, b, indexed_fasta, config, config.ploidy_b, contigs_read
+            )
             finder = None
         else:
             records_a, records_b, finder = _start_threads(
-                stack, (a, b), reference, indexed_fasta, config, regions, finder_threads
+                stack,
+                (a, b),
+                reference,
+                indexed_fasta,
+                config,
+                regions,
+                contigs_read,
+                finder_threads,
             )
         # The contigs of the records build_loci has taken, from which the segments are decided.
         taken_contigs: set[str] = set()
@@ -183,15 +198,33 @@ def _is_whole(number: object) -> bool:
     return isinstance(number, int) and not isinstance(number, bool)
 
 
+def _find_contigs_read(reference: IndexedFasta, regions: Regions | None) -> frozenset[str] | None:
+    """The contigs whose VCF records are read: those regions names when given, or None for
+    every contig (doc/specs/regions_read.md)."""
+    if regions is None:
+        return None
+    return frozenset(
+        contig for contig in reference.contigs if _is_named(contig, reference, regions)
+    )
+
+
 def _parse_vcf_until_exit(
-    stack: ExitStack, path: Path, reference: IndexedFasta, config: CompareConfig, ploidy: int
+    stack: ExitStack,
+    path: Path,
+    reference: IndexedFasta,
+    config: CompareConfig,
+    ploidy: int,
+    contigs_read: frozenset[str] | None,
 ) -> Iterator[VcfRecord]:
-    """parse_vcf's records of a file, its stream closed when stack exits, so that a run
-    stopped early closes the file and parse_vcf's pool at once."""
+    """parse_vcf's records of a file on contigs_read, or on every contig when it is None,
+    its stream closed when stack exits, so that a run stopped early closes the file and
+    parse_vcf's pool at once."""
     # parse_vcf is a generator function, so its stream has close().
     vcf_records = cast(
         Generator[VcfRecord],
-        parse_vcf(path, reference, span_limit=config.span_limit, ploidy=ploidy),
+        parse_vcf(
+            path, reference, span_limit=config.span_limit, ploidy=ploidy, contigs=contigs_read
+        ),
     )
     return stack.enter_context(closing(vcf_records))
 
@@ -332,6 +365,7 @@ def _start_threads(
     reference: IndexedFasta,
     config: CompareConfig,
     regions: Regions | None,
+    contigs_read: frozenset[str] | None,
     finder_threads: int,
 ) -> tuple[Iterator[VcfRecord], Iterator[VcfRecord], _Finder | None]:
     """Starts a reader for each of file A and file B and, without config.str_regions, the
@@ -341,6 +375,7 @@ def _start_threads(
 
     reference_path: the FASTA that reference reads, which each thread of the finder opens
         for itself.
+    contigs_read: the contigs whose records the readers read, or None for every contig.
 
     When stack exits, the stop is set, and the readers started are waited for
     (doc/specs/compare.md, "Errors, and stopping early").
@@ -358,7 +393,12 @@ def _start_threads(
             target=_parse_vcf_into_buffer,
             args=(
                 functools.partial(
-                    parse_vcf, path, reference, span_limit=config.span_limit, ploidy=ploidy
+                    parse_vcf,
+                    path,
+                    reference,
+                    span_limit=config.span_limit,
+                    ploidy=ploidy,
+                    contigs=contigs_read,
                 ),
                 buffer,
                 finder,

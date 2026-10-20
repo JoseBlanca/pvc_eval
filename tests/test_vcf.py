@@ -3,7 +3,7 @@ import itertools
 import logging
 import random
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import ExitStack
 from pathlib import Path
 from typing import TypedDict
@@ -372,7 +372,7 @@ def test_after_symbolic_records_the_first_plain_record_that_differs_stops_the_ru
 
     assert str(raised.value) == (
         f"{path}, line 5: the REF of chr1:7 is 'C', and the reference, read in upper case, has"
-        " 'A' there. It is the file's first record with no symbolic allele, so the VCF looks"
+        " 'A' there. It is the first record read with no symbolic allele, so the VCF looks"
         " made on another reference: compare against the reference it was called on, and"
         " run again."
     )
@@ -814,7 +814,7 @@ def test_ref_that_differs_from_the_reference_stops_the_run(
     assert str(raised.value) == (
         f"{path}, line 3: the REF of chr1:5 is 'Ca', and the reference, read in upper case,"
         " has 'AG' there. It is"
-        " the file's first record with no symbolic allele, so the VCF looks made on another"
+        " the first record read with no symbolic allele, so the VCF looks made on another"
         " reference: compare against the reference it was called on, and run again."
     )
     assert given == []
@@ -883,7 +883,7 @@ def test_iupac_codes_that_share_no_base_differ(
         list(parse_vcf(path, reference))
 
     assert str(raised.value) == (
-        f"{path}, line 3: the REF of chr1:3 {found} It is the file's first record with no"
+        f"{path}, line 3: the REF of chr1:3 {found} It is the first record read with no"
         " symbolic allele, so the VCF looks made on another reference: compare against the"
         " reference it was called on, and run again."
     )
@@ -907,7 +907,7 @@ def test_ref_that_agrees_at_its_first_base_and_differs_later_stops_the_run(
         list(parse_vcf(path, reference))
 
     assert str(raised.value) == (
-        f"{path}, line 3: the REF of chr1:5 {found} It is the file's first record with no"
+        f"{path}, line 3: the REF of chr1:5 {found} It is the first record read with no"
         " symbolic allele, so the VCF looks made on another reference: compare against the"
         " reference it was called on, and run again."
     )
@@ -947,7 +947,7 @@ def test_ref_of_more_than_20_bases_is_named_where_it_first_differs(
         list(parse_vcf(path, reference))
 
     assert str(raised.value) == (
-        f"{path}, line 3: the REF of chr1:2 {found} It is the file's first record with no"
+        f"{path}, line 3: the REF of chr1:2 {found} It is the first record read with no"
         " symbolic allele, so the VCF looks made on another reference: compare against the"
         " reference it was called on, and run again."
     )
@@ -1693,7 +1693,7 @@ def test_ref_that_differs_comes_after_the_records_before_it(
     pos_1based = 11 + index_wrong * 10
     if index_wrong == 0:
         remedy = (
-            "It is the file's first record with no symbolic allele, so the VCF looks made on"
+            "It is the first record read with no symbolic allele, so the VCF looks made on"
             " another reference: compare against the reference it was called on, and run"
             " again."
         )
@@ -1830,3 +1830,310 @@ def test_gq_of_more_digits_than_python_reads_is_absent_and_counted(
         VcfGenotype(alleles=(0, 1), phased=False, phase_set=None, quality=20),
     )
     assert "took 1 QUAL or GQ value that could not be read as a number as absent" in caplog.text
+
+
+# doc/specs/regions_read.md: parse_vcf reads only the records of the contigs it is given.
+# A reference of four contigs, in this .fai order; chr10's name begins with chr1's. Every
+# line of CONTIG_LINES agrees with it.
+FOUR_CONTIGS = {"chr1": "ACGTACGTAC", "chr2": "GGGGGGGG", "chr10": "TTTTTTTT", "chr3": "CCCCCCCC"}
+CONTIG_LINES = (
+    "chr1\t2\t.\tC\tA\t.\t.\t.\tGT\t0/1\t0/1\n"
+    "chr1\t5\t.\tA\tG\t.\t.\t.\tGT\t0/1\t0/1\n"
+    "chr2\t3\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n"
+    "chr10\t4\t.\tT\tC\t.\t.\t.\tGT\t0/1\t0/1\n"
+    "chr3\t6\t.\tC\tG\t.\t.\t.\tGT\t0/1\t0/1\n"
+)
+
+
+@pytest.fixture
+def four_contigs(make_reference: MakeReference) -> IndexedFasta:
+    return make_reference(*make_fasta(FOUR_CONTIGS))
+
+
+def get_places(records: Iterable[VcfRecord]) -> list[tuple[str, int, int]]:
+    """The contig, 0-based start and line number of each record."""
+    return [(record.contig, record.start, record.line_number) for record in records]
+
+
+@pytest.mark.parametrize(
+    ("contigs", "places"),
+    [
+        ({"chr1"}, [("chr1", 1, 3), ("chr1", 4, 4)]),
+        ({"chr10"}, [("chr10", 3, 6)]),
+        (["chr2", "chr3"], [("chr2", 2, 5), ("chr3", 5, 7)]),
+        (
+            None,
+            [("chr1", 1, 3), ("chr1", 4, 4), ("chr2", 2, 5), ("chr10", 3, 6), ("chr3", 5, 7)],
+        ),
+        (
+            {"chr1", "chr2", "chr10", "chr3"},
+            [("chr1", 1, 3), ("chr1", 4, 4), ("chr2", 2, 5), ("chr10", 3, 6), ("chr3", 5, 7)],
+        ),
+        ({"chrX"}, []),
+        ({"chrX", "chr3"}, [("chr3", 5, 7)]),
+        (set(), []),
+    ],
+    ids=[
+        "chr1_not_chr10",
+        "chr10_not_chr1",
+        "chr2_and_chr3_as_a_list",
+        "none_reads_every_record",
+        "every_contig",
+        "a_name_the_reference_lacks",
+        "a_name_the_reference_lacks_and_chr3",
+        "no_contig",
+    ],
+)
+def test_only_records_of_contigs_given_are_read(
+    tmp_path: Path,
+    four_contigs: IndexedFasta,
+    contigs: set[str] | list[str] | None,
+    places: list[tuple[str, int, int]],
+) -> None:
+    path = write_vcf(tmp_path, CONTIG_LINES)
+
+    records = parse_vcf(path, four_contigs, contigs=contigs)
+
+    assert get_places(records) == places
+
+
+@pytest.mark.parametrize("num_threads", [1, 4])
+@pytest.mark.parametrize(
+    "chr2_line",
+    [
+        "chr2\t3\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+        "chr2\t3\t.\tG\tT\t.\t.\t.\tGT\t0/1\n",
+        "chr2\t3\t.\tG\tT\t.\t.\t.\n",
+        "chr2\t0\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+        "chr2\t3\t.\tG\tT\t.\t.\t.\tGT\t0/x\t0/1\n",
+        "chr2\t3\t.\tG\t<DEL>\t.\t.\t.\tGT\t0/1\t0/1\n",
+        "chr2\t3\t.\tG\tT\thigh\t.\t.\tGT:GQ\t0/1:high\t0/1:20\n",
+        "chr2\t3\t.\tGGGGGGGGGG\tG\t.\t.\t.\tGT\t0/1\t0/1\n",
+        "chr2\t3\t.\t\t\t.\t.\t.\tGT\t0/1\t0/1\n",
+    ],
+    ids=[
+        "ref_differs",
+        "too_few_sample_columns",
+        "sites_only",
+        "pos_0",
+        "malformed_gt",
+        "symbolic_alt",
+        "qual_and_gq_not_numbers",
+        "ref_past_the_contig_end",
+        "ref_and_alt_empty",
+    ],
+)
+def test_line_on_a_contig_not_read_gives_no_error_and_no_warning(
+    tmp_path: Path,
+    four_contigs: IndexedFasta,
+    caplog: pytest.LogCaptureFixture,
+    chr2_line: str,
+    num_threads: int,
+) -> None:
+    lines = CONTIG_LINES.split("\n")
+    path = write_vcf(tmp_path, "\n".join([*lines[:2], chr2_line.rstrip("\n"), *lines[3:]]))
+
+    with caplog.at_level(logging.WARNING):
+        records = list(parse_vcf(path, four_contigs, contigs={"chr1"}, num_threads=num_threads))
+
+    assert get_places(records) == [("chr1", 1, 3), ("chr1", 4, 4)]
+    assert caplog.text == ""
+
+
+def test_symbolic_record_on_a_contig_read_is_still_counted(
+    tmp_path: Path, four_contigs: IndexedFasta, caplog: pytest.LogCaptureFixture
+) -> None:
+    # One symbolic record on chr1, read, and one on chr2, not read: the warning counts one.
+    path = write_vcf(
+        tmp_path,
+        "chr1\t2\t.\tC\t<DEL>\t.\t.\t.\tGT\t0/1\t0/1\n"
+        "chr2\t3\t.\tG\t<DEL>\t.\t.\t.\tGT\t0/1\t0/1\n",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        records = list(parse_vcf(path, four_contigs, contigs={"chr1"}))
+
+    assert records == []
+    assert "skipped 1 VCF record with symbolic alleles" in caplog.text
+
+
+# The message parse_vcf gives for a line out of order.
+SORT_ADVICE = " Sort it in the contig order of the reference's .fai and by position, and run again."
+
+
+@pytest.mark.parametrize(
+    ("body", "contigs", "message"),
+    [
+        (
+            "chr2\t3\t.\tG\tT\t.\t.\n",
+            {"chr1"},
+            "line 3: the line has 7 tab-separated columns, and a VCF record has at least 8,"
+            " CHROM to INFO. Check that its columns are separated by tabs, correct the line or"
+            " remove it, and run again.",
+        ),
+        (
+            "chr2\n",
+            {"chr1"},
+            "line 3: the line has 1 tab-separated column, and a VCF record has at least 8,"
+            " CHROM to INFO. Check that its columns are separated by tabs, correct the line or"
+            " remove it, and run again.",
+        ),
+        (
+            # Two faults: too few columns comes first.
+            "chrUn\tfive\t.\tG\tT\t.\t.\n",
+            {"chr1"},
+            "line 3: the line has 7 tab-separated columns, and a VCF record has at least 8,"
+            " CHROM to INFO. Check that its columns are separated by tabs, correct the line or"
+            " remove it, and run again.",
+        ),
+        (
+            "chr2\tfive\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+            {"chr1"},
+            "line 3: POS is 'five', and it must be a whole number of 1 or more. Correct the"
+            " line or remove it, and run again.",
+        ),
+        (
+            # Two faults: a POS that is not a number comes before the contig.
+            "chrUn\t-3\t.\tG\tT\t.\t.\t.\n",
+            {"chr1"},
+            "line 3: POS is '-3', and it must be a whole number of 1 or more. Correct the"
+            " line or remove it, and run again.",
+        ),
+        (
+            f"chr2\t{TOO_MANY_DIGITS}\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+            {"chr1"},
+            "line 3: POS has 5,000 digits, which is past the end of any contig. Correct the"
+            " line or remove it, and run again.",
+        ),
+        (
+            "chrUn\t3\t.\tG\tT\t.\t.\t.\tGT\t0/1\n",
+            {"chr1"},
+            "line 3: contig chrUn is not in the reference. Compare against the reference the"
+            " VCF was called on.",
+        ),
+        (
+            # Two faults: a contig the reference lacks comes before the order.
+            "chr2\t5\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\nchrUn\t3\t.\tG\tT\t.\t.\t.\n",
+            {"chr1"},
+            "line 4: contig chrUn is not in the reference. Compare against the reference the"
+            " VCF was called on.",
+        ),
+    ],
+    ids=[
+        "seven_columns",
+        "one_column",
+        "seven_columns_and_contig_lacking",
+        "pos_not_a_number",
+        "pos_not_a_number_and_contig_lacking",
+        "pos_of_too_many_digits",
+        "contig_lacking",
+        "contig_lacking_and_out_of_order",
+    ],
+)
+def test_line_on_a_contig_not_read_gives_the_error_of_its_first_fault(
+    tmp_path: Path, four_contigs: IndexedFasta, body: str, contigs: set[str], message: str
+) -> None:
+    path = write_vcf(tmp_path, body)
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, four_contigs, contigs=contigs))
+
+    assert str(raised.value) == f"{path}, {message}"
+
+
+@pytest.mark.parametrize(
+    ("body", "contigs", "out_of_order"),
+    [
+        (
+            # Both lines on chr2, not read; POS 0 is taken for its order.
+            "chr2\t5\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\nchr2\t0\t.\tG\tT\t.\t.\t.\n",
+            {"chr1"},
+            "chr2:0 (line 4) comes after chr2:5 (line 3).",
+        ),
+        (
+            # A line of chr2, not read, before chr1 by the .fai's order.
+            "chr2\t3\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t2\t.\tC\tA\t.\t.\t.\tGT\t0/1\t0/1\n",
+            {"chr1"},
+            "chr1:2 (line 4) comes after chr2:3 (line 3).",
+        ),
+        (
+            # A line of chr2, not read, after one of chr10, not read, which the .fai puts
+            # after chr2.
+            "chr1\t2\t.\tC\tA\t.\t.\t.\tGT\t0/1\t0/1\n"
+            "chr10\t4\t.\tT\tC\t.\t.\t.\tGT\t0/1\t0/1\n"
+            "chr2\t3\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+            {"chr1"},
+            "chr2:3 (line 5) comes after chr10:4 (line 4).",
+        ),
+        (
+            # A line of chr2, read, after one of chr10, not read.
+            "chr10\t4\t.\tT\tC\t.\t.\t.\tGT\t0/1\t0/1\nchr2\t3\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+            {"chr2"},
+            "chr2:3 (line 4) comes after chr10:4 (line 3).",
+        ),
+        (
+            # A line of chr1, not read, after one of chr1, read, further on.
+            "chr1\t5\t.\tA\tG\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t2\t.\tC\tA\t.\t.\t.\tGT\t0/1\t0/1\n",
+            {"chr2"},
+            "chr1:2 (line 4) comes after chr1:5 (line 3).",
+        ),
+    ],
+    ids=[
+        "not_read_after_not_read",
+        "read_after_not_read_of_a_later_contig",
+        "not_read_after_not_read_of_a_later_contig",
+        "read_after_not_read",
+        "same_contig_neither_read",
+    ],
+)
+def test_line_out_of_order_with_a_contig_not_read_stops_the_run(
+    tmp_path: Path,
+    four_contigs: IndexedFasta,
+    body: str,
+    contigs: set[str],
+    out_of_order: str,
+) -> None:
+    path = write_vcf(tmp_path, body)
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, four_contigs, contigs=contigs))
+
+    assert str(raised.value) == f"{path} is not sorted: {out_of_order}{SORT_ADVICE}"
+
+
+def test_ref_that_differs_on_the_first_record_read_says_so(
+    tmp_path: Path, four_contigs: IndexedFasta
+) -> None:
+    # chr1's two lines agree with the reference and are not read; chr2's REF differs.
+    lines = CONTIG_LINES.split("\n")
+    bad_chr2_line = "chr2\t3\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1"
+    path = write_vcf(tmp_path, "\n".join([*lines[:2], bad_chr2_line, *lines[3:]]))
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, four_contigs, contigs={"chr2", "chr3"}))
+
+    assert str(raised.value) == (
+        f"{path}, line 5: the REF of chr2:3 is 'A', and the reference, read in upper case, has"
+        " 'G' there. It is the first record read with no symbolic allele, so the VCF looks"
+        " made on another reference: compare against the reference it was called on, and"
+        " run again."
+    )
+
+
+def test_ref_that_differs_counts_only_the_records_read_before_it(
+    tmp_path: Path, four_contigs: IndexedFasta
+) -> None:
+    # chr1's two lines are read and agree, chr2's and chr10's agree and are not read, and
+    # chr3's REF differs: 2 records, not 4.
+    lines = CONTIG_LINES.split("\n")
+    bad_chr3_line = "chr3\t6\t.\tA\tG\t.\t.\t.\tGT\t0/1\t0/1\n"
+    path = write_vcf(tmp_path, "\n".join([*lines[:4], bad_chr3_line]))
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, four_contigs, contigs={"chr1", "chr3"}))
+
+    assert str(raised.value) == (
+        f"{path}, line 7: the REF of chr3:6 is 'A', and the reference, read in upper case, has"
+        " 'C' there. The 2 records before it with no symbolic allele agree with the"
+        " reference, so this line looks damaged: correct it or remove it, and run again."
+    )

@@ -25,6 +25,9 @@ import pytest
 from tests.compare_case import CONTIGS, LINES_A, LINES_B, CompareCase, write_compare_case
 from tests.test_compare import (
     _CONTIGS_WITH_RECORDS,
+    _LINES_A_REF_DIFFERS_ON_CHR1,
+    _LINES_A_REF_DIFFERS_ON_CHR4,
+    _REGIONS_NAMING_CHR3,
     _get_scan_messages,
     _make_config,
     _run_nine_steps,
@@ -294,6 +297,61 @@ def test_regions_naming_contig_3_scan_contig_3_alone_whatever_the_indexes(
     caplog.set_level(logging.INFO, logger=_LOGGER)
     config = _make_config("--regions chr3 0 300", tmp_path)
     _run_compare(case, config, finder_threads)
+    assert _get_scan_messages(caplog) == ["chr3: finding STR regions in 300 bases."]
+
+
+@pytest.mark.parametrize("bed_line", _REGIONS_NAMING_CHR3)
+def test_ref_that_differs_on_contig_1_does_not_stop_a_run_with_regions_naming_contig_3(
+    tmp_path: Path, bed_line: str
+) -> None:
+    # doc/specs/regions_read.md: with 2 finder threads, as tests/test_compare.py with none.
+    (tmp_path / "differs").mkdir()
+    (tmp_path / "agrees").mkdir()
+    case = write_compare_case(tmp_path / "differs", lines_a=_LINES_A_REF_DIFFERS_ON_CHR1)
+    agreeing_case = write_compare_case(tmp_path / "agrees")
+    config = _make_config(f"--regions {bed_line}", tmp_path)
+    expected = _run_nine_steps(agreeing_case, config, _CONTIGS_WITH_RECORDS)
+    assert expected[1] is None
+    _check_same_run(_run_compare(case, config, 2), expected)
+
+
+def test_ref_that_differs_on_contig_1_stops_a_run_without_regions(tmp_path: Path) -> None:
+    case = write_compare_case(tmp_path, lines_a=_LINES_A_REF_DIFFERS_ON_CHR1)
+    rows, error = _run_compare(case, CompareConfig(), 2)
+    assert rows == []
+    assert str(error) == (
+        f"{case.a}, line 3: the REF of chr1:50 is 'G', and the reference, read in upper case,"
+        " has 'T' there. It is the first record read with no symbolic allele, so the VCF"
+        " looks made on another reference: compare against the reference it was called on,"
+        " and run again."
+    )
+
+
+@pytest.mark.parametrize("indexes", ["neither indexed", "both indexed"])
+def test_bed_line_past_the_end_of_contig_4_reads_no_record_of_it(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, indexes: str
+) -> None:
+    # chr4 has 200 bases, so the BED line at 300-400 names no contig, and chr4:51's REF,
+    # which differs from the reference, is not read; an index that lists chr4 does not
+    # plan its scan.
+    (tmp_path / "differs").mkdir()
+    (tmp_path / "agrees").mkdir()
+    index_contigs = {
+        "neither indexed": {},
+        "both indexed": {"contigs_a": ["chr1", "chr3", "chr4"], "contigs_b": ["chr2", "chr3"]},
+    }[indexes]
+    case = _index_case(
+        write_compare_case(tmp_path / "differs", lines_a=_LINES_A_REF_DIFFERS_ON_CHR4),
+        **index_contigs,
+    )
+    agreeing_case = write_compare_case(tmp_path / "agrees")
+    regions = tmp_path / "regions.bed"
+    regions.write_text("chr3\t0\t300\nchr4\t300\t400\n", encoding="utf-8")
+    config = CompareConfig(regions=regions)
+    expected = _run_nine_steps(agreeing_case, config, _CONTIGS_WITH_RECORDS)
+    assert len(expected[0]) == 2
+    caplog.set_level(logging.INFO, logger=_LOGGER)
+    _check_same_run(_run_compare(case, config, 2), expected)
     assert _get_scan_messages(caplog) == ["chr3: finding STR regions in 300 bases."]
 
 

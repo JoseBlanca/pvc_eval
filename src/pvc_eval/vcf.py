@@ -19,7 +19,7 @@ import math
 import re
 import sys
 import threading
-from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from collections.abc import Callable, Collection, Generator, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import dataclass
@@ -160,6 +160,7 @@ def parse_vcf(
     span_limit: int | None = DEFAULT_SPAN_LIMIT,
     num_threads: int = DEFAULT_NUM_THREADS,
     ploidy: int = DEFAULT_PLOIDY,
+    contigs: Collection[str] | None = None,
 ) -> Iterator[VcfRecord]:
     """The VCF records of a file, plain or bgzipped, normalised and given their spans
     (§5.2), in order of span start, and in the file's order where two spans start at one
@@ -179,6 +180,13 @@ def parse_vcf(
     ploidy: how many haplotypes each sample has, a whole number of 1 or more
         (doc/specs/reconciliation.md §2). A GT with another number of alleles is
         OTHER_PLOIDY_GT, and one of only `.` is MISSING on every haplotype.
+    contigs: the names of the contigs whose records are read, or None to read every record
+        (doc/specs/regions_read.md). A name the reference lacks reads nothing, and is no
+        error. A line on another contig is checked only for its place: that it has at least
+        the 8 columns CHROM to INFO, that its POS is a whole number in digits (0 included),
+        that its contig is in the reference, and that it does not come before the line of a
+        record before it; it gives no record and is counted in no warning, and its sample
+        columns, POS of 0, REF, ALT, QUAL and GT are not checked.
 
     With a limit, a record is held only until no later record of its contig can have a
     span that starts before its own: a span starts at most span_limit bases before its
@@ -216,8 +224,9 @@ def parse_vcf(
         )
     if not _is_whole_number_from_1(ploidy):
         raise ValueError(f"ploidy must be a whole number of 1 or more, not {ploidy!r}")
+    contigs_read = None if contigs is None else frozenset(contigs)
     records_in_file_order = _parse_records_in_file_order(
-        path, reference, span_limit, num_threads, ploidy
+        path, reference, span_limit, num_threads, ploidy, contigs_read
     )
     with closing(records_in_file_order) as records:
         yield from _sort_by_span_start(records, span_limit)
@@ -263,10 +272,16 @@ _BATCH_SIZE = 64
 
 
 def _parse_records_in_file_order(
-    path: Path, reference: IndexedFasta, span_limit: int | None, num_threads: int, ploidy: int
+    path: Path,
+    reference: IndexedFasta,
+    span_limit: int | None,
+    num_threads: int,
+    ploidy: int,
+    contigs_read: frozenset[str] | None,
 ) -> Generator[tuple[int, VcfRecord]]:
     """The records of parse_vcf in the file's order, each with the 0-based
-    position of its POS; ploidy is how many haplotypes each sample has.
+    position of its POS; ploidy is how many haplotypes each sample has, and contigs_read the
+    contigs whose records are read, or None for all.
 
     This thread reads the lines, checks them and gives them their spans; the sample columns
     of each batch of lines are parsed by one of num_threads threads, or by this one when
@@ -274,7 +289,9 @@ def _parse_records_in_file_order(
     """
     status = _ReadStatus()
     with (
-        closing(_parse_lines_without_samples(path, reference, span_limit, status)) as placed_lines,
+        closing(
+            _parse_lines_without_samples(path, reference, span_limit, contigs_read, status)
+        ) as placed_lines,
         closing(
             # Each thread keeps what it has parsed in seen_by_thread, for this file alone.
             _map_in_order(
@@ -359,19 +376,25 @@ class _PlacedLine:
 
 
 def _parse_lines_without_samples(
-    path: Path, reference: IndexedFasta, span_limit: int | None, status: _ReadStatus
+    path: Path,
+    reference: IndexedFasta,
+    span_limit: int | None,
+    contigs_read: frozenset[str] | None,
+    status: _ReadStatus,
 ) -> Generator[_PlacedLine]:
-    """The lines of a VCF file that hold a record, in the file's order, checked, normalised
-    and given their spans, their sample columns left to parse; what is skipped and what is
-    taken as absent is added to status."""
+    """The lines of a VCF file that hold a record on a contig of contigs_read, or on any
+    contig when it is None, in the file's order, checked, normalised and given their spans,
+    their sample columns left to parse; what is skipped and what is taken as absent is added
+    to status. A line on another contig is checked only for its place
+    (doc/specs/regions_read.md)."""
     contig_rank = {contig: rank for rank, contig in enumerate(reference.contigs)}
     # A window of the stream's own, so that two streams over one reference do not drop
     # each other's buffer.
     reference_window = FastaWindow(reference)
-    # The (contig rank, POS) of the previous record, which this one must not come before,
-    # and where that record is, for the message.
-    previous_order: tuple[int, int] | None = None
-    previous_where = ""
+    # The (contig rank, POS, line number) of the previous record line, read or not, which
+    # this one must not come before. The line numbers only grow, so this one comes before
+    # it exactly when its contig rank and POS do.
+    previous_place = (-1, 0, 0)
     # The records with no symbolic allele whose REF agreed with the reference, which tells
     # a VCF made on another reference from a damaged line (§5.2).
     num_agreeing = 0
@@ -380,23 +403,29 @@ def _parse_lines_without_samples(
         for line_number, line in numbered_lines:
             if line.startswith("#") or not line.strip():
                 continue
-            fields = line.rstrip("\n").split("\t")
+            # A line of a contig not read is split only as far as its place needs: into 8
+            # columns at most, the last holding the rest, which is enough to tell whether it
+            # has the 8 of CHROM to INFO, and how many when it has fewer. A line with no tab
+            # fails as having 1 column whichever way it is split.
+            is_read = contigs_read is None or line.partition("\t")[0] in contigs_read
+            if is_read:
+                fields = line.rstrip("\n").split("\t")
+            else:
+                fields = line.split("\t", _NUM_FIXED_COLUMNS - 2)
             contig, pos_1based = _parse_position(fields, path, line_number)
-            _check_num_samples(fields, num_samples, path, line_number)
+            if is_read:
+                _check_num_samples(fields, num_samples, path, line_number)
             if contig not in contig_rank:
                 raise PvcEvalInputError(
                     f"{path}, line {line_number}: contig {contig} is not in the reference."
                     " Compare against the reference the VCF was called on."
                 )
-            order = (contig_rank[contig], pos_1based)
-            where = f"{contig}:{pos_1based} (line {line_number})"
-            if previous_order is not None and order < previous_order:
-                raise PvcEvalInputError(
-                    f"{path} is not sorted: {where} comes after {previous_where}."
-                    " Sort it in the contig order of the reference's .fai and by position,"
-                    " and run again."
-                )
-            previous_order, previous_where = order, where
+            place = (contig_rank[contig], pos_1based, line_number)
+            if place < previous_place:
+                raise _make_order_error(path, place, previous_place, reference.contigs)
+            previous_place = place
+            if not is_read:
+                continue
             alts = _parse_alts(fields, path, line_number)
             if any(_is_symbolic(alt) for alt in alts):
                 status.num_symbolic += 1
@@ -479,8 +508,8 @@ def _check_ref(
     IUPAC codes stand for overlap; the window gives the reference in upper case.
 
     pos: the 0-based position of POS; the REF lies within the contig.
-    num_agreeing: the records of the file with no symbolic allele before this one, all of
-        which agreed with the reference.
+    num_agreeing: the records read with no symbolic allele before this one, all of which
+        agreed with the reference; a record on a contig not read is not compared.
     """
     ref_bases = reference_window.get_bases(contig, pos, pos + len(ref))
     ref_upper = ref.upper()
@@ -499,7 +528,7 @@ def _check_ref(
         return
     if num_agreeing == 0:
         remedy = (
-            "It is the file's first record with no symbolic allele, so the VCF looks made on"
+            "It is the first record read with no symbolic allele, so the VCF looks made on"
             " another reference: compare against the reference it was called on, and run"
             " again."
         )
@@ -735,6 +764,23 @@ def _parse_position(fields: list[str], path: Path, line_number: int) -> tuple[st
             " any contig. Correct the line or remove it, and run again."
         )
     return fields[0], pos_1based
+
+
+def _make_order_error(
+    path: Path,
+    place: tuple[int, int, int],
+    previous_place: tuple[int, int, int],
+    contigs: Sequence[str],
+) -> PvcEvalInputError:
+    """The error of a line that comes before the one before it; each place is its contig's
+    rank in contigs, its 1-based POS and its line number."""
+    rank, pos_1based, line_number = place
+    previous_rank, previous_pos_1based, previous_line_number = previous_place
+    return PvcEvalInputError(
+        f"{path} is not sorted: {contigs[rank]}:{pos_1based} (line {line_number}) comes after"
+        f" {contigs[previous_rank]}:{previous_pos_1based} (line {previous_line_number})."
+        " Sort it in the contig order of the reference's .fai and by position, and run again."
+    )
 
 
 def _make_pos_error(pos: str, path: Path, line_number: int) -> PvcEvalInputError:

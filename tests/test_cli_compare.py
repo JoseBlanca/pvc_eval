@@ -442,10 +442,10 @@ def test_warnings_and_info_lines_go_to_stderr(
         ),
         re.escape("chr1: finding STR regions in 300 bases."),
         # chr1's last locus is built only when a record of chr3 comes, after chr3's scan;
-        # chr2, which --regions does not name, is not scanned.
+        # chr2, which --regions does not name, is not scanned, and its records are not read,
+        # so it has no line (doc/specs/regions_read.md).
         re.escape("chr3: finding STR regions in 300 bases."),
         "chr1: 2 loci compared, 1 skipped by --regions; " + _TIME,
-        "chr2: 0 loci compared, 2 skipped by --regions; " + _TIME,
         "chr3: 2 loci compared, 0 skipped by --regions; " + _TIME,
     ]
     assert (status, stdout) == (0, "")
