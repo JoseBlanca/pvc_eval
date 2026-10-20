@@ -94,7 +94,7 @@ def compare(
     config: CompareConfig = CompareConfig(),  # noqa: B008 -- frozen, so one instance is safe
     *,
     finder_threads: int = DEFAULT_FINDER_THREADS,
-) -> Iterator[OutcomeRow]:
+) -> Generator[OutcomeRow]:
     """The rows of file A against file B over the reference, every row included: locus by
     locus, contig by contig in the order of the reference's .fai, and in each locus in the
     order of the sample pairs. They are the rows of the stages of doc/spec.md §4 run one

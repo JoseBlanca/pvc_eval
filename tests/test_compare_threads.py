@@ -18,7 +18,6 @@ from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from queue import SimpleQueue
-from typing import cast
 
 import pytest
 from tests.compare_case import CONTIGS, LINES_A, LINES_B, CompareCase, write_compare_case
@@ -454,11 +453,7 @@ def _make_held_segment_contig(
 
 def _start_compare(case: CompareCase, *, finder_threads: int) -> Generator[OutcomeRow]:
     """compare()'s stream over the case with _BIG_CONFIG, not started."""
-    # compare is a generator function, so its stream has close().
-    return cast(
-        Generator[OutcomeRow],
-        compare(case.a, case.b, case.reference, _BIG_CONFIG, finder_threads=finder_threads),
-    )
+    return compare(case.a, case.b, case.reference, _BIG_CONFIG, finder_threads=finder_threads)
 
 
 def _wait_until_steady(counter: list[int], minimum: int) -> int:

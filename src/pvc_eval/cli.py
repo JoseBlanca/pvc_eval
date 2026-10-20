@@ -18,13 +18,11 @@ from collections.abc import Callable, Generator, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import cast
 
 from pvc_eval.compare import PVC_STRATA, CompareConfig, compare
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
 from pvc_eval.loci import DEFAULT_CHAIN_DISTANCE
-from pvc_eval.outcome import OutcomeRow
 from pvc_eval.reconcile import PHASING_CAP
 from pvc_eval.segments import StrFinderParameters, write_str_regions
 from pvc_eval.table import write_table
@@ -488,11 +486,9 @@ def _parse_span_limit(text: str) -> int | None:
 def _run_compare(arguments: argparse.Namespace) -> None:
     """The `compare` command: compare the two files and write the table and the summary."""
     config = _make_compare_config(arguments)
-    # compare is a generator function, so its rows have close(): closing them on the way out,
-    # whatever happens, closes their files.
-    rows = cast(
-        Generator[OutcomeRow], compare(arguments.a, arguments.b, arguments.reference, config)
-    )
+    # Closing the rows on the way out, whatever happens, stops compare()'s threads and closes
+    # their files.
+    rows = compare(arguments.a, arguments.b, arguments.reference, config)
     with closing(rows):
         write_table(rows, arguments.output, summary=arguments.summary, all_rows=arguments.all_rows)
 

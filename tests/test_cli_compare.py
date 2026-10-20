@@ -9,7 +9,9 @@ import re
 import subprocess
 import sys
 import sysconfig
+import threading
 from collections.abc import Generator, Sequence
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -92,6 +94,33 @@ def test_table_is_what_write_table_writes_for_compares_rows(
     # Seven rows, less chr1:150, reference in both.
     assert _read_column(output, "start") == ["50", "100", "120", "200", "101", "250"]
     assert not Path(f"{output}.tmp").exists()
+
+
+def test_command_runs_compare_with_two_finder_threads(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = write_compare_case(tmp_path)
+    threads_before = set(threading.enumerate())
+    finder_threads: list[str] = []
+
+    def compare_noting_finder_threads(*args: object, **kwargs: object) -> Generator[OutcomeRow]:
+        rows = compare(*args, **kwargs)  # ty: ignore[invalid-argument-type]  # compare's own arguments, passed on
+        with closing(rows):
+            # The finder's threads wait for contigs until the rows end, so they are alive at
+            # the first row.
+            first_row = next(rows)
+            finder_threads.extend(
+                thread.name
+                for thread in set(threading.enumerate()) - threads_before
+                if thread.name.startswith("pvc_eval finder")
+            )
+            yield first_row
+            yield from rows
+
+    monkeypatch.setattr(cli, "compare", compare_noting_finder_threads)
+    status, _, _ = _run(_make_argv(case, tmp_path / "loci.tsv"), capsys)
+    assert status == 0
+    assert sorted(finder_threads) == ["pvc_eval finder 1", "pvc_eval finder 2"]
 
 
 def test_all_rows_and_summary_are_written(
