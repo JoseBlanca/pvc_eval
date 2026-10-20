@@ -16,6 +16,7 @@ import gzip
 import itertools
 import random
 import struct
+import sys
 import zlib
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -46,6 +47,8 @@ _FORMAT_COLUMN = 8
 _NUM_FIXED_COLUMNS = 9
 _PS_LINE_START = "##FORMAT=<ID=PS,"
 _PS_LINE = '##FORMAT=<ID=PS,Number=1,Type=Integer,Description="Phase set">'
+# The largest PS bcftools 1.24 keeps in an Integer; it sets 2,147,483,648 to missing (§2.3).
+_MAX_INTEGER_PHASE_SET = 2**31 - 1
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -78,14 +81,15 @@ class _RespellingInput:
     """The input of a re-spelling, read as lines and as records (§2.1).
 
     max_phase_set: the largest PS of the input that is a whole number, 0 when there is none.
-    has_text_phase_set: some PS of the input is not a whole number.
+    are_phase_sets_integer: every PS of the input is a whole number of at most
+        _MAX_INTEGER_PHASE_SET, so that the PS line can declare it Integer.
     """
 
     header_lines: tuple[str, ...]
     input_records: tuple[_InputRecord, ...]
     is_gzipped: bool
     max_phase_set: int
-    has_text_phase_set: bool
+    are_phase_sets_integer: bool
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -286,13 +290,15 @@ def _parse_input(vcf: Path, reference: IndexedFasta, ploidy: int) -> _Respelling
                 )
             )
     assert not records_by_line, "every record of parse_vcf is on a line read"
-    whole_phase_sets = [int(phase_set) for phase_set in phase_sets if _is_whole(phase_set)]
+    whole_phase_sets = [
+        number for number in map(_parse_phase_set_number, phase_sets) if number is not None
+    ]
     return _RespellingInput(
         header_lines=tuple(header_lines),
         input_records=tuple(input_records),
         is_gzipped=is_gzipped,
         max_phase_set=max(whole_phase_sets, default=0),
-        has_text_phase_set=len(whole_phase_sets) < len(phase_sets),
+        are_phase_sets_integer=all(map(_is_integer_phase_set, phase_sets)),
     )
 
 
@@ -339,8 +345,15 @@ def _find_phase_sets(fields: Sequence[str]) -> Iterator[str]:
             yield values[ps_index]
 
 
-def _is_whole(text: str) -> bool:
-    return text.isascii() and text.isdecimal()
+def _parse_phase_set_number(phase_set: str) -> int | None:
+    """A PS as a whole number, or None when it is not one: not decimal digits, or more digits,
+    leading zeros aside, than Python turns into a number (§2.3)."""
+    if not (phase_set.isascii() and phase_set.isdecimal()):
+        return None
+    digits = phase_set.lstrip("0") or "0"
+    if len(digits) > sys.int_info.default_max_str_digits:
+        return None
+    return int(digits)
 
 
 # --- The records every re-spelling keeps (§2.2) ---
@@ -842,7 +855,7 @@ def _write_output(
         output_records, key=lambda record: (contig_ranks[record.contig], record.pos_1based)
     )
     header_lines = _make_header(
-        respelling_input, has_rewritten=any(record.is_rewritten for record in output_records)
+        respelling_input, [record for record in output_records if record.is_rewritten]
     )
     lines = [*header_lines, *(record.line for record in sorted_records)]
     data = "".join(f"{line}\n" for line in lines).encode("utf-8")
@@ -853,20 +866,39 @@ def _make_contig_ranks(contigs: Iterable[str]) -> Mapping[str, int]:
     return {contig: rank for rank, contig in enumerate(dict.fromkeys(contigs))}
 
 
-def _make_header(respelling_input: _RespellingInput, *, has_rewritten: bool) -> list[str]:
-    """The input's header, with a PS line before #CHROM when a rewritten record needs one
-    and every PS of the input is a whole number (§2.3): bcftools 1.24 stops on a PS such as
-    `chr1_5` declared Integer and warns on one declared String, and an input with such a PS
-    and no PS line already gets its warning."""
+def _make_header(
+    respelling_input: _RespellingInput, rewritten_records: Sequence[_OutputRecord]
+) -> list[str]:
+    """The input's header, with a PS line before #CHROM when a rewritten record needs one,
+    and every PS of the input and of the rewritten records is a whole number of at most
+    _MAX_INTEGER_PHASE_SET (§2.3): bcftools 1.24 stops on a PS such as `chr1_5` declared
+    Integer, warns on one declared String, and sets a larger number to missing; an input with
+    such a PS and no PS line already gets its warning."""
     header_lines = list(respelling_input.header_lines)
     has_ps_line = any(line.startswith(_PS_LINE_START) for line in header_lines)
-    if not has_rewritten or has_ps_line or respelling_input.has_text_phase_set:
+    written_phase_sets = (
+        phase_set
+        for record in rewritten_records
+        for phase_set in _find_phase_sets(record.line.split("\t"))
+    )
+    if (
+        not rewritten_records
+        or has_ps_line
+        or not respelling_input.are_phase_sets_integer
+        or not all(map(_is_integer_phase_set, written_phase_sets))
+    ):
         return header_lines
     chrom_index = next(
         index for index, line in enumerate(header_lines) if line.startswith("#CHROM")
     )
     header_lines.insert(chrom_index, _PS_LINE)
     return header_lines
+
+
+def _is_integer_phase_set(phase_set: str) -> bool:
+    """Whether a PS is a whole number that bcftools 1.24 keeps in an Integer."""
+    number = _parse_phase_set_number(phase_set)
+    return number is not None and number <= _MAX_INTEGER_PHASE_SET
 
 
 # BGZF, the SAM/BAM format specification §4.1: gzip members of at most 64 KiB, each with the

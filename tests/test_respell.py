@@ -436,6 +436,17 @@ def test_records_are_sorted_by_the_contigs_of_the_input(
             ["2 A T 0|1:chr1_5", "5 T G 0|1:2"],
             id="a-ps-that-is-no-number-counts-as-none",
         ),
+        # Python turns at most 4,300 digits into a number.
+        pytest.param(
+            ["2 A T 0|1:" + "1" * 4301, "5 T G 0/1"],
+            ["2 A T 0|1:" + "1" * 4301, "5 T G 0|1:2"],
+            id="a-ps-of-4301-digits-counts-as-none",
+        ),
+        pytest.param(
+            ["2 A T 0|1:" + "0" * 10 + "1" * 4300, "5 T G 0/1"],
+            ["2 A T 0|1:" + "0" * 10 + "1" * 4300, "5 T G 0|1:" + "1" * 4299 + "3"],
+            id="a-ps-of-4300-digits-after-leading-zeros-counts",
+        ),
     ],
 )
 def test_a_new_phase_set_is_one_no_record_of_the_input_uses(
@@ -470,6 +481,25 @@ def test_a_new_phase_set_is_one_no_record_of_the_input_uses(
             [FILEFORMAT_LINE],
             [FILEFORMAT_LINE],
             id="not-added-when-a-ps-is-no-number",
+        ),
+        # bcftools 1.24 keeps a PS of 2,147,483,647 in an Integer and sets one more to missing.
+        pytest.param(
+            ["2 A T 0|1:2147483645", "5 T G 0/1"],
+            [FILEFORMAT_LINE],
+            [FILEFORMAT_LINE, _PS_INTEGER],
+            id="added-when-the-new-phase-set-is-2147483647",
+        ),
+        pytest.param(
+            ["2 A T 0|1:2147483646", "5 T G 0/1"],
+            [FILEFORMAT_LINE],
+            [FILEFORMAT_LINE],
+            id="not-added-when-the-new-phase-set-is-2147483648",
+        ),
+        pytest.param(
+            ["2 A T 0|1:2147483648", "4 G <DEL> 0/1"],
+            [FILEFORMAT_LINE],
+            [FILEFORMAT_LINE],
+            id="not-added-when-a-ps-of-the-input-is-2147483648",
         ),
     ],
 )
