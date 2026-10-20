@@ -422,7 +422,7 @@ runs `pvc_eval str-regions` with them and passes its BED with `--str-regions`. N
 set from the command line.
 
 **Values out of range** stop the run before anything is read, with status 1 and a message naming
-the option, as `str-regions` does for its own: "--ploidy-a 3: a ploidy is 1 or 2. Correct the
+the option, as `str-regions` does for its own, in this form: "--ploidy-a 3: a ploidy is 1 or 2. Correct the
 option, and run again." `--span-limit` takes a whole number of 1 or more or the word `none`;
 `--chain-distance` a whole number of 0 or more; `--phasing-cap` one of 1 or more. A value that is
 not a number at all is argparse's error, with its usage line and status 2, as in `str-regions`.
