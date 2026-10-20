@@ -27,7 +27,8 @@ _logger = logging.getLogger(__name__)
 
 _TBI_MAGIC = b"TBI\x01"
 _CSI_MAGIC = b"CSI\x01"
-_INDEX_SUFFIXES = (".tbi", ".csi")
+# Each index, by its suffix, and the option of `bcftools index` that makes it.
+_INDEX_OPTIONS = {".tbi": "-t", ".csi": "-c"}
 # The format field of the tabix header: 2 is VCF, in htslib's tbx.h (TBX_VCF).
 _FORMAT_VCF = 2
 # Bytes of the tabix header in a .csi's aux before the names: the six integers and l_nm.
@@ -49,7 +50,7 @@ def parse_index_contigs(vcf_path: Path) -> list[str]:
     are not dropped here.
     """
     contigs: dict[str, None] = {}
-    for suffix in _INDEX_SUFFIXES:
+    for suffix, option in _INDEX_OPTIONS.items():
         index_path = vcf_path.with_name(vcf_path.name + suffix)
         try:
             index_contigs = _parse_index(index_path)
@@ -59,9 +60,13 @@ def parse_index_contigs(vcf_path: Path) -> list[str]:
             # OSError includes gzip.BadGzipFile, a file that is not gzip; EOFError and
             # zlib.error, a gzip stream cut short or damaged.
             _logger.warning(
-                "%s could not be read as the index of a VCF; the contigs of %s are scanned for"
-                " STR regions as the reading reaches them, which can take longer.",
+                "%s could not be read as the index of a VCF and is ignored; a contig of %s that"
+                " no other index lists is scanned for STR regions only once the reading reaches"
+                " it, which can take longer. To use the index, make it again with"
+                " `bcftools index %s %s`.",
                 index_path,
+                vcf_path,
+                option,
                 vcf_path,
             )
             continue

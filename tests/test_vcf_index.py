@@ -39,11 +39,18 @@ def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
     ]
 
 
-def _unreadable_warning(index_path: Path, vcf_path: Path) -> str:
+def _unreadable_warning(index_path: Path, vcf_path: Path, option: str) -> str:
+    """The warning of doc/specs/compare.md, "Which contigs are scanned", with the option of
+    `bcftools index` that makes the index: -t for a .tbi, -c for a .csi."""
     return (
-        f"{index_path} could not be read as the index of a VCF; the contigs of {vcf_path} are"
-        " scanned for STR regions as the reading reaches them, which can take longer."
+        f"{index_path} could not be read as the index of a VCF and is ignored; a contig of"
+        f" {vcf_path} that no other index lists is scanned for STR regions only once the reading"
+        f" reaches it, which can take longer. To use the index, make it again with"
+        f" `bcftools index {option} {vcf_path}`."
     )
+
+
+_INDEX_OPTIONS = {".tbi": "-t", ".csi": "-c"}
 
 
 @pytest.mark.parametrize(
@@ -151,7 +158,7 @@ def test_index_that_cannot_be_read_gives_the_warning_and_no_contigs(
     with caplog.at_level(logging.WARNING):
         contigs = parse_index_contigs(vcf_path)
     assert contigs == []
-    assert _warnings(caplog) == [_unreadable_warning(index_path, vcf_path)]
+    assert _warnings(caplog) == [_unreadable_warning(index_path, vcf_path, _INDEX_OPTIONS[suffix])]
 
 
 def test_index_that_cannot_be_read_leaves_the_other_ones_contigs(
@@ -163,7 +170,7 @@ def test_index_that_cannot_be_read_leaves_the_other_ones_contigs(
     with caplog.at_level(logging.WARNING):
         contigs = parse_index_contigs(vcf_path)
     assert contigs == ["ctgA", "ctgB"]
-    assert _warnings(caplog) == [_unreadable_warning(tbi_path, vcf_path)]
+    assert _warnings(caplog) == [_unreadable_warning(tbi_path, vcf_path, "-t")]
 
 
 # Only the header is read, so an index cut after it is read whole: the bins that follow are cut
