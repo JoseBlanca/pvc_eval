@@ -116,7 +116,7 @@ _NOT_RESPELLINGS = [
         ["2 A T 0/1"],
         ["2 A C 0/1"],
         "chr1:2-2, sample S0: different, an outcome a file does not give against itself;"
-        " file A gives A/T and file B A/C",
+        " file A gives 1 genotype and file B 1 genotype; only in A: A/T; only in B: A/C",
         id="wrong-sequence",
     ),
     pytest.param(
@@ -125,7 +125,7 @@ _NOT_RESPELLINGS = [
         ["2 A T 0|1:5", "4 G C 0|1:5"],
         ["2 A T 0/1", "4 G C 0/1"],
         "chr1:2-4, sample S0: same genotype, and file B's result is not file A's;"
-        " file A gives ACG/TCC and file B ACG/TCC or ACC/TCG",
+        " file A gives 1 genotype and file B 2 genotypes; only in B: ACC/TCG",
         id="lost-phase-assignment",
     ),
     pytest.param(
@@ -136,7 +136,7 @@ _NOT_RESPELLINGS = [
             for pos, ref_base, alt_base in zip(range(2, 16), _MNP_REF, _MNP_ALT, strict=True)
         ],
         "chr1:2-15, sample S0: too complex, where file A's own result is not too complex;"
-        f" file A gives {_MNP_REF}/{_MNP_ALT} and file B too complex",
+        f" file A gives 1 genotype and file B too complex; only in A: {_MNP_REF}/{_MNP_ALT}",
         id="too-complex-in-b-alone",
     ),
 ]
@@ -152,6 +152,33 @@ def test_a_file_b_that_is_not_a_respelling_raises(
 
     with pytest.raises(AssertionError, match=f"^{re.escape(message)}$"):
         check_respelling_outcomes(vcf, output, reference)
+
+
+def test_a_message_lists_ten_genotypes_of_a_file_at_most(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    # 12 SNPs of one phase set in A, unphased in B: B has 2^11 possible genotypes, of which
+    # the message lists those A lacks, ten of them, and how many more there are.
+    bases = "GACGTACGTACGTACGTACGTACGT"
+    reference = case_files.write_reference(1, bases)
+    alts = {pos: "T" if bases[pos - 1] != "T" else "A" for pos in range(2, 25, 2)}
+    vcf = _write_vcf(
+        tmp_path / "a.vcf", [f"{pos} {bases[pos - 1]} {alt} 0|1:5" for pos, alt in alts.items()]
+    )
+    output = _write_vcf(
+        tmp_path / "b.vcf", [f"{pos} {bases[pos - 1]} {alt} 0/1" for pos, alt in alts.items()]
+    )
+
+    with pytest.raises(AssertionError) as raised:
+        check_respelling_outcomes(vcf, output, reference)
+
+    head, listed = str(raised.value).split("; only in B: ")
+    assert head == (
+        "chr1:2-24, sample S0: same genotype, and file B's result is not file A's;"
+        " file A gives 1 genotype and file B 2048 genotypes"
+    )
+    assert listed.endswith(" and 2037 more")
+    assert listed.count(" or ") == 9
 
 
 def test_files_of_different_samples_raise(case_files: CaseFiles, tmp_path: Path) -> None:

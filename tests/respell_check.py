@@ -18,11 +18,13 @@ from pvc_eval.evaluate import make_outcome_rows
 from pvc_eval.fasta import IndexedFasta
 from pvc_eval.kind import locus_kind
 from pvc_eval.loci import build_loci
-from pvc_eval.outcome import InvalidReason, Outcome, OutcomeRow
+from pvc_eval.outcome import InvalidReason, LocusGenotype, Outcome, OutcomeRow
 from pvc_eval.reconcile import TOO_COMPLEX, ReconciledLocus, SampleResult, reconcile_loci
 from pvc_eval.samples import SamplePair
 from pvc_eval.segments import GenomeSegment, read_str_regions, segment_contig
 from pvc_eval.vcf import DEFAULT_PLOIDY, MISSING, parse_vcf, parse_vcf_samples
+
+_MAX_LISTED = 10  # the genotypes a message lists of each file, so that it stays readable
 
 # The outcomes a file gives against itself (doc/spec.md §7.3). Of the three that come from a
 # cause in the sample, missing in both and invalid in both need A's own result checked no
@@ -58,7 +60,7 @@ def check_respelling_outcomes(
     ploidy: what both files are read and reconciled with, 1 or 2.
 
     Raises AssertionError at the first row that fails, with the locus, the sample, the
-    outcome and both results; ValueError when the headers name different samples; and what
+    outcome and what each file gives, ten genotypes at most of each; ValueError when the headers name different samples; and what
     the stages raise.
     """
     for _ in _make_checked_rows(vcf_a, vcf_b, reference, str_regions=str_regions, ploidy=ploidy):
@@ -135,20 +137,46 @@ def _check_row(reconciled: ReconciledLocus, sample_pair: SamplePair, row: Outcom
     alleles = reconciled.alleles
     raise AssertionError(
         f"{locus.contig}:{locus.start + 1}-{locus.end}, sample {sample_pair.name_a}: {problem};"
-        f" file A gives {_format_result(result_a, alleles)}"
-        f" and file B {_format_result(result_b, alleles)}"
+        f" {_format_difference(result_a, result_b, alleles)}"
     )
 
 
-def _format_result(result: SampleResult, alleles: Sequence[str]) -> str:
-    """A sample result for a message: its possible genotypes, each as its locus alleles'
-    sequences, `-` for an empty one and `.` for a missing one, joined by `/`; or why it has
-    none."""
+def _format_difference(
+    result_a: SampleResult, result_b: SampleResult, alleles: Sequence[str]
+) -> str:
+    """What each file gives, its reason or how many possible genotypes, and then the possible
+    genotypes each file gives that the other does not, ten at most for each, as the oracle's
+    messages give them."""
+    texts = [f"file A gives {_format_count(result_a)} and file B {_format_count(result_b)}"]
+    for name, result, other in (("A", result_a, result_b), ("B", result_b, result_a)):
+        if isinstance(result, tuple):
+            other_genotypes = set(other) if isinstance(other, tuple) else set()
+            only = [
+                _format_genotype(genotype, alleles)
+                for genotype in result
+                if genotype not in other_genotypes
+            ]
+            if only:
+                texts.append(f"only in {name}: {_format_list(only)}")
+    return "; ".join(texts)
+
+
+def _format_count(result: SampleResult) -> str:
     if result is TOO_COMPLEX:
         return "too complex"
     if isinstance(result, InvalidReason):
         return f"invalid, {result}"
-    return " or ".join(
-        "/".join("." if allele is MISSING else alleles[allele] or "-" for allele in genotype)
-        for genotype in result
-    )
+    return "1 genotype" if len(result) == 1 else f"{len(result)} genotypes"
+
+
+def _format_list(genotypes: Sequence[str]) -> str:
+    """The first ten genotypes, and how many more there are."""
+    text = " or ".join(genotypes[:_MAX_LISTED])
+    num_more = len(genotypes) - _MAX_LISTED
+    return f"{text} and {num_more} more" if num_more > 0 else text
+
+
+def _format_genotype(genotype: LocusGenotype, alleles: Sequence[str]) -> str:
+    """A possible genotype as its locus alleles' sequences, `-` for an empty one and `.` for
+    a missing one, joined by `/`."""
+    return "/".join("." if allele is MISSING else alleles[allele] or "-" for allele in genotype)
