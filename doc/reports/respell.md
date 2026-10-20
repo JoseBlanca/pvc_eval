@@ -89,3 +89,42 @@ properties run over, so the later milestones add a row. The second looks confirm
 fix and found one more case, a record with no ALT just after a window, now tested. Not taken: a
 record with no ALT and `0/.` across two windows links them, which changes nothing, since its `.`
 haplotype is missing in both.
+
+## Milestone 3: the check of §7.4, for decomposition
+
+Done in d4cd386 and fixed in 9ab3d38 to e9b6e84. `check_respelling_outcomes` takes a file and its
+re-spelling through `parse_vcf`, `build_loci`, `reconcile_loci` and `make_outcome_rows`, and
+asserts at every locus and for every sample what `doc/spec.md` §7.4 asks: an allowed outcome,
+*too complex* only where file A's own result is, and file B's result equal to A's.
+
+- `uv run pytest tests/test_respell_check.py` passes: every D case; the AT repeat through the STR
+  finder, one STR locus of *same genotype*; six files B that are not re-spellings, each raising
+  with its message (a wrong sequence, a lost phase, a wrong second sample, a 14-base MNP *too
+  complex* in B alone, and two of the messages); a file A that is itself *too complex*, which
+  passes; the property over 300 decomposed files with their repeats as a `--str-regions` BED,
+  with at least one row in an STR region; and the GIAB test with its path checks.
+- **GIAB HG002 v4.2.1, chr20, against its decomposition: it passes.** 85,951 records decomposed
+  into 86,896; the oracle compared 84,717 windows and no pair, since the VCF is unphased; all
+  81,257 rows are *same genotype*. 125 s and 455 MB, of which 116 s are the STR finder, which on
+  this branch is the version before its speed-up reached `main`. The test reads the VCF and
+  GRCh38 from `PVC_EVAL_HG002_VCF` and `PVC_EVAL_GRCH38`, as the compare session's spec settles.
+- Over 5,000 generated files outside the suite, no failure; of 12,152 rows, *same genotype*
+  4,171, *invalid in both* 3,351, *missing in both* 2,580, *reference in both* 2,050, *too
+  complex* 0. *Invalid in both* is 28% of the rows because a contig of 12 to 60 bases is often one
+  locus, and one malformed GT makes a sample invalid over all of it.
+- The five checks pass on e9b6e84; the whole suite gives "1084 passed, 5 skipped".
+
+Changed in the plan (5d44fa5): milestone 4 runs the AT repeat case with its file B made by the
+shift, which this milestone wrote by hand; and when `compare()` reaches `main`, the check takes
+the reference as a path, as `compare()` does.
+
+The review found no row that the check passes while pvc_eval treats B differently from A. It
+found one blocker, the outcome missing from one message, which `doc/specs/respell.md` §7 asks
+for; fixed, confirmed by the reviewer's second look. Fixed besides: a check of the first sample
+alone, or one that rejected every *too complex* row, passed every test, and each now has a case;
+messages of up to 104,571 characters, now the counts and the difference; a GIAB variable set to a
+wrong path skipped the test, and now fails it saying what is wrong; a file with no samples passed
+against any other; the cause in A is checked for *too complex* only, since `evaluate_pair` gives
+*missing in both* and *invalid in both* only when A has the cause; and the harness of the case
+tests and the properties is in one place, so milestones 4 to 6 add a row of the table of
+re-spellings. Not taken now: the reference as a path, deferred to `compare()` as above.

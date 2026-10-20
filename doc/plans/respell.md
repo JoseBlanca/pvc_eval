@@ -101,7 +101,7 @@ what 1 builds.
   wrong re-spellings it must reject; the reviewers should try more, such as the pieces of a
   phased record put in a new phase set, and check that the oracle raises.
 
-- [ ] **3. The check of §7.4, for decomposition**
+- [x] **3. The check of §7.4, for decomposition**
 
   What it gives: `check_respelling_outcomes`, a file against its re-spelling through `parse_vcf`,
   `build_loci`, `reconcile_loci` and `make_outcome_rows`, and the check of §7.4 for the

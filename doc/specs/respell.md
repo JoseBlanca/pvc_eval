@@ -418,6 +418,11 @@ def check_respelling_outcomes(vcf_a: Path, vcf_b: Path, reference: IndexedFasta,
                               ploidy: int = DEFAULT_PLOIDY) -> None: ...
 ```
 
+Two helpers are public so that the test modules share them: `check_same_samples`, in
+`tests.haplotype_oracle`, which raises `ValueError` when two files' headers do not name the same
+samples in the same order, or name none; and `check_outcome_row`, in `tests.respell_check`, the
+rule of §9.3 for one row, which the property of `tests/test_reconcile_property.py` also uses.
+
 `tests/test_reconcile_property.py` keeps its property, with file B made by
 `respell_by_decomposing` from file A written to its directory, and its hand cases of
 `_make_decomposed_lines` become cases of `respell_by_decomposing` (§3), so the tests have one
