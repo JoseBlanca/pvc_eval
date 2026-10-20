@@ -3,6 +3,7 @@ four-contig case of tests/compare_case.py: the table and the summary it writes, 
 options, the values it refuses, its messages on stderr and its exit statuses."""
 
 import inspect
+import logging
 import re
 import subprocess
 import sysconfig
@@ -352,6 +353,45 @@ def test_warnings_and_info_lines_go_to_stderr(
     assert len(lines) == len(expected)
     for line, pattern in zip(lines, expected, strict=True):
         assert re.fullmatch(pattern, line), line
+
+
+class _RecordList(logging.Handler):
+    """A handler that keeps the records it is given."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+def test_a_root_handler_gets_no_line_and_none_is_printed_twice(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # As logging.basicConfig() or pytest's log_cli would set it up.
+    case = write_compare_case(tmp_path)
+    root_handler = _RecordList()
+    logging.getLogger().addHandler(root_handler)
+    try:
+        status, _, stderr = _run(_make_argv(case, tmp_path / "loci.tsv"), capsys)
+    finally:
+        logging.getLogger().removeHandler(root_handler)
+    assert status == 0
+    assert root_handler.records == []
+    lines = stderr.splitlines()
+    assert len(lines) == 8
+    assert len(set(lines)) == len(lines)
+
+
+def test_the_logger_is_set_back_after_the_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case = write_compare_case(tmp_path)
+    logger = logging.getLogger("pvc_eval")
+    before = (logger.level, logger.propagate, list(logger.handlers))
+    assert _run(_make_argv(case, tmp_path / "loci.tsv"), capsys)[0] == 0
+    assert (logger.level, logger.propagate, list(logger.handlers)) == before
 
 
 # ---- --help and the installed command ----------------------------------------------------

@@ -274,18 +274,22 @@ def main(argv: Sequence[str] | None = None) -> None:
 @contextmanager
 def _log_to_stderr() -> Generator[None]:
     """Send pvc_eval's log, INFO and above, to stderr, the message alone on each line, until
-    the block ends."""
+    the block ends. It is not passed on to the root logger, so that a handler there, as
+    logging.basicConfig() sets up, neither prints a line twice nor gets the INFO lines."""
     logger = logging.getLogger("pvc_eval")
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter("%(message)s"))
     level = logger.level
+    propagate = logger.propagate
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
+    logger.propagate = False
     try:
         yield
     finally:
         logger.removeHandler(handler)
         logger.setLevel(level)
+        logger.propagate = propagate
 
 
 def _make_parser() -> argparse.ArgumentParser:
