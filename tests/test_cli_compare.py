@@ -11,6 +11,7 @@ import sys
 import sysconfig
 import threading
 from collections.abc import Generator, Sequence
+from concurrent.futures import Future
 from contextlib import closing
 from pathlib import Path
 
@@ -24,17 +25,31 @@ from pvc_eval.outcome import OutcomeRow
 from pvc_eval.table import write_table
 
 _TIME = r"(\d+ h )?(\d+ min )?\d+ s since the start\."
+# Seconds a run of the command may take before the test fails it as a hang of its threads.
+_TIMEOUT = 60
 
 
 def _run(argv: Sequence[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, str, str]:
     """The exit status of `pvc_eval` with these arguments, and what it wrote to stdout and
-    to stderr."""
+    to stderr. main() runs in a thread of the test, so that a hang of compare()'s threads
+    fails the test after _TIMEOUT seconds."""
+    future: Future[int | str | None] = Future()
+
+    def run_main() -> None:
+        try:
+            main(argv)
+        except SystemExit as exit_:
+            future.set_result(exit_.code)
+        except BaseException as error:  # noqa: BLE001 -- raised again by future.result
+            future.set_exception(error)
+        else:
+            future.set_result(0)
+
+    threading.Thread(target=run_main, name="test main", daemon=True).start()
     try:
-        main(argv)
-    except SystemExit as exit_:
-        status = exit_.code
-    else:
-        status = 0
+        status = future.result(timeout=_TIMEOUT)
+    except TimeoutError:
+        pytest.fail(f"pvc_eval compare did not end within {_TIMEOUT} s")
     assert isinstance(status, int)
     captured = capsys.readouterr()
     return status, captured.out, captured.err
@@ -378,6 +393,7 @@ def test_a_defect_rises_with_its_traceback(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         check=False,
+        timeout=_TIMEOUT,
     )
     assert completed.returncode == 1
     assert completed.stderr.startswith("Traceback (most recent call last):")
@@ -566,7 +582,11 @@ def test_the_installed_command_runs(tmp_path: Path) -> None:
     output = tmp_path / "loci.tsv"
     command = Path(sysconfig.get_path("scripts")) / "pvc_eval"
     completed = subprocess.run(
-        [command, *_make_argv(case, output)], check=True, capture_output=True, text=True
+        [command, *_make_argv(case, output)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=_TIMEOUT,
     )
     assert completed.stdout == ""
     assert "chr3: finding STR regions in 300 bases.\n" in completed.stderr
