@@ -1,7 +1,8 @@
-"""compare() with no thread, on the four-contig case of tests/compare_case.py: its rows are
-those of the nine steps of doc/specs/compare.md, "The stages, joined", run one after
-another; it scans the contigs with a record and, with --regions, only those it names; its
-errors come after the same rows; and its INFO lines."""
+"""compare() with no thread, finder_threads 0, on the four-contig case of
+tests/compare_case.py: its rows are those of the nine steps of doc/specs/compare.md, "The
+stages, joined", run one after another; it scans the contigs with a record and, with
+--regions, only those it names; its errors come after the same rows; and its INFO lines.
+tests/test_compare_threads.py runs the same cases with threads."""
 
 import logging
 import re
@@ -107,7 +108,7 @@ def _segment_contigs(reference: IndexedFasta, contigs: Iterable[str]) -> Iterato
 def _run_compare(case: CompareCase, config: CompareConfig) -> _Run:
     rows: list[OutcomeRow] = []
     try:
-        rows.extend(compare(case.a, case.b, case.reference, config))
+        rows.extend(compare(case.a, case.b, case.reference, config, finder_threads=0))
     except PvcEvalInputError as error:
         return rows, error
     return rows, None
@@ -237,7 +238,7 @@ def test_locus_widened_by_str_region_gives_its_row(tmp_path: Path) -> None:
     case = write_compare_case(tmp_path)
     rows = [
         row
-        for row in compare(case.a, case.b, case.reference)
+        for row in compare(case.a, case.b, case.reference, finder_threads=0)
         if row.contig == "chr3" and row.start < 200
     ]
     # chr3:105 C>G in both files, 0/1 for HG002 in both, in (CA)10 at 101-120 (1-based).
@@ -274,7 +275,7 @@ def test_contigs_with_records_are_scanned_and_contig_4_is_not(
 ) -> None:
     case = write_compare_case(tmp_path)
     caplog.set_level(logging.INFO, logger=_LOGGER)
-    list(compare(case.a, case.b, case.reference))
+    list(compare(case.a, case.b, case.reference, finder_threads=0))
     assert _get_scan_messages(caplog) == [
         "chr1: finding STR regions in 300 bases.",
         "chr2: finding STR regions in 300 bases.",
@@ -287,7 +288,8 @@ def test_regions_naming_contig_3_scan_contig_3_alone(
 ) -> None:
     case = write_compare_case(tmp_path)
     caplog.set_level(logging.INFO, logger=_LOGGER)
-    list(compare(case.a, case.b, case.reference, _make_config("--regions chr3 0 300", tmp_path)))
+    config = _make_config("--regions chr3 0 300", tmp_path)
+    list(compare(case.a, case.b, case.reference, config, finder_threads=0))
     assert _get_scan_messages(caplog) == ["chr3: finding STR regions in 300 bases."]
 
 
@@ -492,7 +494,8 @@ def test_contig_done_line_counts_its_loci(
 ) -> None:
     case = write_compare_case(tmp_path)
     caplog.set_level(logging.INFO, logger=_LOGGER)
-    list(compare(case.a, case.b, case.reference, _make_config(option, tmp_path)))
+    config = _make_config(option, tmp_path)
+    list(compare(case.a, case.b, case.reference, config, finder_threads=0))
     done_lines = _get_messages(caplog, "compared")
     assert len(done_lines) == len(expected_lines)
     for done_line, expected_start in zip(done_lines, expected_lines, strict=True):
@@ -504,7 +507,7 @@ def test_contig_done_line_for_one_locus_says_locus(
 ) -> None:
     case = write_compare_case(tmp_path, lines_a=LINES_A[:1], lines_b=())
     caplog.set_level(logging.INFO, logger=_LOGGER)
-    list(compare(case.a, case.b, case.reference))
+    list(compare(case.a, case.b, case.reference, finder_threads=0))
     done_lines = _get_messages(caplog, "compared")
     assert len(done_lines) == 1
     assert re.fullmatch(r"chr1: 1 locus compared; " + _TIME, done_lines[0])

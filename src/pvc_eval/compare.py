@@ -3,17 +3,22 @@ table (doc/specs/compare.md, "What compare() does").
 
 Positions are 0-based and half-open, as everywhere inside pvc_eval.
 
-This version runs every stage in the caller's thread, whatever finder_threads is: the
-readers are read as build_loci asks for their records, and the STR finder scans a contig
-when build_loci first needs its segments.
+With finder_threads 0 every stage runs in the caller's thread: the readers are read as
+build_loci asks for their records, and the STR finder scans a contig when build_loci first
+needs its segments. With 1 or more, each VCF is read in a thread of its own into a bounded
+buffer, and the STR finder runs on a pool of finder_threads threads, a few contigs ahead of
+the loci (doc/specs/compare.md, "Which thread does what"). The rows are the same.
 
 Public: compare, which yields the rows; CompareConfig, its options that change the rows;
 PVC_STRATA, the value of CompareConfig.strata for --strata pvc; DEFAULT_FINDER_THREADS.
 """
 
+import functools
 import logging
+import threading
 import time
-from collections.abc import Callable, Container, Generator, Iterator, Sequence
+from collections import deque
+from collections.abc import Callable, Container, Generator, Iterable, Iterator, Sequence
 from contextlib import ExitStack, closing
 from dataclasses import dataclass
 from itertools import groupby
@@ -21,6 +26,7 @@ from operator import attrgetter
 from pathlib import Path
 from typing import cast
 
+from pvc_eval._vcf_index import parse_index_contigs
 from pvc_eval.evaluate import make_outcome_rows
 from pvc_eval.fasta import IndexedFasta
 from pvc_eval.kind import locus_kind
@@ -40,6 +46,16 @@ PVC_STRATA = sentinel("PVC_STRATA")
 """The value of CompareConfig.strata for --strata pvc, apart from a BED whose path is pvc."""
 
 DEFAULT_FINDER_THREADS = 2  # doc/specs/compare.md, "Which thread does what"
+
+# doc/specs/compare.md, "Which thread does what": the most VCF records a reader's buffer
+# holds, and how many records it hands over at once, so that the buffer is locked once per
+# batch and not per record.
+_BUFFER_RECORDS = 10_000
+_BATCH_RECORDS = 64
+
+_END = sentinel("_END")
+"""What a reader puts in its buffer after its last record, when its reading ends with no
+error."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -86,20 +102,26 @@ def compare(
 
     a, b: file A and file B, plain or bgzipped VCF.
     reference: the FASTA, with its .fai beside it.
-    finder_threads: how many threads the STR finder may use, 0 for none. This version
-        uses none whatever the number.
+    finder_threads: how many threads the STR finder uses, a whole number of 0 or more. With
+        0, compare() makes no thread: every stage runs in the caller's thread. With 1 or
+        more, each VCF is also read in a thread of its own, and the indexes beside the VCFs
+        plan the contigs to scan. Closing the stream stops the threads; it waits for the
+        readers, and not for a scan in progress.
 
-    Without config.str_regions, the STR finder scans a contig only once a record on it
-    has reached the loci and, with config.regions, the regions name it. compare() logs at
+    Without config.str_regions, the STR regions of a contig reach the loci only once a
+    record on it has reached them and, with config.regions, the regions name it. A thread
+    of the finder may scan a contig earlier, or one that turns out not to be needed, and
+    drop its STR regions. compare() logs at
     INFO "chr1: finding STR regions in 248,956,422 bases." when a scan starts, and
     "chr20: 31,204 loci compared, 1,880 skipped by --regions; 4 min 12 s since the
     start." when the loci of a contig are done, the clause about --regions only with
     config.regions.
 
     Raises, when the stream starts, ValueError for a finder_threads that is not a whole
-    number of 0 or more, and, before the first row, the ValueError a stage raises for a
-    setting of config out of range, naming its field; and PvcEvalInputError for the faults
-    of the input the stages raise it for, when the stream reaches them.
+    number of 0 or more; it checks no field of config. The stages check those: before the
+    first row, the stage that takes a field out of range raises ValueError naming it. Raises
+    PvcEvalInputError for the faults of the input the stages raise it for, when the stream
+    reaches them, with or without threads after the same rows.
     """
     _check_finder_threads(finder_threads)
     start_time = time.monotonic()
@@ -108,12 +130,18 @@ def compare(
         sample_pairs = make_sample_pairs(a, b, sample_map=config.sample_map)
         regions = None if config.regions is None else read_regions(config.regions, contigs)
         get_stratum = _make_get_stratum(config.strata, contigs)
-        records_a = _parse_vcf_until_exit(stack, a, indexed_fasta, config, config.ploidy_a)
-        records_b = _parse_vcf_until_exit(stack, b, indexed_fasta, config, config.ploidy_b)
+        if finder_threads == 0:
+            records_a = _parse_vcf_until_exit(stack, a, indexed_fasta, config, config.ploidy_a)
+            records_b = _parse_vcf_until_exit(stack, b, indexed_fasta, config, config.ploidy_b)
+            finder = None
+        else:
+            records_a, records_b, finder = _start_threads(
+                stack, (a, b), indexed_fasta, config, regions, finder_threads
+            )
         # The contigs of the records build_loci has taken, from which the segments are decided.
         taken_contigs: set[str] = set()
         if config.str_regions is None:
-            segments = _make_segments(indexed_fasta, taken_contigs, regions)
+            segments = _make_segments(indexed_fasta, taken_contigs, regions, finder)
         else:
             segments = read_str_regions(config.str_regions, indexed_fasta)
         loci = build_loci(
@@ -191,7 +219,10 @@ def _note_taken_contigs(
 
 
 def _make_segments(
-    reference: IndexedFasta, taken_contigs: Container[str], regions: Regions | None
+    reference: IndexedFasta,
+    taken_contigs: Container[str],
+    regions: Regions | None,
+    finder: _Finder | None,
 ) -> Iterator[GenomeSegment]:
     """The segments build_loci reads, contig by contig in the order of the .fai: the STR
     regions of each contig that needs them, and for each other contig a GENERIC segment at
@@ -202,14 +233,21 @@ def _make_segments(
     build_loci asks for the segment after its GENERIC one. build_loci asks that only for a
     record on that contig or a later one, which has been taken by then; so if the contig
     still does not need them, it has no record, or the regions do not name it.
+
+    finder: the pool that scans the contigs, or None to scan each in this thread.
     """
-    for contig in reference.contigs:
+    for rank, contig in enumerate(reference.contigs):
+        if finder is not None:
+            finder.drop_passed(rank)
         if not _is_needed(contig, reference, taken_contigs, regions):
             # It tells build_loci that no segment before position 0 of contig is to come.
             yield GenomeSegment(contig, 0, 1, RegionType.GENERIC, None)
             if not _is_needed(contig, reference, taken_contigs, regions):
                 continue
-        yield from _find_str_regions(reference, contig)
+        if finder is None:
+            yield from _find_str_regions(reference, contig)
+        else:
+            yield from finder.take_str_regions(contig)
 
 
 def _is_needed(
@@ -217,8 +255,11 @@ def _is_needed(
 ) -> bool:
     """Whether a contig needs its STR regions: a record on it has been taken, and regions,
     when given, name it."""
-    if contig not in taken_contigs:
-        return False
+    return contig in taken_contigs and _is_named(contig, reference, regions)
+
+
+def _is_named(contig: str, reference: IndexedFasta, regions: Regions | None) -> bool:
+    """Whether regions, when given, name a contig."""
     return regions is None or regions.overlaps(contig, 0, reference.get_length(contig))
 
 
@@ -277,3 +318,313 @@ def _format_duration(seconds: float) -> str:
     if minutes:
         return f"{minutes} min {whole_seconds} s"
     return f"{whole_seconds} s"
+
+
+def _start_threads(
+    stack: ExitStack,
+    paths: tuple[Path, Path],
+    reference: IndexedFasta,
+    config: CompareConfig,
+    regions: Regions | None,
+    finder_threads: int,
+) -> tuple[Iterator[VcfRecord], Iterator[VcfRecord], _Finder | None]:
+    """Starts a reader for each of file A and file B and, without config.str_regions, the
+    finder's pool with the contigs the indexes plan in line; returns the records of each
+    reader, as the loci side takes them, and the finder (doc/specs/compare.md, "Which thread
+    does what").
+
+    When stack exits, the stop is set, and the readers are waited for (doc/specs/compare.md,
+    "Errors, and stopping early").
+    """
+    stop = threading.Event()
+    finder = None
+    if config.str_regions is None:
+        finder = _Finder(reference, regions, finder_threads, stop)
+    buffers = (_RecordBuffer(stop), _RecordBuffer(stop))
+    readers = [
+        threading.Thread(
+            target=_parse_vcf_into_buffer,
+            args=(
+                functools.partial(
+                    parse_vcf, path, reference, span_limit=config.span_limit, ploidy=ploidy
+                ),
+                buffer,
+                finder,
+            ),
+            name=f"pvc_eval reader {file_name}",
+            daemon=True,
+        )
+        for path, ploidy, buffer, file_name in zip(
+            paths, (config.ploidy_a, config.ploidy_b), buffers, "AB", strict=True
+        )
+    ]
+    stack.callback(_stop_threads, stop, readers, [*buffers, *([finder] if finder else [])])
+    if finder is not None:
+        # The reference lacks a contig an index lists: a record on it stops the run when a
+        # reader reaches it, so its scan is not planned.
+        index_contigs = parse_index_contigs(paths[0]) | parse_index_contigs(paths[1])
+        finder.put(contig for contig in reference.contigs if contig in index_contigs)
+        finder.start()
+    for reader in readers:
+        reader.start()
+    return _take_records(buffers[0]), _take_records(buffers[1]), finder
+
+
+def _stop_threads(
+    stop: threading.Event,
+    readers: Iterable[threading.Thread],
+    waiting_on_stop: Iterable[_RecordBuffer | _Finder],
+) -> None:
+    """Sets the stop, wakes the threads that wait on a buffer or on the finder's line, and
+    waits for the readers to end. A scan in progress is not waited for."""
+    stop.set()
+    for buffer_or_finder in waiting_on_stop:
+        buffer_or_finder.stop()
+    for reader in readers:
+        reader.join()
+
+
+class _RecordBuffer:
+    """What a reader hands to the loci side: its records in batches, at most _BUFFER_RECORDS
+    records at a time, and then how its reading ended, _END or the exception that ended it.
+
+    The reader waits while the buffer has no room for a batch, and the loci side while it is
+    empty; both wait on one lock, taken once per batch.
+    """
+
+    def __init__(self, stop: threading.Event) -> None:
+        self._stop = stop
+        self._condition = threading.Condition()
+        # Changed only with self._condition held, by the reader and by the loci side.
+        self._items: deque[list[VcfRecord] | BaseException | _END] = deque()
+        self._num_records = 0
+
+    def put(self, batch: list[VcfRecord]) -> bool:
+        """Puts a batch in the buffer, waiting while the buffer has no room for it. Returns
+        False, with the batch dropped, once the stop is set."""
+        with self._condition:
+            while self._num_records + len(batch) > _BUFFER_RECORDS and not self._stop.is_set():
+                self._condition.wait()
+            if self._stop.is_set():
+                return False
+            self._items.append(batch)
+            self._num_records += len(batch)
+            self._condition.notify_all()
+            return True
+
+    def put_last(self, batch: list[VcfRecord], ending: BaseException | _END) -> None:
+        """Puts the last batch of the reading, when it holds records, and how the reading
+        ended; both are dropped once the stop is set."""
+        if batch and not self.put(batch):
+            return
+        with self._condition:
+            self._items.append(ending)
+            self._condition.notify_all()
+
+    def take(self) -> list[VcfRecord] | BaseException | _END:
+        """Takes the oldest item of the buffer, waiting while there is none."""
+        with self._condition:
+            while not self._items:
+                self._condition.wait()
+            item = self._items.popleft()
+            if isinstance(item, list):
+                self._num_records -= len(item)
+                self._condition.notify_all()
+            return item
+
+    def stop(self) -> None:
+        """Wakes a reader waiting for room, once the stop is set, so that it ends."""
+        with self._condition:
+            self._condition.notify_all()
+
+
+def _parse_vcf_into_buffer(
+    open_vcf_records: Callable[[], Iterator[VcfRecord]],
+    buffer: _RecordBuffer,
+    finder: _Finder | None,
+) -> None:
+    """A reader thread: parse_vcf's records put in the buffer in batches of _BATCH_RECORDS,
+    the last perhaps shorter, followed by how the reading ended, _END or the exception that
+    ended it, which the loci side raises where it comes. Each contig the reader reaches is
+    put in the finder's line. The reading ends, and its stream is closed, at the stop.
+
+    open_vcf_records: parse_vcf with its arguments, called in this thread.
+    """
+    batch: list[VcfRecord] = []
+    ending: BaseException | _END = _END
+    try:
+        # parse_vcf is a generator function, so its stream has close().
+        with closing(cast(Generator[VcfRecord], open_vcf_records())) as vcf_records:
+            contig = None
+            for vcf_record in vcf_records:
+                if finder is not None and vcf_record.contig != contig:
+                    finder.put([vcf_record.contig])
+                contig = vcf_record.contig
+                batch.append(vcf_record)
+                if len(batch) == _BATCH_RECORDS:
+                    if not buffer.put(batch):
+                        return
+                    batch = []
+    except BaseException as error:  # noqa: BLE001 -- raised by the loci side, or dropped at the stop
+        ending = error
+    buffer.put_last(batch, ending)
+
+
+def _take_records(buffer: _RecordBuffer) -> Iterator[VcfRecord]:
+    """The records of a reader's buffer, one at a time, and then the exception that ended
+    its reading, raised after them."""
+    while True:
+        item = buffer.take()
+        if item is _END:
+            return
+        if isinstance(item, BaseException):
+            raise item
+        yield from item
+
+
+class _Finder:
+    """The STR finder's pool: threads that scan, each one contig at a time, the contigs in
+    line, a few contigs ahead of the loci side (doc/specs/compare.md, "Which contigs are
+    scanned", "How far ahead").
+
+    A contig is put in line when planned from an index or when a reader reaches it, once,
+    and only when the regions, when given, name it. A thread takes the contig of lowest rank
+    in line while fewer than num_threads + 1 contigs are ahead, from the start of their scan
+    until the loci side takes their STR regions; the contig the loci side waits for, it
+    takes whatever the number ahead. A contig the loci side passes leaves the line, and the
+    STR regions of its scan are dropped.
+    """
+
+    def __init__(
+        self,
+        reference: IndexedFasta,
+        regions: Regions | None,
+        num_threads: int,
+        stop: threading.Event,
+    ) -> None:
+        self._reference = reference
+        self._regions = regions
+        self._num_threads = num_threads
+        self._stop = stop
+        self._ranks = {contig: rank for rank, contig in enumerate(reference.contigs)}
+        # What follows is changed only with self._condition held, by the readers, the
+        # finder's threads and the loci side: the line is shared by design.
+        self._condition = threading.Condition()
+        self._line: set[str] = set()
+        self._ever_in_line: set[str] = set()
+        self._ahead: set[str] = set()
+        self._results: dict[str, tuple[GenomeSegment, ...] | BaseException] = {}
+        # An exception outside a scan, which no contig's result can carry.
+        self._error: BaseException | None = None
+        # The rank of the contig the loci side is on; it has passed those of lower rank.
+        self._loci_rank = 0
+        self._waited_contig: str | None = None
+
+    def start(self) -> None:
+        """Starts the finder's threads, daemon threads, so that a scan in progress does not
+        keep Python from exiting."""
+        for number in range(1, self._num_threads + 1):
+            thread = threading.Thread(
+                target=self._find_in_line, name=f"pvc_eval finder {number}", daemon=True
+            )
+            thread.start()
+
+    def put(self, contigs: Iterable[str]) -> None:
+        """Puts contigs in line: each that the regions, when given, name, has not been in
+        line before, and the loci side has not passed."""
+        with self._condition:
+            for contig in contigs:
+                if contig in self._ever_in_line or self._ranks[contig] < self._loci_rank:
+                    continue
+                if _is_named(contig, self._reference, self._regions):
+                    self._put_in_line(contig)
+            self._condition.notify_all()
+
+    def drop_passed(self, rank: int) -> None:
+        """Notes that the loci side is on the contig of this rank, and drops from the line,
+        from the contigs ahead and from the results those of lower rank."""
+        with self._condition:
+            self._loci_rank = rank
+            for contig in [*self._line, *self._ahead]:
+                if self._ranks[contig] < rank:
+                    self._line.discard(contig)
+                    self._ahead.discard(contig)
+                    self._results.pop(contig, None)
+            self._condition.notify_all()
+
+    def take_str_regions(self, contig: str) -> tuple[GenomeSegment, ...]:
+        """The STR regions of a contig, for the loci side, waiting for its scan, which starts
+        as soon as a thread is free; raises the exception its scan raised."""
+        with self._condition:
+            if contig not in self._ever_in_line:
+                self._put_in_line(contig)
+            self._waited_contig = contig
+            self._condition.notify_all()
+            while contig not in self._results and self._error is None:
+                self._condition.wait()
+            if self._error is not None:
+                raise self._error
+            result = self._results.pop(contig)
+            self._ahead.discard(contig)
+            self._waited_contig = None
+            self._condition.notify_all()
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    def stop(self) -> None:
+        """Wakes the threads waiting for a contig, once the stop is set, so that they end."""
+        with self._condition:
+            self._condition.notify_all()
+
+    def _put_in_line(self, contig: str) -> None:
+        self._line.add(contig)
+        self._ever_in_line.add(contig)
+
+    def _find_in_line(self) -> None:
+        """A finder thread: the contigs taken from the line, scanned one after another until
+        the stop. An exception is passed to the loci side, or dropped after the stop."""
+        try:
+            while (contig := self._take_contig()) is not None:
+                try:
+                    result: tuple[GenomeSegment, ...] | BaseException = tuple(
+                        _find_str_regions(self._reference, contig)
+                    )
+                except BaseException as error:  # noqa: BLE001 -- raised by the loci side, or dropped at the stop
+                    result = error
+                self._put_result(contig, result)
+        except BaseException as error:  # noqa: BLE001 -- raised by the loci side, or dropped at the stop
+            with self._condition:
+                self._error = error
+                self._condition.notify_all()
+
+    def _take_contig(self) -> str | None:
+        """The next contig to scan, taken from the line, waiting while there is none to
+        start; None at the stop."""
+        with self._condition:
+            while not self._stop.is_set():
+                contig = self._find_next_contig()
+                if contig is not None:
+                    self._line.remove(contig)
+                    self._ahead.add(contig)
+                    return contig
+                self._condition.wait()
+            return None
+
+    def _find_next_contig(self) -> str | None:
+        """The contig in line to start now, with self._condition held: the one the loci side
+        waits for, or the lowest ranked while fewer than num_threads + 1 are ahead."""
+        if self._waited_contig is not None and self._waited_contig in self._line:
+            return self._waited_contig
+        if self._line and len(self._ahead) < self._num_threads + 1:
+            return min(self._line, key=self._ranks.__getitem__)
+        return None
+
+    def _put_result(self, contig: str, result: tuple[GenomeSegment, ...] | BaseException) -> None:
+        """Keeps a scan's STR regions, or its exception, for the loci side; drops them when
+        the loci side has passed the contig or the stop is set."""
+        with self._condition:
+            if self._stop.is_set() or contig not in self._ahead:
+                return
+            self._results[contig] = result
+            self._condition.notify_all()
