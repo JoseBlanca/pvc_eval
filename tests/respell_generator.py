@@ -37,11 +37,13 @@ from tests.conftest import CONTIG, CaseFiles, write_case_vcf
 from tests.haplotype_oracle import ORACLE_CAP, HaplotypeComparison, check_same_haplotypes
 from tests.respell import (
     respell_by_decomposing,
+    respell_by_merging,
     respell_by_shifting,
     respell_with_spanning_deletions,
 )
 from tests.respell_cases import (
     DECOMPOSITION_CASES,
+    MERGE_CASES,
     SHIFT_CASES,
     SPANNING_DELETION_CASES,
     RespellingCase,
@@ -77,14 +79,26 @@ class _RecordKind(Enum):
     REPEAT_INDEL = "indel of a planted repeat"
     RANDOM_INDEL = "random indel"
     DELETION_OVER = "deletion over another record"
+    SNP_PAIR = "two SNPs after the other records"
 
 
 # The kinds a record of one ALT is drawn from, evenly: a deletion over another record three
 # times in seven, so that the `*` re-spelling writes a `*` in more than one file in ten
 # (§9.2). Drawn as often as the other kinds, it wrote one in 9.9% of 2,000 random files on 20
 # October 2026, and three times as often in 17.1%, with the shift's files going from 17.0%
-# to 15.2% and the files with a pair of windows a block joins from 28.1% to 26.2%.
-_RECORD_KIND_DRAWS = (*_RecordKind, _RecordKind.DELETION_OVER, _RecordKind.DELETION_OVER)
+# to 15.2% and the files with a pair of windows a block joins from 28.1% to 26.2%. Two SNPs
+# past the records drawn before them, twice in nine, so that the merge rewrites more than one
+# file in ten (§9.2): over 30 random runs of 300 files on 20 October 2026, the merge rewrote
+# 6.4% of the files without them, 8.6% with them drawn once in eight and 11.9% twice in nine,
+# with the shift's files going from 14.7% to 11.9% and the `*` ones from 14.6% to 11.1%.
+# Drawn from the SNP kind instead, they gave 14.1%, 13.3% and 12.4%, but the fixed files of
+# the share's test gave the shift 19 of 300.
+_RECORD_KIND_DRAWS = (
+    *_RecordKind,
+    _RecordKind.DELETION_OVER,
+    _RecordKind.DELETION_OVER,
+    _RecordKind.SNP_PAIR,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +186,12 @@ def _respell_with_spanning_deletions(
     respell_with_spanning_deletions(vcf, reference, output, ploidy=ploidy)
 
 
+def _respell_by_merging(
+    vcf: Path, reference: IndexedFasta, output: Path, ploidy: int, seed: int | None
+) -> None:
+    respell_by_merging(vcf, reference, output, seed=seed, ploidy=ploidy)
+
+
 RESPELLINGS = (
     Respelling(name="decomposition", cases=DECOMPOSITION_CASES, respell=_respell_by_decomposing),
     Respelling(name="shift", cases=SHIFT_CASES, respell=_respell_by_shifting),
@@ -180,6 +200,7 @@ RESPELLINGS = (
         cases=SPANNING_DELETION_CASES,
         respell=_respell_with_spanning_deletions,
     ),
+    Respelling(name="merge", cases=MERGE_CASES, respell=_respell_by_merging),
 )
 # Each re-spelling, and each case of each with its re-spelling, for pytest.mark.parametrize.
 RESPELLING_PARAMS = [pytest.param(respelling, id=respelling.name) for respelling in RESPELLINGS]
@@ -381,24 +402,25 @@ def _make_contig(draw: st.DrawFn, name: str) -> _Contig:
 def _make_records(draw: st.DrawFn, contig: _Contig) -> list[_Record]:
     """1 to 6 records, sorted by POS: one in twenty with no ALT, one in twenty with a `*` ALT,
     and the others a SNP, a replacement, the insertion or the deletion of whole units of a
-    planted repeat at its edge, a random indel, or a deletion over a record drawn before it,
-    each with a second ALT one time in two."""
+    planted repeat at its edge, a random indel, a deletion over a record drawn before it, or
+    two SNPs after the records drawn before them, each with a second ALT one time in two."""
     records: list[_Record] = []
-    for _ in range(draw(st.integers(1, 6))):
+    num_records = draw(st.integers(1, 6))
+    while len(records) < num_records:
         kind = draw(st.integers(0, 19))
         if kind == 19:
             records.append(draw(_make_no_alt_record(contig)))
             continue
-        record = draw(_make_one_alt_record(contig, records))
-        if kind == 18:
-            records.append(_Record(record.start, record.ref, (*record.alts, "*")))
-            continue
-        if draw(st.booleans()):
-            second_alt = draw(
-                _make_alt(record.ref).filter(lambda alt, record=record: alt not in record.alts)
-            )
-            record = _Record(record.start, record.ref, (*record.alts, second_alt))
-        records.append(record)
+        for record in draw(_make_one_alt_records(contig, records))[: num_records - len(records)]:
+            if kind == 18:
+                records.append(_Record(record.start, record.ref, (*record.alts, "*")))
+                continue
+            if draw(st.booleans()):
+                second_alt = draw(
+                    _make_alt(record.ref).filter(lambda alt, record=record: alt not in record.alts)
+                )
+                record = _Record(record.start, record.ref, (*record.alts, second_alt))
+            records.append(record)
     return sorted(records, key=lambda record: record.start)
 
 
@@ -411,22 +433,29 @@ def _make_no_alt_record(draw: st.DrawFn, contig: _Contig) -> _Record:
 
 
 @st.composite
-def _make_one_alt_record(draw: st.DrawFn, contig: _Contig, records: Sequence[_Record]) -> _Record:
-    """A record of one ALT, of a kind drawn from _RECORD_KIND_DRAWS. The indel of a planted repeat on a contig
-    with none, and the deletion over another record where no record is drawn before it or
-    the one drawn is at the first base of the contig's bases, are a SNP instead."""
+def _make_one_alt_records(
+    draw: st.DrawFn, contig: _Contig, records: Sequence[_Record]
+) -> list[_Record]:
+    """One record of one ALT, or two SNPs, of a kind drawn from _RECORD_KIND_DRAWS. The indel
+    of a planted repeat on a contig with none, the deletion over another record where no
+    record is drawn before it or the one drawn is at the first base of the contig's bases,
+    and two SNPs where the contig's bases end before them, are a SNP instead."""
     kind = draw(st.sampled_from(_RECORD_KIND_DRAWS))
     if kind is _RecordKind.REPEAT_INDEL and contig.repeats:
-        return draw(_make_repeat_indel(contig))
+        return [draw(_make_repeat_indel(contig))]
     if kind is _RecordKind.DELETION_OVER and records:
         record = draw(_make_deletion_over(contig, draw(st.sampled_from(records))))
         if record is not None:
-            return record
+            return [record]
+    if kind is _RecordKind.SNP_PAIR:
+        pair = draw(_make_snp_pair(contig, records))
+        if pair is not None:
+            return pair
     if kind is _RecordKind.REPLACEMENT:
-        return draw(_make_replacement(contig))
+        return [draw(_make_replacement(contig))]
     if kind is _RecordKind.RANDOM_INDEL:
-        return draw(_make_random_indel(contig))
-    return draw(_make_snp(contig))
+        return [draw(_make_random_indel(contig))]
+    return [draw(_make_snp(contig))]
 
 
 @st.composite
@@ -497,6 +526,33 @@ def _make_deletion_over(draw: st.DrawFn, contig: _Contig, record: _Record) -> _R
     anchor = draw(st.integers(max(contig.core_start, record.start - 3), record.start - 1))
     end = draw(st.integers(record.start + 1, min(contig.core_end, record.start + 3)))
     return _Record(anchor, contig.bases[anchor:end], (contig.bases[anchor],))
+
+
+@st.composite
+def _make_snp_pair(
+    draw: st.DrawFn, contig: _Contig, records: Sequence[_Record]
+) -> list[_Record] | None:
+    """Two SNPs with 1 or 2 positions between them, and as many between the first and the
+    REFs of records, after the furthest end of those, so that the merge has runs that the
+    records drawn before do not touch (§6); anywhere in the contig's bases when records is
+    empty; None where those bases end before the second SNP."""
+    num_between = draw(st.integers(1, 2))
+    pair_length = 2 + num_between  # from the first SNP to the second, both included
+    if not records:
+        first = draw(st.integers(contig.core_start, contig.core_end - pair_length))
+    else:
+        first = max(record.start + len(record.ref) for record in records) + num_between
+        if first + pair_length > contig.core_end:
+            return None
+    second = first + 1 + num_between
+    return [_make_snp_at(contig, first, draw), _make_snp_at(contig, second, draw)]
+
+
+def _make_snp_at(contig: _Contig, start: int, draw: st.DrawFn) -> _Record:
+    """A SNP at start, its ALT drawn with draw, inside the composite strategy that calls it:
+    as a strategy of its own it would change the files of the fixed draws (§9.2)."""
+    ref = contig.bases[start]
+    return _Record(start, ref, (draw(st.sampled_from([base for base in _BASES if base != ref])),))
 
 
 def _make_alt(ref: str) -> st.SearchStrategy[str]:

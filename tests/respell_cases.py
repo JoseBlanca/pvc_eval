@@ -1,7 +1,8 @@
 """The cases of doc/specs/respell.md in its notation, for the tests of the re-spelling
 program and of what checks it: RespellingCase, the D cases of §3 as DECOMPOSITION_CASES,
-the S cases of §4 as SHIFT_CASES, the T cases of §5 as SPANNING_DELETION_CASES, and the readers of a VCF file in the notation,
-read_case_lines, read_header and read_vcf_lines. A case's input is written with
+the S cases of §4 as SHIFT_CASES, the T cases of §5 as SPANNING_DELETION_CASES, the M cases
+of §6 as MERGE_CASES, and the readers of a VCF file in the notation, read_case_lines,
+read_header and read_vcf_lines. A case's input is written with
 write_case_vcf of tests.conftest, with fills_ps=False.
 
 A case is written as the spec writes it, one record a line, `POS REF ALT` and one sample
@@ -236,6 +237,90 @@ SPANNING_DELETION_CASES = (
         bases=_SPANNING_DELETION_BASES,
         input_lines=("11 GT G 0|1:5", "12 TC TA 1|0:5"),
         output_lines=("11 GT G 0|1:5", "12 TC TA 1|0:5"),
+    ),
+)
+
+
+MERGE_CASES = (
+    RespellingCase(
+        name="M1-one-position-between",
+        bases="GACGTA",
+        input_lines=("2 A T 1/1", "4 G C 0/1"),
+        output_lines=("2 ACG TCG,TCC 1/2:.",),
+    ),
+    RespellingCase(
+        name="M2-phased-in-one-phase-set",
+        bases="GACGTA",
+        input_lines=("2 A T 1|0:5", "4 G C 0|1:5"),
+        output_lines=("2 ACG TCG,ACC 1|2:5",),
+    ),
+    RespellingCase(
+        name="M3-two-unphased-heterozygous-records-kept",
+        bases="GACGTA",
+        input_lines=("2 A T 0/1", "4 G C 0/1"),
+        output_lines=("2 A T 0/1", "4 G C 0/1"),
+    ),
+    RespellingCase(
+        name="M4-two-phase-sets-kept",
+        bases="GACGTA",
+        input_lines=("2 A T 1|0:5", "4 G C 0|1:6"),
+        output_lines=("2 A T 1|0:5", "4 G C 0|1:6"),
+    ),
+    RespellingCase(
+        name="M5-an-alt-for-each-distinct-haplotype",
+        bases="GACGTA",
+        input_lines=("2 A T 1|0:5 1/1", "4 G C 0|1:5 1/1"),
+        output_lines=("2 ACG TCG,ACC,TCC 1|2:5 3/3:.",),
+    ),
+    RespellingCase(
+        name="M6-a-haplotype-of-ref",
+        bases="GACGTA",
+        input_lines=("2 A T 0|1:5", "4 G C 0|1:5"),
+        output_lines=("2 ACG TCC 0|1:5",),
+    ),
+    RespellingCase(
+        name="M7-a-missing-allele-kept",
+        bases="GACGTA",
+        input_lines=("2 A T ./1", "4 G C 1/1"),
+        output_lines=("2 A T ./1", "4 G C 1/1"),
+    ),
+    RespellingCase(
+        name="M8-three-positions-between-kept",
+        bases="GACGTA",
+        input_lines=("2 A T 1/1", "6 A C 1/1"),
+        output_lines=("2 A T 1/1", "6 A C 1/1"),
+    ),
+    RespellingCase(
+        name="M9-a-run-of-three",
+        bases="GACGTA",
+        input_lines=("2 A T 1/1", "4 G C 1/1", "6 A G 0/1"),
+        output_lines=("2 ACGTA TCCTA,TCCTG 1/2:.",),
+    ),
+    RespellingCase(
+        name="M10-ploidy-1",
+        bases="GACGTA",
+        input_lines=("2 A T 1", "4 G C 0"),
+        output_lines=("2 ACG TCG 1:.",),
+        ploidy=1,
+    ),
+    RespellingCase(
+        name="M11-an-insertion-in-the-run",
+        bases="GACGTA",
+        input_lines=("2 A AT 1/1", "4 G C 0/1"),
+        output_lines=("2 ACG ATCG,ATCC 1/2:.",),
+    ),
+    RespellingCase(
+        name="M12-a-kept-record-touching-both-stretches",
+        bases="GACGTA",
+        input_lines=("2 A T 1/1", "3 C A 2/0", "4 G C 0/1"),
+        output_lines=("2 A T 1/1", "3 C A 2/0", "4 G C 0/1"),
+    ),
+    # §6: a run whose every haplotype gets REF has no ALT to write.
+    RespellingCase(
+        name="a-run-all-ref-kept",
+        bases="GACGTA",
+        input_lines=("2 A T 0/0", "4 G C 0/0"),
+        output_lines=("2 A T 0/0", "4 G C 0/0"),
     ),
 )
 

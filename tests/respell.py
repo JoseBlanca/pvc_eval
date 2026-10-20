@@ -9,7 +9,7 @@ Positions are 0-based and half-open, as everywhere inside pvc_eval, but for POS,
 1-based where a name says so.
 
 Public: respell_by_decomposing (§3), respell_by_shifting (§4),
-respell_with_spanning_deletions (§5); make_bgzf, the BGZF writer,
+respell_with_spanning_deletions (§5), respell_by_merging (§6); make_bgzf, the BGZF writer,
 which the tests use to write a bgzipped input.
 """
 
@@ -195,13 +195,10 @@ def respell_by_shifting(
     Raises what parse_vcf raises, before output is written; ValueError when output is vcf
     itself, or seed is neither None nor a whole number.
     """
-    # bool is an int to Python, and random.Random takes a float or a str as a seed too.
-    if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
-        raise ValueError(f"the seed must be None or a whole number, not {seed!r}")
+    draws = _make_draws(seed)
     _check_output(vcf, output)
     respelling_input = _parse_input(vcf, reference, ploidy)
     record_index = _make_record_index(respelling_input.input_records)
-    draws = None if seed is None else random.Random(seed)
     output_records = []
     for input_record in respelling_input.input_records:
         vcf_record = input_record.vcf_record
@@ -279,6 +276,68 @@ def respell_with_spanning_deletions(
         else:
             output_records.append(_make_kept_record(input_record))
     _write_output(output, respelling_input, output_records)
+
+
+def respell_by_merging(
+    vcf: Path,
+    reference: IndexedFasta,
+    output: Path,
+    *,
+    seed: int | None = None,
+    ploidy: int = DEFAULT_PLOIDY,
+) -> None:
+    """Respell vcf by merging runs of neighbouring records into one complex record each,
+    written to output (doc/specs/respell.md §6). A run is two or more consecutive records of
+    a contig, each with its REF overlapping the stretch of those before it or starting at
+    most 2 positions after it; it is merged when none of its records is kept, has a `*` ALT
+    or gives a sample `.`, no other record with an ALT touches its stretch, and each
+    sample's heterozygous VCF genotypes in it are in one phase unit.
+
+    vcf: a VCF file, plain or gzipped, read with parse_vcf over reference with ploidy.
+    output: the file written, bgzipped when vcf is gzipped.
+    seed: None for the longest runs that merge, taken from the left; a whole number to
+        bound each run, from its first record, by records that each join with probability
+        1/2, drawn with random.Random(seed), so that the same seed writes the same file;
+        the longest run within that bound that merges is merged.
+
+    Raises what parse_vcf raises, before output is written; ValueError when output is vcf
+    itself, or seed is neither None nor a whole number.
+    """
+    draws = _make_draws(seed)
+    _check_output(vcf, output)
+    respelling_input = _parse_input(vcf, reference, ploidy)
+    record_index = _make_record_index(respelling_input.input_records)
+    input_records = respelling_input.input_records
+    mergeable_places = {
+        place
+        for place, record_edits in record_index.by_place.items()
+        if _is_mergeable(record_edits, record_index, reference)
+    }
+    output_records = []
+    first = 0
+    while first < len(input_records):
+        chained = _find_chained_records(input_records, first, mergeable_places, record_index)
+        num_bound = len(chained) if draws is None else _count_drawn_records(len(chained), draws)
+        merged = _find_longest_merge(chained[:num_bound], input_records, record_index, reference)
+        if merged is None:
+            output_records.append(_make_kept_record(input_records[first]))
+            first += 1
+            continue
+        num_records, merged_record = merged
+        output_records.append(merged_record)
+        first += num_records
+    _write_output(output, respelling_input, output_records)
+
+
+def _make_draws(seed: int | None) -> random.Random | None:
+    """The draws of a re-spelling that chooses, from its seed (§7): None for no seed.
+
+    Raises ValueError for a seed that is neither None nor a whole number.
+    """
+    # bool is an int to Python, and random.Random takes a float or a str as a seed too.
+    if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
+        raise ValueError(f"the seed must be None or a whole number, not {seed!r}")
+    return None if seed is None else random.Random(seed)
 
 
 # --- Reading (§2.1) ---
@@ -1108,6 +1167,223 @@ def _make_spanned_record(
         input_record.fields[_QUAL_COLUMN],
         fields,
     )
+
+
+# --- Merge (§6) ---
+
+# §6: a record joins a run when its REF starts at most this many positions after the
+# stretch of the records before it (M1 has 1 between, M8 has 3).
+_MAX_POSITIONS_BETWEEN = 2
+
+
+def _is_mergeable(
+    record_edits: _RecordEdits, record_index: _RecordIndex, reference: IndexedFasta
+) -> bool:
+    """Whether a record can be in a run (§6): it is not kept for a row of §2.2 of its own,
+    has no `*` ALT and gives no sample `.`. The reach of the record a run writes is the
+    run's to check."""
+    vcf_record = record_edits.vcf_record
+    if _is_kept_whatever_is_written(vcf_record, record_edits.place, record_index.touched_places):
+        return False
+    if any(
+        allele is MISSING
+        for genotype in vcf_record.genotypes
+        if isinstance(genotype, VcfGenotype)
+        for allele in genotype.alleles
+    ):
+        return False
+    written = [(vcf_record.start, vcf_record.alleles)]
+    return not _is_near_spanning_deletion(
+        vcf_record.contig, written, record_index.spanning_deletions, reference
+    )
+
+
+def _find_chained_records(
+    input_records: Sequence[_InputRecord],
+    first: int,
+    mergeable_places: set[int],
+    record_index: _RecordIndex,
+) -> list[_RecordEdits]:
+    """The records a run from input_records[first] can hold: it and those after it,
+    consecutive, of its contig and each mergeable, while each one's REF overlaps the stretch
+    of those before it or starts at most _MAX_POSITIONS_BETWEEN positions after it. Empty
+    when the first is not mergeable."""
+    chained: list[_RecordEdits] = []
+    stretch_start, stretch_end = 0, 0
+    for input_record in itertools.islice(input_records, first, None):
+        if input_record.place not in mergeable_places:
+            break
+        record_edits = record_index.by_place[input_record.place]
+        vcf_record = record_edits.vcf_record
+        start, end = vcf_record.start, vcf_record.end
+        if chained:
+            is_overlapping = start < stretch_end and stretch_start < end
+            is_after = stretch_end <= start <= stretch_end + _MAX_POSITIONS_BETWEEN
+            is_joining = vcf_record.contig == chained[0].vcf_record.contig and (
+                is_overlapping or is_after
+            )
+            if not is_joining:
+                break
+            stretch_start, stretch_end = min(stretch_start, start), max(stretch_end, end)
+        else:
+            stretch_start, stretch_end = start, end
+        chained.append(record_edits)
+    return chained
+
+
+def _count_drawn_records(num_chained: int, draws: random.Random) -> int:
+    """How many of num_chained records, from the first, a seeded run may hold: each after
+    the first joins with probability 1/2, and the first that does not ends it."""
+    num_records = 1
+    while num_records < num_chained and draws.random() < 0.5:
+        num_records += 1
+    return num_records
+
+
+def _find_longest_merge(
+    chained: Sequence[_RecordEdits],
+    input_records: Sequence[_InputRecord],
+    record_index: _RecordIndex,
+    reference: IndexedFasta,
+) -> tuple[int, _OutputRecord] | None:
+    """The longest run of the chained records, from the first, that is merged, as how many
+    records it holds and the record written for it; None when no run of two or more is."""
+    for num_records in range(len(chained), 1, -1):
+        merged_record = _make_merged_record(
+            chained[:num_records], input_records, record_index, reference
+        )
+        if merged_record is not None:
+            return num_records, merged_record
+    return None
+
+
+def _make_merged_record(
+    run: Sequence[_RecordEdits],
+    input_records: Sequence[_InputRecord],
+    record_index: _RecordIndex,
+    reference: IndexedFasta,
+) -> _OutputRecord | None:
+    """The record a run of mergeable records is written as (§6), or None when it is not
+    merged: another record with an ALT touches its stretch; a sample's heterozygous VCF
+    genotypes in it are in two phase units; every haplotype gets REF; or the reach of the
+    record touches the REF of a record with a `*` ALT (§2.2)."""
+    contig = run[0].vcf_record.contig
+    stretch = (
+        min(record_edits.vcf_record.start for record_edits in run),
+        max(record_edits.vcf_record.end for record_edits in run),
+    )
+    run_places = {record_edits.place for record_edits in run}
+    if any(
+        other.place not in run_places
+        for other in _find_ref_touching_records(record_index.by_contig[contig], stretch)
+    ):
+        return None
+    stretch_start, stretch_end = stretch
+    ref = reference.get_bases(contig, stretch_start, stretch_end)
+    alt_indices: dict[str, int] = {}
+    sample_fields = []
+    for sample in range(len(run[0].vcf_record.genotypes)):
+        genotypes = [_get_valid_genotype(record_edits, sample) for record_edits in run]
+        phase = _find_merged_phase(genotypes, run)
+        if phase is None:
+            return None
+        phased, phase_set = phase
+        alleles = [
+            0
+            if merged_allele == ref
+            else alt_indices.setdefault(merged_allele, len(alt_indices) + 1)
+            for merged_allele in _make_merged_alleles(genotypes, run, ref, stretch_start)
+        ]
+        sample_fields.append(_format_genotype(alleles, phased=phased, phase_set=phase_set))
+    alts = list(alt_indices)
+    if not alts:
+        return None
+    written = [(stretch_start, (ref, *alts))]
+    if _is_near_spanning_deletion(contig, written, record_index.spanning_deletions, reference):
+        return None
+    first_record = input_records[run[0].place - 1]
+    qual = _find_lowest_qual([input_records[record_edits.place - 1] for record_edits in run])
+    return _make_rewritten_record(first_record, stretch_start + 1, ref, alts, qual, sample_fields)
+
+
+def _get_valid_genotype(record_edits: _RecordEdits, sample: int) -> VcfGenotype:
+    genotype = record_edits.vcf_record.genotypes[sample]
+    assert isinstance(genotype, VcfGenotype), "a record with an invalid GT is kept"
+    return genotype
+
+
+def _get_allele(genotype: VcfGenotype, haplotype: int) -> int:
+    allele = genotype.alleles[haplotype]
+    assert allele is not MISSING, "a record that gives a sample `.` is not merged"
+    return allele
+
+
+def _find_merged_phase(
+    genotypes: Sequence[VcfGenotype], run: Sequence[_RecordEdits]
+) -> tuple[bool, str | None] | None:
+    """How a sample's GT of a merged run is written (§6): phased, in the phase set of the
+    run's heterozygous VCF genotypes, when those are phased, and unphased otherwise; None
+    when they are in two or more phase units, which merged would invent a phase. With
+    ploidy 1 there is no phase."""
+    heterozygous_units = {
+        _find_phase_unit(genotype, record_edits.place)
+        for genotype, record_edits in zip(genotypes, run, strict=True)
+        if len(set(genotype.alleles)) > 1
+    }
+    if len(heterozygous_units) > 1:
+        return None
+    if not heterozygous_units:
+        return False, None
+    (unit,) = heterozygous_units
+    if unit.place is not None:
+        return False, None
+    return True, unit.phase_set
+
+
+def _make_merged_alleles(
+    genotypes: Sequence[VcfGenotype], run: Sequence[_RecordEdits], ref: str, stretch_start: int
+) -> Iterator[str]:
+    """The allele of each of a sample's haplotypes over a run's stretch, in order: ref, the
+    reference over the stretch from stretch_start, with the edits of the VCF alleles the
+    haplotype carries at the run's records applied.
+
+    genotypes: the sample's VCF genotypes at the run's records, in the order of run.
+    """
+    for haplotype in range(len(genotypes[0].alleles)):
+        edits = [
+            edit
+            for genotype, record_edits in zip(genotypes, run, strict=True)
+            if (edit := record_edits.edits[_get_allele(genotype, haplotype)]) is not None
+        ]
+        yield _make_merged_allele(ref, stretch_start, edits)
+
+
+def _make_merged_allele(ref: str, stretch_start: int, edits: Sequence[_Edit]) -> str:
+    """ref, the reference over a stretch from stretch_start, with edits applied in
+    position order. The edits a haplotype carries in a run do not touch, or their records
+    would be touched (§2.2), so none starts before the one before it ends."""
+    pieces = []
+    position = stretch_start
+    for edit in sorted(edits, key=lambda edit: edit.start):
+        assert edit.start >= position, "the edits of one haplotype in a run do not touch"
+        pieces += [ref[position - stretch_start : edit.start - stretch_start], edit.inserted]
+        position = edit.end
+    pieces.append(ref[position - stretch_start :])
+    return "".join(pieces)
+
+
+def _find_lowest_qual(input_records: Sequence[_InputRecord]) -> str:
+    """The QUAL of the records with the lowest one, as the input writes it, or `.` when
+    none has one (§2.3)."""
+    with_qual = [
+        input_record
+        for input_record in input_records
+        if input_record.vcf_record is not None and input_record.vcf_record.qual is not None
+    ]
+    if not with_qual:
+        return "."
+    lowest = min(with_qual, key=lambda input_record: input_record.vcf_record.qual)
+    return lowest.fields[_QUAL_COLUMN]
 
 
 # --- Writing (§2.3) ---

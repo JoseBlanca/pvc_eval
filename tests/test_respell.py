@@ -1,6 +1,7 @@
 """The re-spelling program of doc/specs/respell.md: what every re-spelling does (§2), the
 decomposition (§3), at respell_by_decomposing, the shift (§4), at respell_by_shifting, and
-the spanning deletions (§5), at respell_with_spanning_deletions, with the expected records as literals in the notation of the cases, which
+the spanning deletions (§5), at respell_with_spanning_deletions, and the merge (§6), at
+respell_by_merging, with the expected records as literals in the notation of the cases, which
 tests.respell_cases describes; each case's output against its input through the oracle of §8
 and through bcftools; and the properties of §9.2 over the files of tests.respell_generator.
 """
@@ -12,7 +13,7 @@ import struct
 import subprocess
 import time
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import ExitStack
 from pathlib import Path
 from typing import cast
@@ -25,6 +26,7 @@ from tests.respell import (
     _find_reach,
     make_bgzf,
     respell_by_decomposing,
+    respell_by_merging,
     respell_by_shifting,
     respell_with_spanning_deletions,
 )
@@ -53,6 +55,9 @@ from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
 from pvc_eval.vcf import VcfGenotype, parse_vcf
 
+# A re-spelling that draws, as the module defines it.
+type SeededRespell = Callable[..., None]
+
 _PS_INTEGER = '##FORMAT=<ID=PS,Number=1,Type=Integer,Description="Phase set">'
 _GT_STRING = '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">'
 # The 28 bytes that end a BGZF file, an empty block (the SAM/BAM format specification, §4.1.2).
@@ -71,9 +76,9 @@ def _write_vcf(
     )
 
 
-_DECOMPOSITION, _SHIFT, _SPANNING_DELETIONS = (
+_DECOMPOSITION, _SHIFT, _SPANNING_DELETIONS, _MERGE = (
     next(respelling for respelling in RESPELLINGS if respelling.name == name)
-    for name in ("decomposition", "shift", "spanning deletions")
+    for name in ("decomposition", "shift", "spanning deletions", "merge")
 )
 
 
@@ -1044,11 +1049,15 @@ def test_the_same_seed_writes_the_same_bytes(case_files: CaseFiles, tmp_path: Pa
 
 
 @pytest.mark.parametrize(
+    "respell",
+    [pytest.param(respell_by_shifting, id="shift"), pytest.param(respell_by_merging, id="merge")],
+)
+@pytest.mark.parametrize(
     "seed",
     [pytest.param(True, id="bool"), pytest.param(1.5, id="float"), pytest.param("7", id="str")],
 )
 def test_a_seed_that_is_not_a_whole_number_raises_before_any_output(
-    case_files: CaseFiles, tmp_path: Path, seed: object
+    case_files: CaseFiles, tmp_path: Path, respell: SeededRespell, seed: object
 ) -> None:
     reference = case_files.write_reference(1, _SEEDED_BASES)
     vcf = _write_vcf(tmp_path / "a.vcf", _SEEDED_LINES)
@@ -1057,7 +1066,7 @@ def test_a_seed_that_is_not_a_whole_number_raises_before_any_output(
     wrong_seed = cast(int, seed)
     message = f"^the seed must be None or a whole number, not {seed!r}$"
     with pytest.raises(ValueError, match=message):
-        respell_by_shifting(vcf, reference, output, seed=wrong_seed)
+        respell(vcf, reference, output, seed=wrong_seed)
     assert not output.exists()
 
 
@@ -1364,6 +1373,236 @@ def test_a_star_is_given_only_by_a_deletion_of_its_own_contig(
     ]
 
 
+# --- The merge (§6) ---
+
+
+# §2.2 for the merge, on a reference whose bases from 20 are ATG: each record every
+# re-spelling keeps, and the records the merge keeps for itself, written as read beside the
+# run of 20 and 22, which the merge writes as one record. Each record is beside the SNP at 4,
+# or the one at 5, which it would be merged with but for its row.
+_MERGE_BASES = "GCAAAATCGTACGTATTTTATGCA"
+_MERGED_NEIGHBOURS = ["20 A C 1/1", "22 G T 1/1"]
+_NEIGHBOURS_MERGED = "20 ATG CTT 1/1:."
+
+
+@pytest.mark.parametrize(
+    "case_lines",
+    [
+        pytest.param(["2 C . ./.", "4 A T 1/1"], id="no-alt"),
+        pytest.param(["2 C G,* 1/2", "4 A T 1/1"], id="a-star-alt"),
+        # The deletion of the A at 3 slides to 6, so its reach, 2-6, lies next to the `*`
+        # record's REF at 7; the stretch of the run, 2-5, does not.
+        pytest.param(["2 CA C 1/1", "5 A T 1/1", "7 T G,* 0/2"], id="reach-touches-a-star-ref"),
+        pytest.param(["2 C G 1/1", "3 A <DEL> 0/1", "4 A T 1/1"], id="symbolic"),
+        pytest.param(["2 C G 0/5", "4 A T 1/1"], id="malformed-gt"),
+        pytest.param(["2 C G 1", "4 A T 1/1"], id="other-ploidy"),
+        # The deletion of the A at 3 and the SNP at 3, on one haplotype.
+        pytest.param(["2 CA C 1|0:5", "3 A G 1|0:5"], id="touched"),
+        pytest.param(["2 C G 0/1"], id="a-record-alone"),
+        pytest.param(["2 C G ./1", "4 A T 1/1"], id="a-missing-allele"),
+        pytest.param(["2 C G 0/1", "4 A T 0/1"], id="two-unphased-heterozygous-records"),
+        pytest.param(["2 C G 1|0:5", "4 A T 0|1:6"], id="two-phase-sets"),
+        pytest.param(["2 C G 1|0", "4 A T 0|1:5"], id="no-ps-and-a-ps"),
+        pytest.param(["2 C G 1|0:5", "4 A T 0/1"], id="phased-and-unphased"),
+        pytest.param(["2 C G 0/0", "4 A T 0/0"], id="all-ref"),
+        # The malformed GT at 1 keeps its record, whose REF, 1-7, lies next to the run of 8
+        # and 10: the merged record would replace a position its edit touches.
+        pytest.param(
+            ["1 GCAAAAT G 0/5", "8 C T 1/1", "10 T G 1/1"], id="a-long-ref-touches-the-run"
+        ),
+    ],
+)
+def test_a_record_the_merge_keeps_is_written_as_read(
+    case_files: CaseFiles, tmp_path: Path, case_lines: Sequence[str]
+) -> None:
+    lines = [*case_lines, *_MERGED_NEIGHBOURS]
+    assert _respell(case_files, tmp_path, _MERGE, _MERGE_BASES, lines) == [
+        *case_lines,
+        _NEIGHBOURS_MERGED,
+    ]
+
+
+# §2.2, the reach of the record the merge writes, on reference GACCTCTCTGA: the insertions of
+# a C before the C at 3 and of a T after it, merged, are the insertion of CT after 3, which
+# slides through the CT repeat at 4-9 and so reaches 10. Neither insertion alone slides past
+# 5, and the run's stretch is 2-3.
+@pytest.mark.parametrize(
+    ("case_lines", "expected"),
+    [
+        pytest.param(
+            ["2 A AC 1/1", "3 C CT 1/1", "10 G T,* 0/2"],
+            ["2 A AC 1/1", "3 C CT 1/1", "10 G T,* 0/2"],
+            id="a-star-ref-in-the-reach-kept",
+        ),
+        pytest.param(["2 A AC 1/1", "3 C CT 1/1"], ["2 AC ACCT 1/1:."], id="no-star-ref-merged"),
+    ],
+)
+def test_a_run_whose_merged_record_reaches_a_star_ref_is_not_merged(
+    case_files: CaseFiles, tmp_path: Path, case_lines: Sequence[str], expected: Sequence[str]
+) -> None:
+    assert _respell(case_files, tmp_path, _MERGE, "GACCTCTCTGA", case_lines) == expected
+
+
+# §6, the phase of the merged record, on reference GACGTA.
+@pytest.mark.parametrize(
+    ("case_lines", "ploidy", "expected"),
+    [
+        pytest.param(
+            ["2 A T 1|0", "4 G C 0|1"],
+            2,
+            ["2 ACG TCG,ACC 1|2:."],
+            id="phased-with-no-ps-stays-phased-with-none",
+        ),
+        # A homozygous VCF genotype goes with any phase unit.
+        pytest.param(
+            ["2 A T 1|0:5", "4 G C 1/1"],
+            2,
+            ["2 ACG TCC,ACC 1|2:5"],
+            id="a-homozygous-unphased-record-joins-a-phase-set",
+        ),
+        pytest.param(
+            ["2 A T 0/1", "4 G C 1|1:5"],
+            2,
+            ["2 ACG ACC,TCC 1/2:."],
+            id="a-homozygous-phased-record-joins-an-unphased-one",
+        ),
+        pytest.param(
+            ["2 A T 1|1:5", "4 G C 1|1:5"],
+            2,
+            ["2 ACG TCC 1/1:."],
+            id="no-heterozygous-record-is-written-unphased",
+        ),
+        pytest.param(["2 A T 1", "4 G C 1"], 1, ["2 ACG TCC 1:."], id="ploidy-1-has-no-phase"),
+        # The unphased heterozygous record of each sample is its own one unit.
+        pytest.param(
+            ["2 A T 0/1 1/1", "4 G C 1/1 0/1"],
+            2,
+            ["2 ACG ACC,TCC,TCG 1/2:. 3/2:."],
+            id="one-unphased-heterozygous-record-in-each-sample",
+        ),
+        pytest.param(
+            ["2 A T 1/1 0/1", "4 G C 1/1 0/1"],
+            2,
+            ["2 A T 1/1 0/1", "4 G C 1/1 0/1"],
+            id="two-unphased-heterozygous-records-of-the-second-sample-kept",
+        ),
+    ],
+)
+def test_the_merged_gt_is_phased_as_the_heterozygous_records_of_the_run(
+    case_files: CaseFiles,
+    tmp_path: Path,
+    case_lines: Sequence[str],
+    ploidy: int,
+    expected: Sequence[str],
+) -> None:
+    assert _respell(case_files, tmp_path, _MERGE, "GACGTA", case_lines, ploidy=ploidy) == expected
+
+
+# §6, which records make a run, and the longest runs from the left, on reference GACGTACGTA.
+@pytest.mark.parametrize(
+    ("case_lines", "expected"),
+    [
+        pytest.param(["2 A T 1/1", "5 T G 1/1"], ["2 ACGT TCGG 1/1:."], id="two-positions-between"),
+        # The REFs of the deletion of the C at 3, 2-3, and of the SNP at 3 overlap; on the
+        # two haplotypes of one phase set their edits do not touch.
+        pytest.param(["2 AC A 1|0:5", "3 C G 0|1:5"], ["2 AC A,AG 1|2:5"], id="overlapping-refs"),
+        # The run of four has two unphased heterozygous records; the longest from the left
+        # is that of three, and the SNP at 8 is left alone.
+        pytest.param(
+            ["2 A T 1/1", "4 G C 1/1", "6 A G 0/1", "8 G T 0/1"],
+            ["2 ACGTA TCCTA,TCCTG 1/2:.", "8 G T 0/1"],
+            id="the-longest-run-that-merges",
+        ),
+        # No run from 2 merges, and the one from 4 does.
+        pytest.param(
+            ["2 A T 0/1", "4 G C 0/1", "6 A G 1/1"],
+            ["2 A T 0/1", "4 GTA GTG,CTG 1/2:."],
+            id="a-run-from-the-second-record",
+        ),
+        pytest.param(
+            ["2 A T 1/1", "4 G C 1/1", "8 G T 1/1", "10 A C 1/1"],
+            ["2 ACG TCC 1/1:.", "8 GTA TTC 1/1:."],
+            id="two-runs",
+        ),
+    ],
+)
+def test_neighbouring_records_make_a_run(
+    case_files: CaseFiles, tmp_path: Path, case_lines: Sequence[str], expected: Sequence[str]
+) -> None:
+    assert _respell(case_files, tmp_path, _MERGE, "GACGTACGTA", case_lines) == expected
+
+
+def test_a_run_on_two_contigs_is_not_merged(case_files: CaseFiles, tmp_path: Path) -> None:
+    reference = case_files.write_contigs({"chr1": "GACGTA", "chr2": "GACGTA"})
+    vcf = _write_vcf(tmp_path / "a.vcf", ["chr1 6 A T 1/1", "chr2 1 G C 1/1"], has_chrom=True)
+    respell_by_merging(vcf, reference, tmp_path / "b.vcf")
+    assert read_case_lines(tmp_path / "b.vcf", has_chrom=True) == [
+        "chr1 6 A T 1/1",
+        "chr2 1 G C 1/1",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("quals", "expected"),
+    [
+        pytest.param(("50", ".", "30.5"), "30.5", id="the-lowest"),
+        pytest.param((".", ".", "."), ".", id="none"),
+    ],
+)
+def test_a_merged_record_is_written_with_the_lowest_qual_and_its_gt_and_ps(
+    case_files: CaseFiles, tmp_path: Path, quals: tuple[str, str, str], expected: str
+) -> None:
+    reference = case_files.write_reference(1, "GACGTA")
+    vcf = tmp_path / "a.vcf"
+    vcf.write_text(
+        f"{FILEFORMAT_LINE}\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS0\n"
+        f"chr1\t2\trs1\ta\tt\t{quals[0]}\tPASS\tDP=10\tGT:GQ\t1|0:30\n"
+        f"chr1\t4\trs2\tG\tC\t{quals[1]}\tPASS\tDP=12\tGT:PS:GQ\t1|1:7:20\n"
+        f"chr1\t6\trs3\tA\tG\t{quals[2]}\tq10\tDP=9\tGT:GQ\t0|1:40\n",
+        encoding="utf-8",
+    )
+    respell_by_merging(vcf, reference, tmp_path / "b.vcf")
+    assert read_vcf_lines(tmp_path / "b.vcf") == [
+        FILEFORMAT_LINE,
+        _GT_STRING,
+        _PS_INTEGER,
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS0",
+        f"chr1\t2\t.\tACGTA\tTCCTA,ACCTG\t{expected}\t.\t.\tGT:PS\t1|2:.",
+    ]
+
+
+# §6: with a seed, each record that could join the run before it does so with probability
+# 1/2. Three SNPs, each homozygous, on reference GACGTACGTA.
+_MERGE_SEEDED_LINES = ["2 A T 1/1", "4 G C 1/1", "6 A G 1/1"]
+
+
+def test_the_same_seed_writes_the_same_merged_bytes(case_files: CaseFiles, tmp_path: Path) -> None:
+    reference = case_files.write_reference(1, "GACGTACGTA")
+    vcf = _write_vcf(tmp_path / "a.vcf", _MERGE_SEEDED_LINES)
+    outputs = [tmp_path / "b1.vcf", tmp_path / "b2.vcf"]
+    for output in outputs:
+        respell_by_merging(vcf, reference, output, seed=20261020)
+    assert outputs[0].read_bytes() == outputs[1].read_bytes()
+
+
+def test_seeds_write_runs_of_every_length(case_files: CaseFiles, tmp_path: Path) -> None:
+    outputs: set[tuple[str, ...]] = set()
+    for seed in range(40):
+        directory = tmp_path / str(seed)
+        directory.mkdir()
+        reference = case_files.write_reference(1, "GACGTACGTA")
+        vcf = _write_vcf(directory / "a.vcf", _MERGE_SEEDED_LINES)
+        respell_by_merging(vcf, reference, directory / "b.vcf", seed=seed)
+        outputs.add(tuple(read_case_lines(directory / "b.vcf")))
+    assert outputs == {
+        ("2 A T 1/1", "4 G C 1/1", "6 A G 1/1"),
+        ("2 ACG TCC 1/1:.", "6 A G 1/1"),
+        ("2 A T 1/1", "4 GTA CTG 1/1:."),
+        ("2 ACGTA TCCTG 1/1:.",),
+    }
+
+
 # --- The oracle and bcftools (§2.3, §8, §9) ---
 
 _BCFTOOLS = shutil.which("bcftools")
@@ -1456,9 +1695,13 @@ def test_the_gts_of_a_generated_record_with_no_alt_are_of_0_and_dot(
 # re-spelling that kept everything fails. As for the pairs below, the count is of fixed
 # files: the files with a shifted record ranged from 22 to 77 over 30 random runs of 300 on
 # 20 October 2026, around the 30 asserted, since hypothesis draws the files of one run
-# alike, and the fixed run gives 72 for the shift, 213 for the decomposition and 51 for the
-# spanning deletions; the properties stay random. The generator draws deletions over other
-# records so that the spanning deletions write a `*` in more than one random file in ten.
+# alike, and the fixed run gives 225 for the decomposition, 39 for the shift, 47 for the
+# spanning deletions and 49 for the merge; the properties stay random. The generator draws
+# deletions over other records so that the spanning deletions write a `*` in more than one
+# random file in ten, and pairs of SNPs past the other records so that the merge does. The
+# fixed files change with any change to how the generator draws, even one that draws the
+# same values through another strategy: making a SNP of the pair with a strategy of its own
+# took the merge's fixed count from 49 to 24.
 @pytest.mark.parametrize("respelling", RESPELLING_PARAMS)
 def test_a_tenth_of_the_generated_files_have_a_record_each_respelling_rewrites(
     tmp_path_factory: pytest.TempPathFactory, respelling: Respelling
@@ -1482,7 +1725,7 @@ def test_a_tenth_of_the_generated_files_have_a_record_each_respelling_rewrites(
 # re-spelling that loses or invents a phase set between windows is likely to be caught. The
 # count is of the generator alone, a file against itself, on fixed files: over random runs
 # of 300 it ranged from 57 to 102 files on 20 October 2026, around the 60 asserted, as
-# hypothesis varies its draws between runs, and the fixed run gives 71; the oracle property
+# hypothesis varies its draws between runs, and the fixed run gives 84; the oracle property
 # stays random.
 def test_a_fifth_of_the_generated_files_have_a_pair_of_windows_a_block_joins(
     tmp_path_factory: pytest.TempPathFactory,
