@@ -382,6 +382,8 @@ def test_strata_pvc_with_untyped_str_region_stops_after_the_same_rows(tmp_path: 
         (CompareConfig(chain_distance=-1), 2, "chain_distance"),
         (CompareConfig(), -1, "finder_threads"),
         (CompareConfig(), 1.5, "finder_threads"),
+        (CompareConfig(ploidy_a=True), 2, "ploidy_a"),
+        (CompareConfig(), True, "finder_threads"),
     ],
     ids=[
         "ploidy_a 3",
@@ -391,6 +393,8 @@ def test_strata_pvc_with_untyped_str_region_stops_after_the_same_rows(tmp_path: 
         "chain_distance -1",
         "finder_threads -1",
         "finder_threads 1.5",
+        "ploidy_a True",
+        "finder_threads True",
     ],
 )
 def test_setting_out_of_range_raises_value_error_naming_it(
@@ -400,6 +404,25 @@ def test_setting_out_of_range_raises_value_error_naming_it(
     rows = compare(case.a, case.b, case.reference, config, finder_threads=finder_threads)
     with pytest.raises(ValueError, match=rf"^{field} "):
         next(rows)
+
+
+@pytest.mark.parametrize(
+    ("config", "finder_threads"),
+    [
+        (CompareConfig(ploidy_a=1, ploidy_b=1), 2),
+        (CompareConfig(phasing_cap=1), 2),
+        (CompareConfig(chain_distance=0), 2),
+        (CompareConfig(span_limit=None), 2),
+        (CompareConfig(), 0),
+    ],
+    ids=["ploidy 1", "phasing_cap 1", "chain_distance 0", "span_limit None", "finder_threads 0"],
+)
+def test_setting_at_its_edge_gives_rows(
+    tmp_path: Path, config: CompareConfig, finder_threads: int
+) -> None:
+    case = write_compare_case(tmp_path)
+    rows = compare(case.a, case.b, case.reference, config, finder_threads=finder_threads)
+    assert next(rows).contig == "chr1"
 
 
 @pytest.mark.parametrize(
