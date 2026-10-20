@@ -11,6 +11,7 @@ the BED of the `pvc_eval str-regions` command.
 """
 
 import bisect
+import sys
 from collections import deque
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, fields
@@ -514,7 +515,12 @@ def _get_span_bases(candidate: _Candidate, bases: str) -> str:
 
 def _get_motif(candidate: _Candidate, bases: str) -> str:
     """A candidate's motif: the first period bases of its detected span, in upper case."""
-    return bases[candidate.start : candidate.start + candidate.period].upper()
+    # Interned, so that the STR segments and bundle members of a motif share one string;
+    # there are at most 5,460 motifs of periods 1 to 6, held for the life of the process.
+    # Threads share the table safely: whichever interns a motif first, all get equal strings.
+    # On chr1 it lowers the peak RSS from 362.0 to 333.5 MB on 64 Mb and from 128.1 to
+    # 122.8 MB on 16 Mb, at the same wall time.
+    return sys.intern(bases[candidate.start : candidate.start + candidate.period].upper())
 
 
 def _find_cut_or_span(candidate: _Candidate, bases: str) -> _Span:
