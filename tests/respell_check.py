@@ -60,8 +60,8 @@ def check_respelling_outcomes(
     ploidy: what both files are read and reconciled with, 1 or 2.
 
     Raises AssertionError at the first row that fails, with the locus, the sample, the
-    outcome and what each file gives, ten genotypes at most of each; ValueError when the headers name different samples; and what
-    the stages raise.
+    outcome and what each file gives, ten genotypes at most of each; ValueError when the
+    headers name different samples; and what the stages raise.
     """
     for _ in _make_checked_rows(vcf_a, vcf_b, reference, str_regions=str_regions, ploidy=ploidy):
         pass

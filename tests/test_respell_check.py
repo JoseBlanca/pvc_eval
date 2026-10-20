@@ -120,6 +120,15 @@ _NOT_RESPELLINGS = [
         id="wrong-sequence",
     ),
     pytest.param(
+        # Only the second sample differs, so a check of the first sample alone passes it.
+        ["2 A T 0/1 0/1"],
+        ["2 A T 0/1 1/1"],
+        "chr1:2-2, sample S1: same alleles, other genotype, an outcome a file does not give"
+        " against itself; file A gives 1 genotype and file B 1 genotype; only in A: A/T;"
+        " only in B: T/T",
+        id="wrong-genotype-in-the-second-sample",
+    ),
+    pytest.param(
         # The phase between the two SNPs is lost: B has A's genotype and one more, so the
         # outcome is still same genotype, and only the results tell them apart.
         ["2 A T 0|1:5", "4 G C 0|1:5"],
