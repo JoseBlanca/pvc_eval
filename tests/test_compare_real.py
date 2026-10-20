@@ -32,6 +32,8 @@ _CONTIG = "chr20"
 # How many rows the test shows when it fails, so that a broken stage does not print
 # tens of thousands of them.
 _ROWS_SHOWN = 20
+# The fields of OutcomeRow that come in pairs, one for each file, without their _a and _b.
+_SAMPLE_FIELDS = ("genotype", "possible", "quality", "gq", "records", "invalid_reason")
 
 
 def _get_path_from_environment(variable: str, what: str, beside: str) -> tuple[Path | None, str]:
@@ -51,9 +53,8 @@ def _get_path_from_environment(variable: str, what: str, beside: str) -> tuple[P
 def _find_why_broken(row: OutcomeRow) -> str:
     """Why a row breaks the property of a file against itself, or "" when it does not.
 
-    Every row: its two samples have the same invalid reason, the same count of possible
-    genotypes and the same genotype shown, since they are one sample result. Then, by
-    outcome:
+    Every row: its two samples have the same value in each field of _SAMPLE_FIELDS, since
+    they are one sample result of one file's records. Then, by outcome:
     - same genotype and reference in both: nothing more;
     - missing in both: the genotype shown has a MISSING haplotype;
     - invalid in both: the invalid reason is not None;
@@ -61,12 +62,9 @@ def _find_why_broken(row: OutcomeRow) -> str:
     Any other outcome, those "in A" or "in B" alone, only in A or B, same alleles, other
     genotype, and different, cannot come from one file.
     """
-    if row.invalid_reason_a != row.invalid_reason_b:
-        return "the two samples have different invalid reasons"
-    if row.possible_a != row.possible_b:
-        return "the two samples have different counts of possible genotypes"
-    if row.genotype_a != row.genotype_b:
-        return "the two samples show different genotypes"
+    for field in _SAMPLE_FIELDS:
+        if getattr(row, f"{field}_a") != getattr(row, f"{field}_b"):
+            return f"the two samples have different {field}_a and {field}_b"
     match row.outcome:
         case Outcome.SAME_GENOTYPE | Outcome.REFERENCE_IN_BOTH:
             return ""
