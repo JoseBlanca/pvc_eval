@@ -6,7 +6,7 @@ Positions are 0-based and half-open inside pvc_eval. The 1-based POS of a VCF li
 converted here, and nowhere else.
 
 Public: parse_vcf, which gives the VCF records; parse_vcf_samples, which gives the sample
-names; VcfRecord and VcfGenotype; Span, the type of VcfRecord.span; the sentinels a
+names; trim_alt, which trims an ALT against its REF; VcfRecord and VcfGenotype; Span, the type of VcfRecord.span; the sentinels a
 genotype is compared with, MISSING, MALFORMED_GT and OTHER_PLOIDY_GT; and the constants
 DEFAULT_PLOIDY, DEFAULT_SPAN_LIMIT and DEFAULT_NUM_THREADS.
 """
@@ -1038,11 +1038,7 @@ def _find_indel_span(
     The ALT is an indel when, without the bases it shares with REF at both ends, one of
     the two is empty, whichever side the shared bases were on.
     """
-    num_prefix = _count_shared(ref, alt)
-    deleted, inserted = ref[num_prefix:], alt[num_prefix:]
-    num_suffix = _count_shared(deleted[::-1], inserted[::-1])
-    deleted = deleted[: len(deleted) - num_suffix]
-    inserted = inserted[: len(inserted) - num_suffix]
+    num_prefix, deleted, inserted = trim_alt(ref, alt)
     if bool(deleted) == bool(inserted):
         return None
     event = deleted or inserted
@@ -1073,6 +1069,21 @@ def _find_indel_span(
     span_start = max(stretch_start + position - num_left - 1, 0)
     span_end = stretch_start + after + num_right + (1 if inserted else 0)
     return span_start, min(span_end, contig_length)
+
+
+def trim_alt(ref: str, alt: str) -> tuple[int, str, str]:
+    """Trim the bases an ALT shares with its REF, first at the left end and then at the
+    right, as doc/spec.md §5.4 does for an edit.
+
+    Returns how many bases the two share at the left, and what is left of REF and of the
+    ALT once those and then the bases they share at the right are removed. Left first
+    matters: AG and AAG share one base at the left and leave "" and "A", where trimming
+    the right first would leave the same with none shared at the left.
+    """
+    num_prefix = _count_shared(ref, alt)
+    ref, alt = ref[num_prefix:], alt[num_prefix:]
+    num_suffix = _count_shared(ref[::-1], alt[::-1])
+    return num_prefix, ref[: len(ref) - num_suffix], alt[: len(alt) - num_suffix]
 
 
 def _count_shared(first: str, second: str) -> int:

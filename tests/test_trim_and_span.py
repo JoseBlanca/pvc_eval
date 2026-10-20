@@ -2,7 +2,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from pvc_eval.vcf import VcfRecord, _find_span, _trim
+from pvc_eval.vcf import VcfRecord, _find_span, _trim, trim_alt
 
 HOMOPOLYMER = "GAAAAT"  # G at 0, A at 1 to 4, T at 5
 DINUCLEOTIDE = "GCACACAT"  # G at 0, CA repeated from 1 to 6, T at 7
@@ -33,6 +33,39 @@ def test_trim_removes_shared_bases_and_keeps_one(
     start: int, alleles: tuple[str, ...], expected: tuple[int, tuple[str, ...]]
 ) -> None:
     assert _trim(start, alleles) == expected
+
+
+@pytest.mark.parametrize(
+    ("ref", "alt", "expected"),
+    [
+        ("ACG", "ACG", (3, "", "")),
+        ("A", "T", (0, "A", "T")),
+        ("CAG", "CTG", (1, "A", "T")),
+        ("C", "CT", (1, "", "T")),
+        ("C", "TC", (0, "", "T")),
+        ("CAG", "C", (1, "AG", "")),
+        ("CAG", "G", (0, "CA", "")),
+        ("ACGT", "ATT", (1, "CG", "T")),
+        # doc/spec.md §5.4: 52 AG -> AAG trimmed from the right first would insert the A
+        # before position 52, with no shared base at the left.
+        ("AG", "AAG", (1, "", "A")),
+    ],
+    ids=[
+        "alt_spells_ref",
+        "snp",
+        "snp_between_shared_bases",
+        "insertion_at_right_end",
+        "insertion_at_left_end",
+        "deletion_at_right_end",
+        "deletion_at_left_end",
+        "complex",
+        "left_first_puts_insertion_after_anchor",
+    ],
+)
+def test_trim_alt_removes_shared_bases_left_then_right(
+    ref: str, alt: str, expected: tuple[int, str, str]
+) -> None:
+    assert trim_alt(ref, alt) == expected
 
 
 # The three cases of doc/spec.md §5.2, with the 1-based positions of the spec made 0-based

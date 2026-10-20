@@ -26,6 +26,7 @@ from pvc_eval.vcf import (
     Span,
     VcfGenotype,
     VcfRecord,
+    trim_alt,
 )
 
 PHASING_CAP = 4096  # doc/spec.md §5.4; kept by the owner on 19 October 2026 (Open 2)
@@ -401,11 +402,7 @@ def _make_edit(
     """The edit of a VCF allele that is not `*`, or None when it spells REF: what is left
     of REF and of the allele once the bases they share are removed from the left and then
     from the right (§4.2)."""
-    ref, alt = vcf_record.alleles[0], vcf_record.alleles[allele_index]
-    num_prefix = _count_shared(ref, alt)
-    ref, alt = ref[num_prefix:], alt[num_prefix:]
-    num_suffix = _count_shared(ref[::-1], alt[::-1])
-    ref, alt = ref[: len(ref) - num_suffix], alt[: len(alt) - num_suffix]
+    num_prefix, ref, alt = trim_alt(vcf_record.alleles[0], vcf_record.alleles[allele_index])
     if not ref and not alt:
         return None
     start = vcf_record.start + num_prefix
@@ -416,14 +413,6 @@ def _make_edit(
     elif not alt:
         covered = _find_placements(start, end, vcf_record.span, locus_start, locus_bases)
     return _Edit(start=start, end=end, bases=alt, covered=covered)
-
-
-def _count_shared(first: str, second: str) -> int:
-    """How many bases two sequences share at their start."""
-    for index, (base, other_base) in enumerate(zip(first, second, strict=False)):
-        if base != other_base:
-            return index
-    return min(len(first), len(second))
 
 
 def _is_colliding(edits: Sequence[_Edit]) -> bool:

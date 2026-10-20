@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from enum import Enum
 
 from pvc_eval.locus import Locus
+from pvc_eval.vcf import trim_alt
 
 
 class Kind(Enum):
@@ -52,14 +53,7 @@ def _get_edit_kinds(locus: Locus) -> Iterator[Kind]:
 
 def _get_edit_kind(ref: str, alt: str) -> Kind:
     """The kind of the edit ALT makes on REF, once the bases they share are trimmed."""
-    prefix = 0
-    while prefix < min(len(ref), len(alt)) and ref[prefix] == alt[prefix]:
-        prefix += 1
-    ref, alt = ref[prefix:], alt[prefix:]
-    suffix = 0
-    while suffix < min(len(ref), len(alt)) and ref[-1 - suffix] == alt[-1 - suffix]:
-        suffix += 1
-    ref, alt = ref[: len(ref) - suffix], alt[: len(alt) - suffix]
+    _, ref, alt = trim_alt(ref, alt)
     if len(ref) == 1 and len(alt) == 1:
         return Kind.SNP
     if not ref or not alt:
