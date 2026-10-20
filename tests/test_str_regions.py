@@ -14,7 +14,13 @@ import pytest
 from pvc_eval.cli import main
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
-from pvc_eval.segments import GenomeSegment, RegionType, read_str_regions
+from pvc_eval.segments import (
+    GenomeSegment,
+    RegionType,
+    StrFinderParameters,
+    read_str_regions,
+    write_str_regions,
+)
 
 # The worked cases of doc/specs/str_finder.md. Their STR regions are the spec's, which `pvc
 # repeat-catalog` and then `pvc dev type-regions --min-copies 5,5,4,4,4,3` gave, pvc built at
@@ -211,6 +217,118 @@ def test_the_installed_command_runs(tmp_path: Path) -> None:
     command = Path(sysconfig.get_path("scripts")) / "pvc_eval"
     subprocess.run([command, "str-regions", "--reference", fasta, "--output", output], check=True)
     assert output.read_text(encoding="utf-8").splitlines()[-1] == "four_a\t58\t80\tstr\tCA"
+
+
+# ---- --threads --------------------------------------------------------------------------
+
+# A first contig far longer than the others, 302,000 bases against at most 302, so that with
+# several threads the contigs after it are segmented and finished long before it is: rows
+# written in the order the contigs finish would put its rows last. It is four_a 2,000 times
+# over, so its rows are those of `twice` repeated, one (CA) repeat every 151 bases.
+_LONG_COPIES = 2_000
+_LONG_CONTIGS = {"long": _FOUR_A * _LONG_COPIES, **_WORKED_CONTIGS}
+_LONG_ROWS = [
+    f"long\t{58 + 151 * copy}\t{80 + 151 * copy}\tstr\tCA" for copy in range(_LONG_COPIES)
+]
+
+
+def _run_threads(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], contigs: dict[str, str], threads: str
+) -> tuple[int, str, Path]:
+    """The exit status and stderr of `str-regions --threads threads` over these contigs, and
+    the path of the BED it writes."""
+    fasta = _write_fasta(tmp_path, contigs)
+    output = tmp_path / f"str_{threads}.bed"
+    status, stderr = _run(
+        [
+            *("str-regions", "--reference", str(fasta)),
+            *("--output", str(output), "--threads", threads),
+        ],
+        capsys,
+    )
+    return status, stderr, output
+
+
+def test_threads_write_the_rows_in_fai_order_whichever_contig_finishes_first(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Seven contigs on three threads.
+    beds = {}
+    for threads in ["1", "3"]:
+        status, stderr, output = _run_threads(tmp_path, capsys, _LONG_CONTIGS, threads)
+        assert (status, stderr) == (0, "")
+        beds[threads] = output.read_bytes()
+    assert beds["3"] == beds["1"]
+    assert beds["1"].decode().splitlines() == _DEFAULT_HEADER + _LONG_ROWS + _WORKED_ROWS
+
+
+@pytest.mark.parametrize("threads", ["0", "257"])
+def test_threads_outside_1_to_256_stop_the_run_naming_the_option(
+    threads: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    status, stderr, output = _run_threads(tmp_path, capsys, {"four_a": _FOUR_A}, threads)
+    assert (status, stderr) == (
+        1,
+        f"--threads is {threads}; it must be a whole number from 1 to 256. Correct the"
+        " option, and run again.\n",
+    )
+    assert not output.exists()
+    assert not Path(f"{output}.tmp").exists()
+
+
+def test_threads_that_are_not_a_number_get_a_usage_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    status, stderr, _ = _run_threads(tmp_path, capsys, {"four_a": _FOUR_A}, "four")
+    assert status == 2
+    assert stderr.startswith("usage: pvc_eval str-regions")
+    assert "argument --threads: invalid int value: 'four'" in stderr
+
+
+def test_an_error_in_a_later_contig_under_threads_stops_the_run_with_its_message(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Two contigs with a byte that is not a letter, both after the long one: the run stops
+    # with the first one's message, as with one thread, whichever finishes first.
+    contigs = {"long": _LONG_CONTIGS["long"], "chr2": "AC-GT", "four_a": _FOUR_A, "chr4": "-"}
+    output = tmp_path / "str_3.bed"
+    output.write_text("earlier\n", encoding="utf-8")
+    status, stderr, output = _run_threads(tmp_path, capsys, contigs, "3")
+    fasta = tmp_path / "ref.fa"
+    assert (status, stderr) == (
+        1,
+        f"{fasta}: chr2:3 is not a letter where its .fai, line 2, puts a base. Make the .fai"
+        f" again with `samtools faidx {fasta}`, check that the FASTA holds only letters"
+        " between its header lines, and run again.\n",
+    )
+    assert output.read_text(encoding="utf-8") == "earlier\n"
+    assert not Path(f"{output}.tmp").exists()
+
+
+@pytest.mark.parametrize("num_threads", [0, 257, True, 2.0], ids=["0", "257", "true", "float"])
+def test_write_str_regions_refuses_threads_before_reading_the_regions(
+    num_threads: object, tmp_path: Path
+) -> None:
+    # The --regions BED does not exist, which would stop the run if it were read first.
+    fasta = _write_fasta(tmp_path, {"four_a": _FOUR_A})
+    output = tmp_path / "str.bed"
+    with (
+        IndexedFasta(fasta) as reference,
+        pytest.raises(
+            ValueError,
+            match=re.escape(
+                f"num_threads is {num_threads!r}; it must be a whole number from 1 to 256"
+            ),
+        ),
+    ):
+        write_str_regions(
+            reference,
+            output,
+            StrFinderParameters(),
+            tmp_path / "missing.bed",
+            num_threads,  # ty: ignore[invalid-argument-type]  # the wrong types are the test
+        )
+    assert not Path(f"{output}.tmp").exists()
 
 
 # ---- --regions --------------------------------------------------------------------------
@@ -658,6 +776,7 @@ def test_help_lists_every_option_with_its_default(capsys: pytest.CaptureFixture[
         "--scan-match-reward": ["2"],
         "--scan-mismatch-penalty": ["7"],
         "--scan-min-copies": ["2"],
+        "--threads": ["4"],
     }
 
 
@@ -685,6 +804,11 @@ def test_help_says_what_the_bed_holds_and_what_its_words_mean(
         " other two types.",
         "--max-str-len N a stretch of repeats longer than N bases is a satellite; at least"
         " --bundle-distance (default 100)",
+        "--threads N how many contigs are segmented at once, each on a thread of its own, from"
+        " 1 to 256. The peak memory grows with N: a contig being segmented holds 4.6 to 5.3 MB"
+        " per Mb of its length, 1.15 GB for GRCh38's chr1. With more than one thread, Ctrl-C"
+        " stops the run once the contigs being segmented have finished, which can take"
+        " minutes (default 4)",
     ]:
         assert sentence in help_text
     assert "by half" not in help_text
