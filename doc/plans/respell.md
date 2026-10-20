@@ -22,7 +22,8 @@ Out, with where it goes:
   later one, but skipped until the owner says where the VCF and its reference are; the session
   building `compare()` asks the same.
 - `compare()` is not on `main`; the check of §7.4 joins the stages itself (spec §9.3). Moving its
-  rows to `compare()` is a change for when it arrives.
+  rows to `compare()` is a change for when it arrives, and with it the check takes the reference
+  as a path, as `compare()` does, in place of an opened `IndexedFasta` (review of milestone 3).
 - Chaining re-spellings, and anything in `src/` or on the command line (spec §12).
 
 The spec has no open point: the owner answered Open 1 on 20 October 2026, keep the rule, which
@@ -133,7 +134,9 @@ what 1 builds.
     giving the same bytes; the §2.2 rows for the shift; every S case through the oracle; the
     oracle property over 300 files and the bcftools property over 50; at least one file in ten
     with a shifted record. On 9dbec00 none exists.
-  - In `tests/test_respell_check.py`: every S case, and the §7.4 property over 300 shifted files.
+  - In `tests/test_respell_check.py`: every S case, the §7.4 property over 300 shifted files, and
+    the AT repeat case of milestone 3 with its file B made by `respell_by_shifting` in place of
+    the one milestone 3 writes by hand.
 
   Stands on: 3.
 
