@@ -5,6 +5,7 @@ Public, to pvc_eval's own modules: read_numbered_lines, which yields a file's li
 their numbers; open_temporary_output, which opens the temporary file of an output.
 """
 
+import errno
 import gzip
 import io
 import zlib
@@ -91,7 +92,8 @@ def open_temporary_output(path: Path, temporary: Path, option: str, *, compress:
     "Writing the files").
 
     Raises PvcEvalInputError, naming option, when path is a directory or temporary cannot
-    be made.
+    be made, with the system's words for a fault other than a missing directory, a path
+    through a file, a permission denied, or a temporary that is a directory.
     """
     if path.is_dir():
         raise PvcEvalInputError(
@@ -102,26 +104,38 @@ def open_temporary_output(path: Path, temporary: Path, option: str, *, compress:
         if compress:
             return _open_gzipped_output(temporary)
         return temporary.open("w", encoding="utf-8", newline="\n")
-    except FileNotFoundError:
+    except FileNotFoundError as err:
         raise PvcEvalInputError(
             f"{cannot} its directory, {path.parent}, does not exist. Make it, or give another"
             f" {option}, and run again."
-        ) from None
-    except NotADirectoryError:
+        ) from err
+    except NotADirectoryError as err:
         raise PvcEvalInputError(
             f"{cannot} its path goes through a file as if it were a directory. Correct the"
             " path, and run again."
-        ) from None
-    except PermissionError:
+        ) from err
+    except PermissionError as err:
         raise PvcEvalInputError(
             f"{cannot} permission denied to write in {path.parent}. Allow writing there, or"
             f" give another {option}, and run again."
-        ) from None
-    except IsADirectoryError:
+        ) from err
+    except IsADirectoryError as err:
         raise PvcEvalInputError(
             f"{cannot} {temporary}, where it is written first, is a directory. Move it away,"
             " and run again."
-        ) from None
+        ) from err
+    except OSError as err:
+        raise make_write_error(option, path, err) from err
+
+
+def make_write_error(option: str, path: Path, err: OSError) -> PvcEvalInputError:
+    """The error for a fault of the system while an output is opened, written or renamed,
+    a full disk, a read-only file system or a name too long, naming option and giving the
+    system's words (doc/specs/compare.md, "Writing the files")."""
+    advice = "Free some space, or give another" if err.errno == errno.ENOSPC else "Give another"
+    return PvcEvalInputError(
+        f"{option} {path} could not be written: {err.strerror}. {advice} {option}, and run again."
+    )
 
 
 def _open_gzipped_output(temporary: Path) -> TextIO:

@@ -8,10 +8,12 @@ summary from the rows.
 
 from collections import Counter
 from collections.abc import Iterable, Sequence
+from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
-from pvc_eval._text_files import open_temporary_output
+from pvc_eval._text_files import make_write_error, open_temporary_output
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.kind import Kind
 from pvc_eval.outcome import LocusGenotype, Outcome, OutcomeRow
@@ -105,7 +107,8 @@ def write_table(
 
     Raises PvcEvalInputError, before any row is read, naming --output or --summary, for a
     path that is a directory or whose `.tmp` cannot be made, and for a summary that is the
-    same file as output.
+    same file as output; and, naming the option, for an error of the system while a file is
+    written or renamed, a full disk among them.
     """
     if summary is not None and summary.resolve() == output.resolve():
         raise PvcEvalInputError(
@@ -117,39 +120,91 @@ def write_table(
         targets.append(("--summary", summary))
     # Only the temporary files opened here are removed: a `.tmp` that could not be opened,
     # a directory among them, is not pvc_eval's.
-    opened: list[tuple[Path, Path, TextIO]] = []
+    outputs: list[_Output] = []
     try:
         for option, path in targets:
             temporary = Path(f"{path}.tmp")
             compress = path.name.endswith(".gz")
-            opened.append(
-                (path, temporary, open_temporary_output(path, temporary, option, compress=compress))
-            )
-        files = [file for _, _, file in opened]
-        _write_rows(rows, files[0], files[1] if len(files) == 2 else None, all_rows=all_rows)
-        for file in files:
-            file.close()
-        for path, temporary, _ in opened:
-            temporary.replace(path)
+            file = open_temporary_output(path, temporary, option, compress=compress)
+            outputs.append(_Output(option, path, temporary, file))
+        _write_rows(rows, outputs[0], outputs[1] if len(outputs) == 2 else None, all_rows=all_rows)
+        for written in outputs:
+            _close_output(written)
+        for written in outputs:
+            _rename_output(written)
     except BaseException:
-        for _, temporary, file in opened:
-            file.close()
-            temporary.unlink(missing_ok=True)
+        _remove_temporary_files(outputs)
         raise
 
 
+@dataclass(frozen=True, slots=True)
+class _Output:
+    """A file write_table writes: the option that named it, its path, the temporary file it
+    is written to first, and that file, open."""
+
+    option: str
+    path: Path
+    temporary: Path
+    file: TextIO
+
+
 def _write_rows(
-    rows: Iterable[OutcomeRow], table: TextIO, summary: TextIO | None, *, all_rows: bool
+    rows: Iterable[OutcomeRow], table: _Output, summary: _Output | None, *, all_rows: bool
 ) -> None:
     """Write the table's lines to table and, when it is given, the summary's to summary."""
-    table.write(_format_line(TABLE_COLUMNS))
+    _write_text(table, _format_line(TABLE_COLUMNS))
     counts: Counter[_SummaryKey] = Counter()
     for row in rows:
         counts[row.outcome, _NONE if row.stratum is None else row.stratum, row.kind] += 1
         if all_rows or row.outcome is not Outcome.REFERENCE_IN_BOTH:
-            table.write(_format_line(format_table_row(row)))
+            _write_text(table, _format_line(format_table_row(row)))
     if summary is not None:
-        summary.writelines(_format_summary(counts))
+        _write_text(summary, "".join(_format_summary(counts)))
+
+
+def _write_text(output: _Output, text: str) -> None:
+    """Write text to output's temporary file.
+
+    Raises PvcEvalInputError, naming output's option, for an error of the system, a full
+    disk among them.
+    """
+    try:
+        output.file.write(text)
+    except OSError as err:
+        raise make_write_error(output.option, output.path, err) from err
+
+
+def _close_output(output: _Output) -> None:
+    """Close output's temporary file, which writes what is left in its buffers.
+
+    Raises PvcEvalInputError, naming output's option, for an error of the system.
+    """
+    try:
+        output.file.close()
+    except OSError as err:
+        raise make_write_error(output.option, output.path, err) from err
+
+
+def _rename_output(output: _Output) -> None:
+    """Rename output's temporary file to its path.
+
+    Raises PvcEvalInputError, naming output's option, for an error of the system.
+    """
+    try:
+        output.temporary.replace(output.path)
+    except OSError as err:
+        raise make_write_error(output.option, output.path, err) from err
+
+
+def _remove_temporary_files(outputs: Iterable[_Output]) -> None:
+    """Close and remove the temporary file of each output, after an error or Ctrl-C."""
+    for output in outputs:
+        # The exception that stopped the run goes on. Closing a file that could not be
+        # written raises again, as it writes its buffers; that adds nothing, and must not
+        # keep the next temporary file from being removed.
+        with suppress(OSError):
+            output.file.close()
+        output.temporary.unlink(missing_ok=True)
 
 
 def _format_line(fields: Iterable[str]) -> str:

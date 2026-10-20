@@ -3,12 +3,16 @@ tests: each field as format_table_row writes it, the worked row of "The table" a
 and the files write_table writes, refuses and removes ("Writing the files")."""
 
 import dataclasses
+import errno
 import gzip
+import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from pvc_eval._text_files import make_write_error
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.kind import Kind
 from pvc_eval.outcome import InvalidReason, Outcome, OutcomeRow
@@ -444,6 +448,76 @@ def test_a_summary_that_cannot_be_written_is_refused_before_any_row(
     assert str(raised.value) == message
     assert not output.exists()
     assert not (tmp_path / "loci.tsv.tmp").exists()
+
+
+@pytest.mark.parametrize("option", ["--output", "--summary"])
+def test_a_name_too_long_is_refused_with_the_systems_words(tmp_path: Path, option: str) -> None:
+    too_long = tmp_path / ("x" * 300 + ".tsv")
+    output, summary = (
+        (too_long, tmp_path / "summary.tsv")
+        if option == "--output"
+        else (tmp_path / "loci.tsv", too_long)
+    )
+    with pytest.raises(PvcEvalInputError) as raised:
+        write_table(_refuse_to_be_read(), output, summary=summary)
+    assert str(raised.value) == (
+        f"{option} {too_long} could not be written: File name too long. Give another {option},"
+        " and run again."
+    )
+    assert list(tmp_path.iterdir()) == []
+
+
+# Writes a table larger than the limit on the size of a file the process may write, as a
+# full disk would stop it, and prints the message of the error.
+_WRITE_PAST_THE_LIMIT = """
+import resource, signal, sys
+from pathlib import Path
+from pvc_eval.errors import PvcEvalInputError
+from pvc_eval.kind import Kind
+from pvc_eval.outcome import Outcome, OutcomeRow
+from pvc_eval.table import write_table
+
+row = OutcomeRow(
+    contig="chr20", start=99, end=110, kind=Kind.SNP, stratum=None, str_regions=(),
+    sample_a="HG002", sample_b="HG002", outcome=Outcome.SAME_GENOTYPE, alleles=("C", "T"),
+    genotype_a=(0, 1), genotype_b=(0, 1), possible_a=1, possible_b=1, quality_a=29.5,
+    quality_b=29.5, gq_a=45, gq_b=45, records_a=1, records_b=1, invalid_reason_a=None,
+    invalid_reason_b=None,
+)
+signal.signal(signal.SIGXFSZ, signal.SIG_IGN)  # so a write past the limit raises
+resource.setrlimit(resource.RLIMIT_FSIZE, (50_000, 50_000))
+directory = Path(sys.argv[1])
+try:
+    write_table(
+        (row for _ in range(10_000)), directory / "loci.tsv", summary=directory / "summary.tsv"
+    )
+except PvcEvalInputError as err:
+    print(err)
+"""
+
+
+def test_a_full_disk_gives_the_specs_message() -> None:
+    # The example of doc/specs/compare.md, "Writing the files", which a test cannot make
+    # the disk give.
+    full_disk = OSError(errno.ENOSPC, "No space left on device")
+    assert str(make_write_error("--output", Path("loci.tsv"), full_disk)) == (
+        "--output loci.tsv could not be written: No space left on device. Free some space, or"
+        " give another --output, and run again."
+    )
+
+
+def test_a_write_that_fails_is_refused_and_leaves_no_temporary_file(tmp_path: Path) -> None:
+    completed = subprocess.run(
+        [sys.executable, "-c", _WRITE_PAST_THE_LIMIT, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert completed.stdout == (
+        f"--output {tmp_path / 'loci.tsv'} could not be written: File too large. Give another"
+        " --output, and run again.\n"
+    )
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize(
