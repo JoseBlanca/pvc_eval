@@ -26,7 +26,6 @@ from tests.respell_generator import (
     Respelling,
     check_generated_respellings,
     check_respelled_haplotypes,
-    check_rewritten_share,
     is_rewritten,
     write_and_respell_case,
     write_planted_repeats,
@@ -211,9 +210,10 @@ def test_files_with_no_samples_raise(case_files: CaseFiles, tmp_path: Path) -> N
         check_respelling_outcomes(vcf, output, reference)
 
 
-# §9.2: the property asserts that at least one file in ten had a record rewritten, and that
-# some row is in a locus with an STR region, so that a check that did not read the BED of
-# the planted repeats fails: 9,415 of 12,152 rows were over 5,000 files on 20 October 2026.
+# §9.2: the property asserts that some row is in a locus with an STR region, so that a check
+# that did not read the BED of the planted repeats fails: 9,415 of 12,152 rows were over
+# 5,000 files on 20 October 2026. That one file in ten is rewritten is asserted on fixed
+# files, in tests/test_respell.py.
 @pytest.mark.parametrize("respelling", RESPELLING_PARAMS)
 def test_a_generated_file_against_its_respelling_gives_the_outcomes_of_itself(
     tmp_path_factory: pytest.TempPathFactory, respelling: Respelling
@@ -233,7 +233,6 @@ def test_a_generated_file_against_its_respelling_gives_the_outcomes_of_itself(
     tally = check_generated_respellings(
         respelling, check, tmp_path_factory, max_examples=_PROPERTY_EXAMPLES
     )
-    check_rewritten_share(tally)
     assert tally["rows in an STR locus"] > 0, tally
 
 

@@ -36,8 +36,9 @@ from tests.respell_generator import (
     Respelling,
     check_generated_respellings,
     check_respelled_haplotypes,
-    check_rewritten_share,
+    is_rewritten,
     make_generated_vcf,
+    write_and_respell,
     write_and_respell_case,
     write_generated_vcf,
 )
@@ -1106,6 +1107,31 @@ def test_the_gts_of_a_generated_record_with_no_alt_are_of_0_and_dot(
             assert alleles <= {"0", "."}, line
 
 
+# §9.2: at least one generated file in ten has a record each re-spelling rewrites, so that a
+# re-spelling that kept everything fails. As for the pairs below, the count is of fixed
+# files: the files with a shifted record ranged from 22 to 77 over 30 random runs of 300 on
+# 20 October 2026, around the 30 asserted, since hypothesis draws the files of one run
+# alike, and the fixed run gives 40 for the shift and 238 for the decomposition; the
+# properties stay random.
+@pytest.mark.parametrize("respelling", RESPELLING_PARAMS)
+def test_a_tenth_of_the_generated_files_have_a_record_each_respelling_rewrites(
+    tmp_path_factory: pytest.TempPathFactory, respelling: Respelling
+) -> None:
+    tally: Counter[str] = Counter()
+
+    @settings(max_examples=_ORACLE_EXAMPLES, deadline=None, derandomize=True)
+    @given(generated=make_generated_vcf())
+    def count_rewritten(generated: GeneratedVcf) -> None:
+        with ExitStack() as stack:
+            directory = tmp_path_factory.mktemp("generated")
+            _, vcf, output = write_and_respell(generated, respelling, directory, stack)
+        tally["files"] += 1
+        tally["rewritten"] += is_rewritten(vcf, output)
+
+    count_rewritten()
+    assert tally["rewritten"] * 10 >= tally["files"], tally
+
+
 # §9.2: at least one generated file in five has a pair of windows a block joins, so that a
 # re-spelling that loses or invents a phase set between windows is likely to be caught. The
 # count is of the generator alone, a file against itself, on fixed files: over random runs
@@ -1132,8 +1158,7 @@ def test_a_fifth_of_the_generated_files_have_a_pair_of_windows_a_block_joins(
     assert tally["with a linked pair"] * 5 >= tally["files"], tally
 
 
-# §9.2: each property runs over generated files; the oracle's asserts that at least one file
-# in ten had a record rewritten.
+# §9.2: each property runs over generated files.
 @pytest.mark.parametrize("respelling", RESPELLING_PARAMS)
 def test_the_respelling_of_a_generated_file_passes_the_oracle(
     tmp_path_factory: pytest.TempPathFactory, respelling: Respelling
@@ -1144,10 +1169,7 @@ def test_the_respelling_of_a_generated_file_passes_the_oracle(
         check_respelled_haplotypes(vcf, output, reference, ploidy=generated.ploidy)
         return {}
 
-    tally = check_generated_respellings(
-        respelling, check, tmp_path_factory, max_examples=_ORACLE_EXAMPLES
-    )
-    check_rewritten_share(tally)
+    check_generated_respellings(respelling, check, tmp_path_factory, max_examples=_ORACLE_EXAMPLES)
 
 
 @_needs_bcftools

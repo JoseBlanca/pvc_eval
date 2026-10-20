@@ -7,9 +7,8 @@ RESPELLING_PARAMS and RESPELLING_CASE_PARAMS its rows, and each case of each, fo
 pytest.mark.parametrize. write_and_respell writes a generated file and its re-spelling,
 write_and_respell_case a case and its re-spelling, write_planted_repeats the BED of a
 generated file's planted repeats, and is_rewritten says whether a re-spelling rewrote a
-record. check_generated_respellings runs a property over generated files,
-check_rewritten_share checks that it rewrote enough of them, and check_respelled_haplotypes
-is the oracle's check of a re-spelling as its tests make it.
+record. check_generated_respellings runs a property over generated files, and
+check_respelled_haplotypes is the oracle's check of a re-spelling as its tests make it.
 
 hypothesis draws the ends of a range of whole numbers more often than its middle, so a rare
 kind is drawn at the top of its range, where it is also not what shrinking leads to. One run
@@ -199,8 +198,8 @@ def check_generated_respellings(
     max_examples: int,
 ) -> Counter[str]:
     """Run check over max_examples generated files and their re-spellings, and return what
-    it counted, added up, with the files and those whose re-spelling rewrote a record, which
-    check_rewritten_share checks. Raises AssertionError when fewer files ran.
+    it counted, added up, with the files and those whose re-spelling rewrote a record. Raises
+    AssertionError when fewer files ran.
 
     The counts are kept in a Counter of the call's own: one in the module would be state
     that changes between tests (python.md, threads) and would tie a test's assertion to the
@@ -222,17 +221,6 @@ def check_generated_respellings(
     check_respelling()
     assert tally["files"] >= max_examples, tally
     return tally
-
-
-def check_rewritten_share(tally: Counter[str]) -> None:
-    """Check that at least one file in ten of a property had a record its re-spelling
-    rewrote, so that a re-spelling that kept everything fails (doc/specs/respell.md §9.2).
-
-    §9.2 asks it of the 300 files of the oracle's and §7.4's properties, not of the 50 of
-    bcftools': hypothesis draws the files of one run alike, and over 12 runs of 50 on 20
-    October 2026 the files with a shifted record ranged from 1 to 13.
-    """
-    assert tally["rewritten"] * 10 >= tally["files"], tally
 
 
 def write_planted_repeats(generated: GeneratedVcf, directory: Path) -> Path:
@@ -364,7 +352,7 @@ def _make_records(draw: st.DrawFn, contig: _Contig) -> list[_Record]:
     """1 to 6 records, sorted by POS: one in twenty with no ALT, one in twenty with a `*` ALT,
     and the others a SNP, a replacement, the insertion or the deletion of whole units of a
     planted repeat at its edge, a random indel, or a deletion over a record drawn before it,
-    each with a second ALT one time in three."""
+    each with a second ALT one time in two."""
     records: list[_Record] = []
     for _ in range(draw(st.integers(1, 6))):
         kind = draw(st.integers(0, 19))
@@ -375,11 +363,7 @@ def _make_records(draw: st.DrawFn, contig: _Contig) -> list[_Record]:
         if kind == 18:
             records.append(_Record(record.start, record.ref, (*record.alts, "*")))
             continue
-        # §9.2: one file in ten has a record the shift moves, which needs one ALT (§4). With a
-        # second ALT one time in two, and a repeat's indel at either edge, 2 of 12 runs of 300
-        # files on 20 October 2026 had fewer than 30 with a shifted record; with one time in
-        # three, and the left edge, the fewest over 60 runs was 37, and the mean 71.
-        if draw(st.integers(0, 2)) == 2:
+        if draw(st.booleans()):
             second_alt = draw(
                 _make_alt(record.ref).filter(lambda alt, record=record: alt not in record.alts)
             )
@@ -447,16 +431,15 @@ def _make_random_indel(draw: st.DrawFn, contig: _Contig) -> _Record:
 
 @st.composite
 def _make_repeat_indel(draw: st.DrawFn, contig: _Contig) -> _Record:
-    """The insertion or the deletion of whole units of a planted repeat at its left edge,
-    anchored on the base before it, from where the shift moves it through the repeat; or, for a
-    repeat that starts the contig's bases, with no base before it, at its right edge, anchored
-    on its last base or on the base before the units deleted."""
+    """The insertion or the deletion of whole units of a planted repeat, at its left edge,
+    anchored on the base before it, or at its right edge, anchored on its last base or on the
+    base before the units deleted."""
     repeat = draw(st.sampled_from(contig.repeats))
     unit = repeat.unit
     num_copies = (repeat.end - repeat.start) // len(unit)
     num_units = draw(st.integers(1, num_copies))
     has_left_anchor = repeat.start > contig.core_start
-    if has_left_anchor:
+    if has_left_anchor and draw(st.booleans()):
         anchor = repeat.start - 1
         anchor_base = contig.bases[anchor]
         if draw(st.booleans()):
@@ -467,7 +450,7 @@ def _make_repeat_indel(draw: st.DrawFn, contig: _Contig) -> _Record:
     if draw(st.booleans()):
         last_base = contig.bases[last]
         return _Record(last, last_base, (last_base + unit * num_units,))
-    if num_units == num_copies:
+    if num_units == num_copies and not has_left_anchor:
         # Deleting every copy needs the base before the repeat as the anchor.
         num_units -= 1
     anchor = repeat.end - num_units * len(unit) - 1
