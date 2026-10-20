@@ -167,7 +167,7 @@ file B ──► VCF records, normalised ──┘           └──► anothe
 between them is fixed here, in `pvc_eval.segments`, and changed only in this spec:
 
 ```python
-class RegionType(Enum):
+class RegionType(StrEnum):
     GENERIC = "generic"
     STR = "str"
     STR_BUNDLE = "str-bundle"
