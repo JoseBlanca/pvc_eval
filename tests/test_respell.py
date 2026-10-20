@@ -604,15 +604,29 @@ def test_the_reach_has_no_limit_where_the_span_is_cut(case_files: CaseFiles) -> 
     assert _find_reach(reference, CONTIG, vcf_record.start, vcf_record.alleles) == (1, 9)
 
 
-def _write_snps(directory: Path, reference: IndexedFasta, num_snps: int) -> Path:
+def _write_timing_vcf(directory: Path, reference: IndexedFasta, num_snps: int) -> Path:
+    """A VCF of one sample, all 0/1: num_snps SNPs ten bases apart, at 5, 15, 25...; beside
+    every tenth, at 6, 16..., a second SNP it touches; and before every hundredth from the
+    fiftieth, at 501, 1501..., a deletion of the 40 bases after it, which touches the five
+    SNPs of 505 to 535."""
     bases = reference.get_bases(CONTIG, 0, 10 * num_snps)
     lines = [FILEFORMAT_LINE, make_chrom_line(1)]
-    for index in range(num_snps):
-        pos = 10 * index + 5
-        ref = bases[pos - 1]
-        alt = "A" if ref != "A" else "C"
+
+    def add_record(pos: int, ref: str, alt: str) -> None:
         lines.append(f"{CONTIG}\t{pos}\t.\t{ref}\t{alt}\t.\t.\t.\tGT\t0/1")
-    vcf = directory / "snps.vcf"
+
+    def add_snp(pos: int) -> None:
+        ref = bases[pos - 1]
+        add_record(pos, ref, "A" if ref != "A" else "C")
+
+    for index in range(num_snps):
+        if index % 100 == 50:
+            pos = 10 * index + 1
+            add_record(pos, bases[pos - 1 : pos + 40], bases[pos - 1])
+        add_snp(10 * index + 5)
+        if index % 10 == 0:
+            add_snp(10 * index + 6)
+    vcf = directory / "timing.vcf"
     vcf.write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
     return vcf
 
@@ -620,14 +634,18 @@ def _write_snps(directory: Path, reference: IndexedFasta, num_snps: int) -> Path
 # §10: the touched test sweeps the records by REF. Comparing every pair of 20,000 records
 # would take some 96 s (doc/specs/respell.md §10).
 @pytest.mark.slow
-def test_decomposing_20000_snps_takes_under_10_seconds(
+def test_decomposing_20000_snps_with_touching_records_takes_under_10_seconds(
     case_files: CaseFiles, tmp_path: Path
 ) -> None:
     num_snps = 20_000
     reference = case_files.write_contigs({CONTIG: "GATTACA" * (10 * num_snps // 7 + 1)})
-    vcf = _write_snps(tmp_path, reference, num_snps)
+    vcf = _write_timing_vcf(tmp_path, reference, num_snps)
     started = time.perf_counter()
     respell_by_decomposing(vcf, reference, tmp_path / "b.vcf")
     elapsed = time.perf_counter() - started
-    assert len(read_case_lines(tmp_path / "b.vcf")) == num_snps
+    output_lines = read_case_lines(tmp_path / "b.vcf")
+    # 22,200 records: of the 20,000 SNPs, 2,000 touch a second SNP and 600 more a deletion,
+    # and are kept with the 2,000 second SNPs and the 200 deletions.
+    assert len(output_lines) == 22_200
+    assert sum(line.endswith("0/1") for line in output_lines) == 4_800
     assert elapsed < 10, f"{elapsed:.1f} s"
