@@ -25,25 +25,34 @@ What exists now that did not:
   `PVC_EVAL_GRCH38` and `PVC_EVAL_HG002_VCF`.
 
 The checks on 84aacd9: `uv sync --locked` clean, ruff and ty pass, `pytest -q` "1306 passed, 5
-skipped" (914 passed when the work started), three runs in a row.
+skipped" (914 passed and 4 skipped when the work started), three runs in a row; the fifth test
+skipped is the HG002 test, which needs the two variables. The summary of that run is one line,
+*same genotype*, 65,112 SNP, 3,663 indel, 12,171 STR and 311 complex loci, since every row has
+that outcome and the run had no `--strata`.
 
 **What is asked of you.**
 
 1. **The merge of `compare` into `main`.** `main` was merged into the branch at 84aacd9, after
-   `str-regions` on threads, so the merge has no conflict as of now.
+   `str-regions` on threads, so the merge has no conflict unless `main` moves again. Until it is
+   merged, the next piece, the re-spellings of `doc/spec.md` §7.4, cannot run on `compare`.
 2. **Whether `--regions` should also limit the reading.** On HG002, chr20's rows were done at 38 s
    of the 39 s: pvc_eval reads every record of the 22 chromosomes and builds their loci, to raise
    any error the file holds, and skips them. Reading only the contigs `--regions` names, through
    the VCF's index, would bring a chr20 benchmark of a whole-genome VCF to about the 22 s of the
-   STR finder's scan of chr20, or a few seconds with `--str-regions`, and an error on another
-   chromosome would then go unseen. It needs a reader of a VCF's BGZF blocks from the offsets
+   STR finder's scan of chr20, against 39 s now, or a few seconds with `--str-regions`, and an error on another
+   chromosome would then go unseen: today a record on chr1 whose REF differs from the reference,
+   which says the VCF was made on another build, stops a chr20 run; it would not. It needs a reader of a VCF's BGZF blocks from the offsets
    its index gives, in the standard library; about 100 lines, an estimate, not tried. Recommended: yes, as a spec of its own, since it changes
    what the run checks. Nothing waits on it.
 
-**What the spec gained during the work**, each in a commit of its own, none changing a row:
+**What the spec gained during the work**, each in a commit of its own. The session made them, as
+the coding skill allows for changes that alter no outcome, no option and no row; each can be
+reverted if you disagree:
 
-- The rows before an error of the STR finder are those of `compare()` with no thread, which can
-  differ by one locus from a chain of `segment_contig` over contigs known in advance (0ad2d19).
+- When the STR finder stops a run with an error, the rows yielded before the error are those of
+  `compare()` run with no thread. Scanning a list of chromosomes fixed before the reading would
+  read a chromosome's STR regions at another record, and so give one locus more or fewer before
+  the same error. A user of the command sees no difference, since no table is written (0ad2d19).
 - `compare()` no longer repeats the stages' checks of the settings; the command still checks them
   first (eef6533).
 - The summary is renamed before the table; any error of the system while writing is a message, not
@@ -54,8 +63,9 @@ skipped" (914 passed when the work started), three runs in a row.
 
 **Left open, none of them changing a row:**
 
-- In one of 15 full runs of the suite, a reviewer saw one test fail without keeping its name; the
-  session's 23 runs since have had no failure.
+- In one of 15 full runs of the suite, a reviewer saw one test fail without keeping its name,
+  while it was itself breaking the code on purpose in another copy; the session's 23 runs since
+  have had no failure. If it comes back, it is most likely one of the tests of the threads.
 - `pvc_eval str-regions` still ends with a traceback on a full disk; since milestone 3 its Ctrl-C
   ends with "Stopped; nothing was written." and status 130, like `compare`'s.
 - Two tests that could be stronger: that the command puts its logger's level back, and that an
