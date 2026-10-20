@@ -222,7 +222,9 @@ def test_strata_pvc_is_the_word_and_dot_slash_pvc_a_bed(
     ("option", "message"),
     [
         (["--ploidy-a", "3"], "--ploidy-a 3: a ploidy is 1 or 2."),
+        (["--ploidy-a", "0"], "--ploidy-a 0: a ploidy is 1 or 2."),
         (["--ploidy-b", "0"], "--ploidy-b 0: a ploidy is 1 or 2."),
+        (["--ploidy-b", "3"], "--ploidy-b 3: a ploidy is 1 or 2."),
         (["--phasing-cap", "0"], "--phasing-cap 0: a phasing cap is 1 or more."),
         (["--chain-distance", "-1"], "--chain-distance -1: a chain distance is 0 or more."),
         (
@@ -230,7 +232,15 @@ def test_strata_pvc_is_the_word_and_dot_slash_pvc_a_bed(
             "--span-limit 0: a span limit is a whole number of 1 or more, or none.",
         ),
     ],
-    ids=["ploidy-a", "ploidy-b", "phasing-cap", "chain-distance", "span-limit"],
+    ids=[
+        "ploidy-a-3",
+        "ploidy-a-0",
+        "ploidy-b-0",
+        "ploidy-b-3",
+        "phasing-cap",
+        "chain-distance",
+        "span-limit",
+    ],
 )
 def test_value_out_of_range_stops_the_run_before_anything_is_read(
     option: list[str], message: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
