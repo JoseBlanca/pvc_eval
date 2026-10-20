@@ -65,14 +65,14 @@ def test_one_index_gives_the_contigs_with_records_and_not_the_header_ones(
     vcf_path = _copy_vcf(tmp_path, [(index_name, suffix)])
     with caplog.at_level(logging.WARNING):
         contigs = parse_index_contigs(vcf_path)
-    assert contigs == ["ctgB", "ctgD"]
+    assert contigs == frozenset({"ctgB", "ctgD"})
     assert _warnings(caplog) == []
 
 
 def test_both_indexes_give_their_contigs_joined(tmp_path: Path) -> None:
     # The .csi is that of another VCF, as an index out of date would be.
     vcf_path = _copy_vcf(tmp_path, [(f"{_VCF_B_D}.tbi", ".tbi"), (f"{_VCF_A_B}.csi", ".csi")])
-    assert parse_index_contigs(vcf_path) == ["ctgB", "ctgD", "ctgA"]
+    assert parse_index_contigs(vcf_path) == frozenset({"ctgB", "ctgD", "ctgA"})
 
 
 def test_vcf_with_no_index_gives_no_contigs(
@@ -81,7 +81,7 @@ def test_vcf_with_no_index_gives_no_contigs(
     vcf_path = _copy_vcf(tmp_path, [])
     with caplog.at_level(logging.WARNING):
         contigs = parse_index_contigs(vcf_path)
-    assert contigs == []
+    assert contigs == frozenset()
     assert _warnings(caplog) == []
 
 
@@ -89,7 +89,7 @@ def test_plain_text_vcf_gives_no_contigs(caplog: pytest.LogCaptureFixture) -> No
     # records_on_b_d.vcf has no index beside it; its bgzipped copy has two.
     with caplog.at_level(logging.WARNING):
         contigs = parse_index_contigs(_DATA / "records_on_b_d.vcf")
-    assert contigs == []
+    assert contigs == frozenset()
     assert _warnings(caplog) == []
 
 
@@ -184,7 +184,7 @@ def test_index_that_cannot_be_read_gives_the_warning_and_no_contigs(
     index_path.write_bytes(index_bytes)
     with caplog.at_level(logging.WARNING):
         contigs = parse_index_contigs(vcf_path)
-    assert contigs == []
+    assert contigs == frozenset()
     assert _warnings(caplog) == [_unreadable_warning(index_path, vcf_path, _INDEX_OPTIONS[suffix])]
 
 
@@ -196,7 +196,7 @@ def test_index_that_cannot_be_read_leaves_the_other_ones_contigs(
     tbi_path.write_bytes(b"not an index")
     with caplog.at_level(logging.WARNING):
         contigs = parse_index_contigs(vcf_path)
-    assert contigs == ["ctgA", "ctgB"]
+    assert contigs == frozenset({"ctgA", "ctgB"})
     assert _warnings(caplog) == [_unreadable_warning(tbi_path, vcf_path, "-t")]
 
 
@@ -223,5 +223,5 @@ def test_index_cut_after_its_header_still_gives_its_contigs(
     (tmp_path / f"{_VCF_B_D}{suffix}").write_bytes(index_bytes)
     with caplog.at_level(logging.WARNING):
         contigs = parse_index_contigs(vcf_path)
-    assert contigs == ["ctgB", "ctgD"]
+    assert contigs == frozenset({"ctgB", "ctgD"})
     assert _warnings(caplog) == []

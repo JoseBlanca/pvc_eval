@@ -39,17 +39,16 @@ class _UnreadableIndexError(Exception):
     """An index whose header is cut short or is not that of a VCF's .tbi or .csi."""
 
 
-def parse_index_contigs(vcf_path: Path) -> list[str]:
+def parse_index_contigs(vcf_path: Path) -> frozenset[str]:
     """The contigs listed by the .tbi and the .csi beside a VCF, <vcf_path>.tbi and
-    <vcf_path>.csi, each read when it exists, their contigs joined: those of the .tbi first,
-    in its order, then those only the .csi lists. A VCF with neither, plain text ones among
-    them, gives no contigs.
+    <vcf_path>.csi, each read when it exists, their contigs joined. A VCF with neither, plain
+    text ones among them, gives no contigs.
 
     An index that exists and cannot be read, its header cut short, or not an index of a VCF,
     gives no contigs, and a warning is logged that names it. Contigs that the reference lacks
     are not dropped here.
     """
-    contigs: dict[str, None] = {}
+    contigs: set[str] = set()
     for suffix, option in _INDEX_OPTIONS.items():
         index_path = vcf_path.with_name(vcf_path.name + suffix)
         try:
@@ -70,8 +69,8 @@ def parse_index_contigs(vcf_path: Path) -> list[str]:
                 vcf_path,
             )
             continue
-        contigs.update(dict.fromkeys(index_contigs))
-    return list(contigs)
+        contigs.update(index_contigs)
+    return frozenset(contigs)
 
 
 def _parse_index(index_path: Path) -> list[str]:
