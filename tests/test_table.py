@@ -164,8 +164,19 @@ def test_format_table_row_writes_the_str_regions_1_based(
         (1e20, "1e+20"),
         (0.0, "0"),
         (3.0e3, "3000"),
+        (1234567.0, "1234567"),
+        (29.5312345, "29.5312345"),
     ],
-    ids=["whole", "two_decimals", "small", "large", "zero", "whole_thousands"],
+    ids=[
+        "whole",
+        "two_decimals",
+        "small",
+        "large",
+        "zero",
+        "whole_thousands",
+        "seven_digits",
+        "seven_decimals",
+    ],
 )
 def test_format_table_row_writes_the_qual_in_its_shortest_form(qual: float, expected: str) -> None:
     formatted = _format_fields(_make_row(quality_a=qual, quality_b=qual))
@@ -204,6 +215,13 @@ def test_format_table_row_writes_the_outcome_as_its_words(outcome: Outcome, expe
     assert _format_fields(_make_row(outcome=outcome))["outcome"] == expected
 
 
+def test_format_table_row_takes_each_invalid_reason_from_its_own_file() -> None:
+    formatted = _format_fields(
+        _make_row(invalid_reason_a=None, invalid_reason_b=InvalidReason.MALFORMED_GT)
+    )
+    assert (formatted["invalid_reason_a"], formatted["invalid_reason_b"]) == (".", "malformed GT")
+
+
 @pytest.mark.parametrize(
     ("reason", "expected"),
     [
@@ -220,12 +238,13 @@ def test_format_table_row_writes_the_invalid_reason_as_its_words(
     assert (formatted["invalid_reason_a"], formatted["invalid_reason_b"]) == (expected, expected)
 
 
-# Three rows of one locus, the second reference in both, which the table leaves out
-# without all_rows.
+# Four rows of one locus, the second reference in both, which the table leaves out
+# without all_rows, and the fourth missing in both, which it keeps.
 _SHORT_ROWS = [
     _WORKED_ROW,
     _make_row(sample_a="HG003", sample_b="HG003", outcome=Outcome.REFERENCE_IN_BOTH),
     _make_row(sample_a="HG004", sample_b="HG004", outcome=Outcome.DIFFERENT),
+    _make_row(sample_a="HG005", sample_b="HG005", outcome=Outcome.MISSING_IN_BOTH),
 ]
 _SHORT_LINES = [
     _WORKED_LINE,
@@ -233,13 +252,17 @@ _SHORT_LINES = [
     "\tCATATATATAT,CATATATAT\t0/1\t0/0\t1\t1\t29.5\t.\t45\t.\t1\t0\t.\t.\n",
     "chr20\t100\t110\tSTR\tstr\t101-110:str:AT\tHG004\tHG004\tdifferent"
     "\tCATATATATAT,CATATATAT\t0/1\t0/0\t1\t1\t29.5\t.\t45\t.\t1\t0\t.\t.\n",
+    "chr20\t100\t110\tSTR\tstr\t101-110:str:AT\tHG005\tHG005\tmissing in both"
+    "\tCATATATATAT,CATATATAT\t0/1\t0/0\t1\t1\t29.5\t.\t45\t.\t1\t0\t.\t.\n",
 ]
+# The table without all_rows: every short row but the one reference in both.
+_SHORT_TABLE = _HEADER + _SHORT_LINES[0] + _SHORT_LINES[2] + _SHORT_LINES[3]
 
 
 def test_write_table_leaves_out_reference_in_both_without_all_rows(tmp_path: Path) -> None:
     output = tmp_path / "loci.tsv"
     write_table(iter(_SHORT_ROWS), output)
-    assert output.read_text(encoding="utf-8") == _HEADER + _SHORT_LINES[0] + _SHORT_LINES[2]
+    assert output.read_text(encoding="utf-8") == _SHORT_TABLE
 
 
 def test_write_table_writes_every_row_with_all_rows(tmp_path: Path) -> None:
@@ -264,16 +287,30 @@ def test_write_table_gzips_a_path_ending_in_gz(tmp_path: Path) -> None:
     output, summary = tmp_path / "loci.tsv.gz", tmp_path / "summary.tsv.gz"
     write_table(iter(_SHORT_ROWS), output, summary=summary)
     assert output.read_bytes()[:2] == b"\x1f\x8b"  # gzip's magic number
-    assert gzip.decompress(output.read_bytes()).decode() == (
-        _HEADER + _SHORT_LINES[0] + _SHORT_LINES[2]
-    )
+    assert gzip.decompress(output.read_bytes()).decode() == _SHORT_TABLE
     assert gzip.decompress(summary.read_bytes()).decode() == (
         _SUMMARY_HEADER
+        + "missing in both\tstr\t0\t0\t1\t0\t1\n"
         + "reference in both\tstr\t0\t0\t1\t0\t1\n"
         + "only in A\tstr\t0\t0\t1\t0\t1\n"
         + "different\tstr\t0\t0\t1\t0\t1\n"
     )
     assert sorted(path.name for path in tmp_path.iterdir()) == ["loci.tsv.gz", "summary.tsv.gz"]
+
+
+def test_write_table_gzips_at_level_6(tmp_path: Path) -> None:
+    output = tmp_path / "loci.tsv.gz"
+    write_table(iter(_SHORT_ROWS), output)
+    # XFL, the ninth byte of the header, is 0 at level 6, 2 at level 9 and 4 at level 1.
+    assert output.read_bytes()[8] == 0
+
+
+def test_write_table_writes_utf8_with_no_carriage_return(tmp_path: Path) -> None:
+    output, summary = tmp_path / "loci.tsv", tmp_path / "summary.tsv"
+    write_table(iter([_make_row(sample_a="Müller")]), output, summary=summary)
+    table_bytes = output.read_bytes()
+    assert b"\tM\xc3\xbcller\tHG002\t" in table_bytes
+    assert b"\r" not in table_bytes + summary.read_bytes()
 
 
 class _StoppedError(Exception):
@@ -458,6 +495,20 @@ def test_the_summary_counts_by_outcome_and_stratum_over_every_sample_pair(
     ]
     # The table, without all_rows, leaves out the three rows reference in both.
     assert len(output.read_text(encoding="utf-8").splitlines()) == 1 + 7
+
+
+def test_the_summary_sorts_the_strata_by_code_point(tmp_path: Path) -> None:
+    summary = tmp_path / "summary.tsv"
+    rows = [
+        _make_summary_row("chr1", Kind.SNP, "generic", "HG002", Outcome.SAME_GENOTYPE),
+        _make_summary_row("chr1", Kind.STR, "Str", "HG002", Outcome.SAME_GENOTYPE),
+    ]
+    write_table(iter(rows), tmp_path / "loci.tsv", summary=summary)
+    assert summary.read_text(encoding="utf-8").splitlines() == [
+        "outcome\tstratum\tSNP\tindel\tSTR\tcomplex\ttotal",
+        "same genotype\tStr\t0\t0\t1\t0\t1",
+        "same genotype\tgeneric\t1\t0\t0\t0\t1",
+    ]
 
 
 def test_the_summary_without_strata_has_a_dot_for_the_stratum(tmp_path: Path) -> None:
