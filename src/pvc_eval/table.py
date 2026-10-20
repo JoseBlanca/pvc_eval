@@ -8,7 +8,7 @@ summary from the rows.
 
 import os
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,7 +46,7 @@ TABLE_COLUMNS: tuple[str, ...] = (
     "invalid_reason_a",
     "invalid_reason_b",
 )
-_SUMMARY_KINDS = (Kind.SNP, Kind.INDEL, Kind.STR, Kind.COMPLEX)  # a column each
+_SUMMARY_KINDS = tuple(Kind)  # a column each, in the order of doc/spec.md §5.6
 SUMMARY_COLUMNS: tuple[str, ...] = (
     "outcome",
     "stratum",
@@ -54,7 +54,9 @@ SUMMARY_COLUMNS: tuple[str, ...] = (
     "total",
 )
 
-_NONE = "."  # a field that is None, doc/specs/compare.md "The table"
+# What the table writes for a field that is None, and the summary for a row with no
+# stratum (doc/specs/compare.md, "The table").
+_DOT = "."
 # The summary's lines come in the order of doc/spec.md §5.5's table, which Outcome keeps.
 _OUTCOME_ORDER = {outcome: index for index, outcome in enumerate(Outcome)}
 
@@ -65,32 +67,33 @@ def format_table_row(row: OutcomeRow) -> tuple[str, ...]:
     """One row's fields as the table writes them, in the order of TABLE_COLUMNS
     (doc/specs/compare.md, "The table").
 
-    start becomes 1-based and end stays as it is, so the locus is 1-based and inclusive, as
-    are the STR regions; a field that is None is `.`.
+    The row's positions, those of the locus and of its STR regions, are 0-based and
+    half-open, and are written 1-based and inclusive: start becomes start + 1, and end stays
+    as it is. A field that is None is `.`.
     """
     return (
         row.contig,
         str(row.start + 1),
         str(row.end),
         row.kind.value,
-        _NONE if row.stratum is None else row.stratum,
+        _format_stratum(row.stratum),
         _format_str_regions(row.str_regions),
         row.sample_a,
         row.sample_b,
         row.outcome.value,
-        _NONE if row.alleles is None else ",".join(allele or "-" for allele in row.alleles),
+        _DOT if row.alleles is None else ",".join(allele or "-" for allele in row.alleles),
         _format_genotype(row.genotype_a),
         _format_genotype(row.genotype_b),
-        _format_optional(row.possible_a),
-        _format_optional(row.possible_b),
+        _format_whole_number(row.possible_a),
+        _format_whole_number(row.possible_b),
         _format_quality(row.quality_a),
         _format_quality(row.quality_b),
-        _format_optional(row.gq_a),
-        _format_optional(row.gq_b),
+        _format_whole_number(row.gq_a),
+        _format_whole_number(row.gq_b),
         str(row.records_a),
         str(row.records_b),
-        _NONE if row.invalid_reason_a is None else row.invalid_reason_a.value,
-        _NONE if row.invalid_reason_b is None else row.invalid_reason_b.value,
+        _DOT if row.invalid_reason_a is None else row.invalid_reason_a.value,
+        _DOT if row.invalid_reason_b is None else row.invalid_reason_b.value,
     )
 
 
@@ -206,7 +209,7 @@ def _write_rows(
     _write_text(table, _format_line(TABLE_COLUMNS))
     counts: Counter[_SummaryKey] = Counter()
     for row in rows:
-        counts[row.outcome, _NONE if row.stratum is None else row.stratum, row.kind] += 1
+        counts[row.outcome, _format_stratum(row.stratum), row.kind] += 1
         if all_rows or row.outcome is not Outcome.REFERENCE_IN_BOTH:
             _write_text(table, _format_line(format_table_row(row)))
     if summary is not None:
@@ -263,7 +266,7 @@ def _format_line(fields: Iterable[str]) -> str:
     return "\t".join(fields) + "\n"
 
 
-def _format_summary(counts: Counter[_SummaryKey]) -> list[str]:
+def _format_summary(counts: Mapping[_SummaryKey, int]) -> list[str]:
     """The lines of the summary, its column names first: one line per outcome and stratum
     with a row, by outcome in the order of doc/spec.md §5.5 and then by stratum, by code
     point, a count per kind and their total."""
@@ -273,7 +276,8 @@ def _format_summary(counts: Counter[_SummaryKey]) -> list[str]:
         key=lambda outcome_stratum: (_OUTCOME_ORDER[outcome_stratum[0]], outcome_stratum[1]),
     )
     for outcome, stratum in outcome_strata:
-        kind_counts = [counts[outcome, stratum, kind] for kind in _SUMMARY_KINDS]
+        # A kind with no row is written 0 (doc/specs/compare.md, "The summary").
+        kind_counts = [counts.get((outcome, stratum, kind), 0) for kind in _SUMMARY_KINDS]
         fields = [outcome.value, stratum, *map(str, kind_counts), str(sum(kind_counts))]
         lines.append(_format_line(fields))
     return lines
@@ -283,12 +287,12 @@ def _format_str_regions(str_regions: Sequence[GenomeSegment]) -> str:
     """The STR regions, 1-based and inclusive, as `start-end:type`, with `:motif` after an
     STR segment's and `start-end` alone for a region with no type, joined with `,`."""
     if not str_regions:
-        return _NONE
-    return ",".join(map(_format_str_region, str_regions))
+        return _DOT
+    return ",".join(map(_format_str_region_1based, str_regions))
 
 
-def _format_str_region(segment: GenomeSegment) -> str:
-    """One STR region as the table writes it, 1-based and inclusive."""
+def _format_str_region_1based(segment: GenomeSegment) -> str:
+    """One STR region, 0-based and half-open, as the table writes it, 1-based and inclusive."""
     text = f"{segment.start + 1}-{segment.end}"
     if segment.region_type is None:
         return text
@@ -301,18 +305,23 @@ def _format_str_region(segment: GenomeSegment) -> str:
 def _format_genotype(genotype: LocusGenotype | None) -> str:
     """The indices joined with `/`, MISSING as `.`; `.` for None."""
     if genotype is None:
-        return _NONE
-    return "/".join(_NONE if index is MISSING else str(index) for index in genotype)
+        return _DOT
+    return "/".join(_DOT if index is MISSING else str(index) for index in genotype)
 
 
 def _format_quality(quality: float | None) -> str:
     """The shortest decimal that reads back as the same number, which is what repr gives,
     with no `.0` at the end of a whole number; `.` for None."""
     if quality is None:
-        return _NONE
+        return _DOT
     return repr(quality).removesuffix(".0")
 
 
-def _format_optional(number: int | None) -> str:
+def _format_stratum(stratum: str | None) -> str:
+    """A stratum as it is, `.` for None."""
+    return _DOT if stratum is None else stratum
+
+
+def _format_whole_number(number: int | None) -> str:
     """A whole number, or `.` for None."""
-    return _NONE if number is None else str(number)
+    return _DOT if number is None else str(number)
