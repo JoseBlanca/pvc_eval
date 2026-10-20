@@ -1,0 +1,579 @@
+# Compare
+
+*Status: draft, 20 October 2026, for the owner's review. No code of this part exists yet. It
+joins stages that exist on `main` and are tested: the readers (`doc/spec.md` §5.2), the STR finder
+(`doc/specs/str_finder.md`), the loci, kind, strata and regions (`doc/specs/loci.md`), and the
+sample pairs, reconciliation and evaluation (`doc/specs/reconciliation.md`). It builds what
+`doc/spec.md` §3, §4 and §6 promise above them.*
+
+This part makes pvc_eval usable: `compare()` runs the stages from two VCF files to the rows of the
+table, and `pvc_eval compare` writes those rows as the table and, when asked, a summary of counts.
+It also decides where the time of a run goes when no `--str-regions` BED is given. The STR finder
+then scans the reference, and on GRCh38 that scan is the longest part of a run. One contig takes
+from seconds to about 11 minutes on one thread (measured so far, below). So `compare()` scans only
+the contigs whose loci need STR regions. It scans them in threads, a few contigs ahead of the loci,
+while the two VCF files are read in threads of their own. The design of the threads was given by
+the owner on 20 October 2026; seven points of this spec are open for the owner (listed at the end).
+
+Positions in the cases are 1-based and inclusive, as in a VCF and in the table. In the Python
+interface they are 0-based and half-open, as everywhere inside pvc_eval.
+
+## Vocabulary
+
+The terms of `doc/spec.md` §2 and of the specs above keep their meaning. These are added:
+
+| term | meaning | not |
+|---|---|---|
+| **the loci side** | the work done in the caller's thread: `build_loci`, `select_loci`, `reconcile_loci`, `locus_kind`, the stratum and `make_outcome_rows`, one locus after another | |
+| **a reader** | `parse_vcf` over one of the two files, run in a thread of its own, handing its records to the loci side through a bounded buffer | "parser" |
+| **the finder** | `segment_contig`, run on a pool of threads, one contig per thread at a time | |
+| **a contig reached** | a contig on which a reader has read at least one VCF record | |
+| **a contig planned** | a contig the finder may scan before any reader reaches it, because the indexes of the VCFs list it (below) | "prefetched" |
+| **index** | the `.tbi` or `.csi` file that bcftools or tabix writes beside a bgzipped VCF, `a.vcf.gz.tbi` or `a.vcf.gz.csi` | |
+
+## What `compare()` does
+
+### The stages, joined
+
+`compare()` does what the stages of `doc/spec.md` §4 do one after another. Run alone, those stages
+would be:
+
+1. open the reference, an `IndexedFasta`;
+2. make the sample pairs, `make_sample_pairs(a, b, sample_map=...)`, which reads the two headers
+   and stops the run for the errors of `doc/specs/reconciliation.md` §3;
+3. read the `--regions` BED with `read_regions` and the `--strata` BED with `read_strata`, each
+   whole, when given;
+4. read each file with `parse_vcf(path, reference, span_limit=..., ploidy=...)`;
+5. take the segments: from `read_str_regions` when `--str-regions` is given, and otherwise from
+   `segment_contig` over the contigs whose loci need them (see "Which contigs are scanned");
+6. `build_loci(records_a, records_b, segments, reference.contigs, chain_distance=...)`;
+7. `select_loci(loci, regions)`;
+8. `reconcile_loci(loci, reference, sample_pairs, ploidy_a=..., ploidy_b=..., phasing_cap=...)`;
+9. for each reconciled locus, `make_outcome_rows(reconciled, sample_pairs, kind=locus_kind(locus),
+   stratum=...)`, where the stratum is `pvc_stratum(locus)` with `--strata pvc`,
+   `strata.stratum(locus)` with a BED, and `None` without `--strata`.
+
+`compare()` yields the rows in the order these give them: locus by locus, and in each locus in the
+order of the sample pairs. Steps 1 to 3 run when the stream starts, at the first `next()`, so that
+an error in a header or a BED stops the run before any row. Every other error comes when the
+stream reaches it, as in the stages. The stage functions are not changed: the threads belong to
+`compare()`.
+
+**Its rows are the rows of the stages run one after another, whatever its threads.** The same rows,
+in the same order. The same first error, with the same message, after the same rows. This is
+what the threads below must keep, and the first test of this part (see "How it is verified").
+
+### Which thread does what
+
+With the default of two finder threads, a run has these threads:
+
+- **The caller's thread** runs steps 1 to 3, then the loci side, steps 6 to 9, and yields the rows.
+- **Two reader threads**, one per file, each running `parse_vcf` (step 4) into a buffer of at most
+  10,000 VCF records. A reader that finds its buffer full waits until the loci side takes from it.
+  `parse_vcf` keeps its own pool for the sample columns, 4 threads by default (`doc/spec.md` §5.2).
+- **The finder's pool**, two threads, each scanning one contig with `segment_contig`. A contig's
+  segments are kept as its STR regions alone: `build_loci` drops GENERIC segments, and they are
+  half of all segments (on chr20:30,000,001–34,000,000 of GRCh38, 23,026 of 46,051).
+
+With `--str-regions` there is no finder pool. `read_str_regions` reads the BED in the caller's
+thread, as `build_loci` asks for its lines.
+
+`finder_threads` sets the size of the pool, 2 by default. With 0, `compare()` makes no thread
+of its own. The readers are read as `build_loci` asks for their records, and each contig is
+scanned in the caller's thread when the loci side first needs its segments. That is the
+stages run one after another, which the threaded run is tested against. 1 is a real choice
+too: one finder thread still works while the readers and the loci side do, and that overlap
+is what this design is for. So `finder_threads` counts the finder's threads alone, and 0, not
+1, means no thread (`.claude/skills/coding/python.md` asks for 1 to mean no pool; it is
+counted differently here for that reason).
+
+### Which contigs are scanned
+
+The finder resolves a whole contig before it yields its first segment, and keeps no state between
+calls (the docstring of `segment_contig`). So the work can overlap between contigs, and between
+the finder and the rest, but not within one contig. What saves most time is scanning only the
+contigs whose loci need STR regions: a benchmark on chr20 must not wait for chr1 to chr19.
+
+**A contig needs scanning** when the loci side builds a locus on it that `--regions` keeps. So it
+is scanned only when both hold:
+
+- either VCF has a record on it;
+- `--regions` names it, when `--regions` is given. Every locus on another contig is skipped, and
+  its loci are built with no STR regions, which changes no row, since no row comes from them.
+
+**When a contig's scan starts.** A contig is put in line for the finder when it is planned, or as
+soon as a reader reaches it, whichever comes first, and only if `--regions`, when given, names it.
+The finder takes the contig of the lowest rank in the `.fai` among those in line.
+
+- **Planned contigs.** When both VCFs are bgzipped with an index beside them, the contigs the two
+  indexes list are planned before any record is read. An index lists every contig with a record
+  in its file, in a header that the standard library reads (`gzip` and `struct`). The reading was
+  tried on 20 October 2026 on a `.tbi` and a `.csi` written by bcftools 1.24, and on the `.tbi`
+  of GIAB's HG002 v4.2.1 for GRCh38, which lists chr1 to chr22. When only one VCF has an index, or
+  neither, no contig is planned: the other file's contigs are not known until its reader reaches
+  them, and planning one file's contigs would scan ahead of the other's.
+- **Reached contigs.** For a VCF without an index, a contig is scanned only once a reader reaches
+  it, with no guess about the contigs to come.
+
+An index decides only when a scan starts, never whether a contig's loci get their STR regions. A
+contig that an out-of-date index leaves out is still scanned when a reader reaches it. A contig it
+lists and no file has a record on is scanned for nothing, and its segments are dropped. So the
+rows never depend on the index. An index that cannot be read is ignored, with a warning:
+"a.vcf.gz.tbi could not be read as an index (it ends too soon); the contigs of a.vcf.gz are
+scanned for STR regions as the reading reaches them, which can take longer." Its contigs that the
+reference lacks are ignored, since a record on one stops the run when the reader reaches it.
+
+With `--regions` and no index, the contigs it names are not scanned ahead. GIAB's benchmark
+regions name chr1 to chr22, and scanning them ahead for a VCF of chr20 would cost the hours this
+section is there to save. This scans fewer contigs than "scan only the contigs `--regions`
+names" read literally, and never more.
+
+**How far ahead.** The pool starts a scan only while fewer than `finder_threads + 1` contigs are
+being scanned or scanned and not yet read by the loci side, so that at most two contigs wait,
+scanned, ahead of the loci. One exception keeps the loci side from waiting on a full pool: the
+contig the loci side is waiting for is always started. A contig the loci side passes without
+needing it, because no record turned out to be on it, is dropped from the line or, if scanned,
+dropped.
+
+### How the segments reach `build_loci`
+
+`build_loci` takes one iterator of segments and reads it only as far as its records need: before
+it handles a record, it reads the segments up to the first that comes after the end of the
+record's span, by contig rank and then position (`doc/specs/loci.md`, "What `build_loci` holds").
+`compare()` hands it an iterator that goes through the contigs of the `.fai` in order, and that
+decides for each contig, when it gets there, whether to give its STR regions. It cannot ask the
+readers which contigs are still to come without waiting on them, and a reader may be waiting on a
+full buffer that only the loci side empties. So the iterator decides from the records the loci
+side has taken from the two buffers so far, and from nothing else.
+
+For each contig *X*, in the order of the `.fai`:
+
+1. If a record on *X* has been taken from either buffer, and `--regions`, when given, names *X*,
+   it yields the STR regions of *X*, waiting for the finder if the scan is not done.
+2. Otherwise it yields one GENERIC segment at the first base of *X*, `GenomeSegment(X, 0, 1,
+   RegionType.GENERIC, None)`. This segment is not part of the segmented genome. It tells
+   `build_loci` that no segment before position 0 of *X* is to come, which `build_loci` needs
+   only when a record's span ends at the last base of the contig before *X*. `build_loci` drops
+   GENERIC segments, so this one changes no locus.
+3. When asked for the next segment after that, it decides *X* again by step 1; if *X* still has
+   no record taken, it goes on to the next contig.
+
+Step 3 is right because `build_loci` asks for a segment past the one at (*X*, 0) only for a record
+whose span ends at or after it, so a record on *X* or a later contig. That record has been taken.
+`build_loci` handles records in order, so no record on a contig before it is still to come. If no
+record on *X* has been taken by then, *X* has none.
+
+So a contig in the middle of the `.fai` with no record costs one GENERIC segment and no scan. The
+iterator ends after the last contig of the `.fai`. With `finder_threads=0`, step 1 runs
+`segment_contig` in the caller's thread.
+
+### Errors, and stopping early
+
+**An error in a thread reaches the caller where it would have without threads.** An exception a
+reader raises, a VCF out of order at line 2204 say, goes into its buffer after the records read
+before it. The loci side raises it when it takes it, the same exception object with its message
+and traceback. An exception the finder raises for a contig, a byte of the FASTA that is not a
+letter, is raised when the iterator above asks for that contig's segments. The rows before it are
+the rows the stages run alone give before the same error. An error in a contig that turns out not
+to be needed is never raised, as it is not without threads.
+
+Warnings are logged from the thread that finds them, through the module's logger, as the stages
+log them. `parse_vcf` logs its warnings when a file's reading ends, which with a reader thread can
+come before the rows of the last loci rather than after them. The text is the same.
+
+**When the caller stops reading the rows**, by closing the iterator, by an exception in the code
+that reads it, or by Ctrl-C, `compare()` sets a stop that every thread checks:
+
+- a reader blocked on its full buffer wakes, closes its `parse_vcf` stream, which closes its file
+  and its pool, and ends;
+- the finder starts no new contig. A contig already being scanned is not waited for. Its thread
+  ends when the scan does, a few seconds to about 11 minutes later on GRCh38 (measured so far,
+  below), and its segments are dropped. The threads are daemon threads, so they do not keep
+  Python from exiting;
+- nothing a thread raises after the stop reaches the caller.
+
+`compare()` closes the reference when it ends. A scan already started has read its contig's bases
+by then, since `segment_contig` reads them all when it is called.
+
+## The Python interface
+
+`compare` and `CompareConfig` live in `pvc_eval.compare`; the table and the summary in
+`pvc_eval.table`.
+
+`CompareConfig` holds the options of `doc/spec.md` §3 that change the rows, with the defaults of
+the stages. `strata` is a path to a BED, or `PVC_STRATA` for `--strata pvc`. A sentinel is used
+because a path named `pvc` is a BED (`doc/spec.md` §3). `compare()` checks the ploidies, the
+phasing cap, the span limit and the chain distance when the stream starts, and raises
+`ValueError` naming the field. The command line checks the same values first, and turns a wrong
+one into its own message (see "The `compare` command").
+
+```python
+PVC_STRATA = sentinel("PVC_STRATA")
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CompareConfig:
+    regions: Path | None = None
+    strata: Path | PVC_STRATA | None = None
+    str_regions: Path | None = None
+    sample_map: Path | None = None
+    ploidy_a: int = DEFAULT_PLOIDY              # 1 or 2
+    ploidy_b: int = DEFAULT_PLOIDY
+    phasing_cap: int = PHASING_CAP              # 1 or more
+    span_limit: int | None = DEFAULT_SPAN_LIMIT  # 1 or more, or None for no limit
+    chain_distance: int = DEFAULT_CHAIN_DISTANCE  # 0 or more
+
+DEFAULT_FINDER_THREADS = 2
+
+def compare(a: Path, b: Path, reference: Path, config: CompareConfig = CompareConfig(), *,
+            finder_threads: int = DEFAULT_FINDER_THREADS) -> Iterator[OutcomeRow]: ...
+```
+
+`compare()` yields every row, *reference in both* included, as `doc/spec.md` §3 says. It raises
+what the stages raise: `PvcEvalInputError` for a fault of the input, and `ValueError` for a
+setting out of range or a `finder_threads` that is not a whole number of 0 or more. It has no
+`evaluator` parameter (**Open 1**).
+
+The table and the summary are written by one function, since the command line reads the rows
+once and writes both from them. `format_table_row` gives one row's fields as text, for a user who
+writes the table another way.
+
+```python
+TABLE_COLUMNS: tuple[str, ...]      # the column names of doc/spec.md §6, in its order
+SUMMARY_COLUMNS: tuple[str, ...]    # ("sample_a", "sample_b", "outcome", "kind", "stratum", "count")
+
+def format_table_row(row: OutcomeRow) -> tuple[str, ...]: ...
+
+def write_table(rows: Iterable[OutcomeRow], output: Path, *, summary: Path | None = None,
+                all_rows: bool = False) -> None: ...
+```
+
+`write_table` writes every row to `output`, except, without `all_rows`, those whose outcome is
+*reference in both*; it counts every row in the summary. It raises `PvcEvalInputError` for an
+output it cannot write (see "Writing the files"), and lets through what `rows` raises, after
+removing what it had written.
+
+## The table
+
+`doc/spec.md` §6 gives the columns and what each holds. This section gives how each field of
+`OutcomeRow` (`doc/specs/reconciliation.md` §6) becomes text (**Open 3** for the choices the
+owner has not made).
+
+The file is UTF-8 text, one line per row, its fields separated by tabs, each line ending in `\n`.
+The first line is the column names, with no `#` (**Open 3**): `chrom`, `start`, `end`, `kind`,
+`stratum`, `str_regions`, `sample_a`, `sample_b`, `outcome`, `alleles`, `genotype_a`,
+`genotype_b`, `possible_a`, `possible_b`, `quality_a`, `quality_b`, `gq_a`, `gq_b`, `records_a`,
+`records_b`, `invalid_reason_a`, `invalid_reason_b`. A field that is `None` is written `.`.
+
+| column | from the field | written |
+|---|---|---|
+| `chrom` | `contig` | as it is |
+| `start` | `start` | `start + 1`: 1-based |
+| `end` | `end` | `end` as it is: one past the last 0-based position is the last 1-based one |
+| `kind` | `kind` | the enum's value: `SNP`, `indel`, `STR`, `complex` |
+| `stratum` | `stratum` | as it is; `.` for `None` (no `--strata`), and `.` from a BED no interval of which the locus overlaps |
+| `str_regions` | `str_regions` | each region as `start+1-end:type`, with `:motif` after an STR segment's, and `start+1-end` alone for a region with no type; joined with `,`; `.` for none |
+| `sample_a`, `sample_b` | `sample_a`, `sample_b` | as they are |
+| `outcome` | `outcome` | the enum's value, `same alleles, other genotype` for one |
+| `alleles` | `alleles` | joined with `,`, an empty locus allele, a deletion of the whole locus, written `-` |
+| `genotype_a`, `genotype_b` | `genotype_a`, `genotype_b` | the indices joined with `/`, `MISSING` written `.` |
+| `possible_a`, `possible_b` | `possible_a`, `possible_b` | a whole number |
+| `quality_a`, `quality_b` | `quality_a`, `quality_b` | the shortest decimal that reads back as the same number, with no `.0` at the end of a whole number (**Open 3**) |
+| `gq_a`, `gq_b` | `gq_a`, `gq_b` | a whole number |
+| `records_a`, `records_b` | `records_a`, `records_b` | a whole number |
+| `invalid_reason_a`, `invalid_reason_b` | `invalid_reason_a`, `invalid_reason_b` | the enum's value |
+
+One row, worked. The reference at 1-based 100–110 is `CATATATATAT`, and an AT repeat at
+101–110 is an STR segment. File A has `100 CAT C 0/1`, QUAL 29.5 and GQ 45, for HG002, and file B
+no record there. The span of the deletion reaches the end of the repeat, which the record touches,
+so the locus is 100–110, 0-based (99, 110). With `--strata pvc`:
+
+```
+chrom  start  end  kind  stratum  str_regions     sample_a  sample_b  outcome    alleles                  genotype_a  genotype_b  possible_a  possible_b  quality_a  quality_b  gq_a  gq_b  records_a  records_b  invalid_reason_a  invalid_reason_b
+chr20  100    110  STR   str      101-110:str:AT  HG002     HG002     only in A  CATATATATAT,CATATATAT  0/1         0/0         1           1           29.5       .          45    .     1          0          .                 .
+```
+
+(The columns are aligned here for reading; in the file they are separated by one tab.)
+
+Three fields can look alike and differ. A haploid genotype missing on its one haplotype,
+`(MISSING,)`, is written `.`, as is a sample with no genotype in the row (`None`): `possible_a`
+tells them apart, 1 or more against `.` or 0. A diploid `(MISSING, MISSING)` is `./.`. A stratum of
+`.` means no `--strata` or no class from the BED, and the user knows which they gave.
+
+**The QUAL.** `VcfRecord.qual` is a float, so the text the VCF wrote is not kept. `50` and `50.00`
+are both 50.0 and both written `50`; `29.53` is written `29.53`; `1e-05` is written `1e-05`,
+as Python's `repr` gives it. Writing QUAL as the VCF wrote it needs `VcfRecord` to keep the text,
+which changes `pvc_eval.vcf` (**Open 3**).
+
+## The summary
+
+With `--summary`, a second file counts the rows by sample pair, outcome, kind and stratum, in a
+long table (**Open 2**): one line per combination that has at least one row, with the columns
+`sample_a`, `sample_b`, `outcome`, `kind`, `stratum` and `count`, and a first line of these names.
+The values are written as in the table, `.` for no stratum.
+
+- Every row `compare()` yields is counted, *reference in both* included, with or without
+  `--all-rows`. Loci that `--regions` skips give no row and are not counted.
+- The lines come by sample pair, in the order of the pairs; then by outcome, in the order of
+  `doc/spec.md` §5.5's table; then by kind, in the order SNP, indel, STR, complex; then by
+  stratum, sorted by code point.
+- A combination with no row has no line, so a count of 0 is never written.
+
+For a cohort, a pair that disagrees more than others shows in its lines. The totals over samples
+are one group-by away, in any table tool.
+
+```
+sample_a  sample_b  outcome            kind   stratum  count
+HG002     HG002     reference in both  SNP    generic  1204
+HG002     HG002     same genotype      SNP    generic  80311
+HG002     HG002     same genotype      indel  generic  5102
+HG002     HG002     same genotype      STR    str      2210
+```
+
+(Aligned for reading; separated by tabs in the file. The counts are made up for the example.)
+
+## Writing the files
+
+The table and the summary are each written to a temporary file beside it, `<path>.tmp`, and
+renamed to their path when every row is written, as `pvc_eval str-regions` writes its BED. A run
+stopped by an error or by Ctrl-C removes the temporary files and leaves the table and the summary
+as they were before it. A run killed by a signal that Python cannot catch leaves the `.tmp` files
+behind.
+
+A path ending in `.gz` is written compressed with gzip, at level 6. It is not bgzipped, so tabix
+cannot index it (**Open 3**).
+
+Before the first row is read, `write_table` opens both temporary files. It raises
+`PvcEvalInputError` naming the option for a path that is a directory, whose directory does not
+exist, or that cannot be written there, with the messages `str-regions` gives for `--output`, and
+for a `--summary` equal to `--output`.
+
+## The `compare` command
+
+```
+pvc_eval compare --reference ref.fa --a a.vcf.gz --b b.vcf.gz --output loci.tsv
+                 [--regions regions.bed] [--strata strata.bed|pvc] [--str-regions str.bed]
+                 [--sample-map pairs.tsv] [--ploidy-a N] [--ploidy-b N] [--phasing-cap N]
+                 [--span-limit N|none] [--chain-distance N]
+                 [--summary summary.tsv] [--all-rows]
+```
+
+These are the options of `doc/spec.md` §3, with the same meanings and defaults, less
+`--evaluator` (**Open 1**). The command runs `compare()` with two finder threads and writes its
+rows with `write_table`. The STR finder runs with its defaults. A user who wants other parameters
+runs `pvc_eval str-regions` with them and passes its BED with `--str-regions`. Nothing else is
+set from the command line.
+
+**Values out of range** stop the run before anything is read, with status 1 and a message naming
+the option, as `str-regions` does for its own: "--ploidy-a 3: a ploidy is 1 or 2. Correct the
+option, and run again." `--span-limit` takes a whole number of 1 or more or the word `none`;
+`--chain-distance` a whole number of 0 or more; `--phasing-cap` one of 1 or more. A value that is
+not a number at all is argparse's error, with its usage line and status 2, as in `str-regions`.
+
+**Messages**, all on stderr (**Open 5**):
+
+- the warnings of the stages, as they log them: the samples in no pair, the VCF records skipped or
+  cut, an index that could not be read;
+- one line when the finder starts a contig, since on GRCh38 a contig takes up to about 11 minutes
+  and nothing else would show: "chr1: finding STR regions in 248,956,422 bases.";
+- one line when the last row of a contig has been written: "chr20: 31,204 loci compared, 1,880
+  skipped by --regions, 2,113 rows written; 4 min 12 s since the start." The clause about
+  `--regions` is there only when it is given.
+
+These are logged by `compare()` at INFO through its logger. The command line sends INFO and above
+to stderr, the message alone on each line. A Python user sees them only by setting up logging.
+
+**Exit statuses:**
+
+| status | when |
+|---|---|
+| 0 | the table, and the summary if asked, are written |
+| 1 | a fault of the input (`PvcEvalInputError`): its message, with no traceback, as `str-regions` does; or a defect of pvc_eval, with its traceback, as Python ends on an exception it does not catch |
+| 2 | an option argparse refuses: its usage line and its message |
+| 130 | Ctrl-C: "Stopped; nothing was written." with no traceback, the temporary files removed |
+
+## How it runs
+
+**What is held, and how it grows.** Besides what each stage holds by its own spec, `compare()`
+holds:
+
+| what | at most | measured |
+|---|---|---|
+| each reader's buffer | 10,000 VCF records | 665 bytes per record with one GATK-like sample, 6,350 bytes with 200: so 7 MB and 64 MB per file |
+| the finder's scans in progress | `finder_threads` contigs at once | chr1 forecast at 1 to 1.5 GB per scan (below) |
+| scanned contigs waiting for the loci side | `finder_threads + 1`, less those being scanned, plus the one the loci side reads | STR regions take about 0.85 MiB per Mb of contig: chr1, 249 Mb, about 210 MiB |
+
+None of these grows with the number of contigs or the length of the VCFs. The bytes per record
+were measured with tracemalloc on records `parse_vcf` held, from VCFs that
+`benchmarks/make_vcf.py` wrote over chr20 of GRCh38 (chr20:1–5,000,000 with 200 samples
+`--column gatk`, 18,127 records, and chr20:1–20,000,000 with one sample `--column gatk --mean-gap
+650`, 30,401 records). The STR regions per Mb were measured on chr20:30,000,001–34,000,000: 46,051
+segments held 6.8 MiB, half of them STR regions. All of it on 20 October 2026, at aaaf31b, on the
+Apple M5 Pro, CPython 3.15.0t with the GIL off.
+
+**What the threads gain.** The STR finder's speed is being measured in the session working on
+it, on branch `perf/str-finder`. Its first figures, at b71c83c on the same machine, one run each
+on stretches of chr1 starting at 10 Mb: 1 Mb in 1.7 s, 4 Mb in 5.7 s, 16 Mb in 23.7 s, 64 Mb in
+about 106 s with a peak of 129 MB at 16 Mb. Part of the time grows with the square of the contig's
+length, and chr1 whole is forecast, not measured, at 10 to 12 minutes and 1 to 1.5 GB on one
+thread. Reading chr20 with `parse_vcf` takes 0.7 s with one sample and 13 s with 200
+(`doc/reports/perf-vcf-parser-2026-10-19.md`). For a run, these mean:
+
+- **One contig, the usual benchmark on chr20.** The finder's scan of chr20, about 100 s, is the
+  wait. The readers fill their buffers meanwhile. With one sample, 10,000 records are less than a
+  second of reading, so the threads gain under a second. What saves time on such a run is that
+  chr1 to chr19 are not scanned, which would cost more than an hour on one thread by
+  extrapolating the figures above. A buffer large enough to hold all of chr20 with 200 samples would hide 13 s and
+  cost about 1.5 GB per file, which this spec does not take.
+- **Many contigs.** Two finder threads scan two contigs at once while the loci side works on an
+  earlier one. A whole genome, about 1¾ hours on one thread by extrapolating the figures above,
+  takes about half that, at the cost of a second scan's memory, 1 to 1.5 GB on the largest
+  contigs.
+- **With `--str-regions`**, nothing is scanned, and only the readers run beside the loci side.
+
+The finder's figures will change, as that session's work goes on. Each change moves the numbers
+of this section, and none changes the design.
+
+## How it is verified
+
+Each check is made at the highest function at which it can be seen, with its expected result as
+a literal. The tests run on small files written to `tmp_path`: a FASTA of four contigs, of a few
+hundred bases each, with STR regions the finder admits on three of them, and VCFs written as text,
+some of them gzipped by the test with `gzip`, and indexes for some of them.
+
+**The rows are the stages' rows, at `compare()`.** On the four-contig case, the rows of
+`compare()` with `finder_threads` 0, 1, 2 and 4 are equal to each other and to those of the nine
+steps of "The stages, joined", written out in the test, one after another. Each is run with:
+file A with records on contigs 1 and 3 and file B on 2 and 3; both indexed, one indexed, neither;
+with `--regions` naming contig 3 alone; and with `--str-regions`. The expected rows of one case,
+a locus on contig 3 that an STR region widens, are written as literal `OutcomeRow` values.
+
+**Which contigs are scanned, at `compare()`.** From the INFO lines "finding STR regions", which the
+test reads from the log:
+
+- with neither file indexed, the contigs with records, and not contig 4, which has none;
+- with `--regions` naming contig 3, contig 3 alone, whatever the indexes;
+- with both indexed and an index that lists contig 4 but no record on it, contig 4 is scanned and
+  its rows are the same as without the index;
+- with an index that leaves out contig 2, contig 2 is still scanned and the rows are the same;
+- with a record whose span ends on the last base of contig 1 and the next on contig 3, the rows
+  are the stages' rows. This is the case of the GENERIC segment at the first base of the next
+  contig.
+
+**The index reader**, on a `.tbi` and a `.csi` written by bcftools 1.24 (`bcftools index -t` and
+`bcftools index -c` on a small VCF in `tests/data/`, with the commands in its `README.md`): the
+contigs listed are a literal list. An index cut short gives the warning of "Which contigs are
+scanned", with its text.
+
+**Errors through the threads, at `compare()`:** a VCF out of order on contig 3, a byte of the
+FASTA that is not a letter on contig 2, and a `--strata pvc` with an untyped `--str-regions`
+region. With threads and with `finder_threads=0`, the same exception type and message, after the
+same rows. A FASTA error on a contig no record is on is not raised.
+
+**The bound and the stop, at `compare()`.** With the finder held on a `threading.Event` the test
+sets, through a stand-in for `segment_contig` that the test puts in `pvc_eval.compare`, a reader
+of a file of 50,000 records has taken at most 10,000 plus one batch of them from `parse_vcf`.
+After the first row is taken and the iterator closed: within 5 seconds, no reader thread is alive,
+and no scan starts after the close, by the INFO lines and by the stand-in's count of calls.
+
+**The table, at `format_table_row`**, on `OutcomeRow` values built in the test, each field as a
+literal: 1-based coordinates; `None` as `.`; a `MISSING` haplotype; a haploid genotype; an empty
+locus allele as `-`; an STR segment with its motif, an STR bundle, a satellite and a region with no
+type; a QUAL of 50.0, 29.53 and 1e-05; each enum's value.
+
+**The files, at `write_table`:** the header and the rows of a short list, with and without
+`all_rows`; a `.gz` path, read back with `gzip`; rows whose iterator raises after two rows, which
+leave no output, no `.tmp`, and an older file at the path unchanged; each refusal of "Writing the
+files" with its message; and the summary of a list of rows over two sample pairs, with its order
+and its counts as literals, *reference in both* counted without `all_rows`.
+
+**The command, at `main()`:** a run on the four-contig case writes the table that `write_table`
+writes for `compare()`'s rows; each option's value out of range, with its message and status 1; a
+`PvcEvalInputError` from a stage, its message on stderr, no traceback, status 1; the INFO lines on
+stderr, matched by pattern since they hold a time.
+
+**A file against itself over real data**, the check of `doc/spec.md` §7.3: GIAB's HG002 v4.2.1
+benchmark VCF for GRCh38 against itself, over chr20, every row *same genotype*, *reference in
+both*, *missing in both*, *invalid in both* or *too complex*, the last three only where the file
+itself has a missing haplotype, an invalid sample or a sample over the cap. It reads GRCh38 from
+the path in `PVC_EVAL_GRCH38` and the VCF from `PVC_EVAL_HG002_VCF`, and is skipped, with a
+message naming the variable, without either (**Open 6**). It is marked slow, since the finder's
+scan of chr20 takes about 100 s.
+
+## Changes to `doc/spec.md`
+
+After the owner approves this spec, in commits of their own:
+
+- §3: a pointer to this spec for `compare()`, the command, the table writer and the summary; the
+  owner's answers to the open points, among them, if Open 1 is taken, `--evaluator` and the
+  `evaluator` parameter out until §8 is built; `finder_threads` in `compare()`'s signature.
+- §6: a pointer to "The table" and "The summary" of this spec, and the summary's form.
+- §4, if Open 4 is taken: `RegionType` a `StrEnum`.
+
+## Open points
+
+**Open 1. `--evaluator` and the `evaluator` parameter.** None of the other evaluators of
+`doc/spec.md` §8 exists. Leaving the option and the parameter out until one is built breaks nobody
+when they are added, since both would have the default `pvc`. Keeping them now gives an option
+whose only other values stop the run with an error. Recommended: leave them out. Meanwhile this
+spec leaves them out.
+
+**Open 2. The summary's form.** A long table, one line per sample pair, outcome, kind and stratum
+with its count, as "The summary" gives it, keeps each pair apart, so a cohort shows which samples
+disagree, and its totals are one group-by away. A wide table, one line per outcome with a column
+per kind, reads at a glance for one pair, and a cohort needs one table per pair or loses which
+pair disagrees. Recommended: the long table. *Reference in both* is always counted, and loci
+skipped by `--regions` never are. Meanwhile the long table.
+
+**Open 3. The table's format.** Four choices:
+
+- a header line of the column names, with no `#`, which pandas, R and `csvtk` read as names;
+  with `#`, `bcftools`-style tools skip it, and pandas reads `#chrom` as the first name;
+- QUAL as the shortest decimal that reads back as the same number. QUAL exactly as the VCF wrote
+  it, `50.00` for `50.00`, needs `VcfRecord` to keep QUAL's text, a change to `pvc_eval.vcf`,
+  which this part may not make. The two differ only in trailing zeros and in how an exponent is
+  written;
+- a path ending in `.gz` written with gzip, which `zcat`, pandas and R read. bgzip would let
+  tabix index the table, whose rows come by contig and start; it needs a writer of BGZF blocks on
+  `zlib`, about 40 lines, which can be added when someone needs to look rows up by position;
+- the table and the summary written to `.tmp` files and renamed, so a failed run leaves no
+  half-written table.
+
+Recommended: all four as written. Meanwhile, these.
+
+**Open 4. `Kind` and `RegionType` as `StrEnum`.** `Outcome` and `InvalidReason` are `StrEnum`,
+`Kind` and `RegionType` plain `Enum`, so `f"{Kind.SNP}"` gives `Kind.SNP` where `f"{Outcome.
+SAME_GENOTYPE}"` gives `same genotype`. The table writer uses `.value` for all four and works either
+way, so the change is for whoever formats them next. It changes `doc/spec.md` §4,
+`doc/specs/loci.md`, `src/pvc_eval/kind.py` and `src/pvc_eval/segments.py`, which the session on
+`perf/str-finder` is changing too. Recommended: make them `StrEnum`, in a commit of their own.
+Meanwhile they stay `Enum`.
+
+**Open 5. The messages.** Warnings and the progress lines on stderr, an input error with its
+message, no traceback and status 1, as "The `compare` command" gives them, with one line when a
+contig's scan starts and one when its rows are written. Without the first, a run on chr1 shows
+nothing for up to about 11 minutes. Recommended: as written. Meanwhile, as written.
+
+**Open 6. Real data for the end-to-end check.** GIAB's HG002 v4.2.1 benchmark VCF for GRCh38, with
+its `.tbi`, is at
+`/Users/jose/devel/pop_var_caller/benchmarks/giab/all_bench_regions/vcfs/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz`,
+and GRCh38's analysis set without alts at
+`/Users/jose/genomes/h_sapiens/gca_grch38/GCA_000001405.15_GRCh38_no_alt_plus_hs38d1_analysis_set.fna`.
+On chr20 it holds 85,951 records, and `bcftools norm -c e` (1.24) finds no REF that differs
+from the reference. Recommended: use these, through the variables `PVC_EVAL_GRCH38` and
+`PVC_EVAL_HG002_VCF`, over chr20. Meanwhile, these.
+
+**Open 7. Reading the indexes.** Planning the contigs from the indexes needs a reader of the
+`.tbi` and `.csi` headers. With `gzip` and `struct` it is about 15 lines and adds no dependency;
+without it, every contig is scanned only when a reader reaches it, and on a bgzipped VCF the
+finder starts each contig a buffer's worth of records later. Recommended: the reader, in
+`pvc_eval.compare`. Meanwhile, the reader.
+
+## Not in this spec
+
+- The other evaluators of `doc/spec.md` §8, and the `evaluator` parameter (Open 1).
+- The re-spellings of `doc/spec.md` §7.4: the next part, once `compare` runs.
+- pvc's hard cases of `doc/spec.md` §7.5 (its Open 3).
+- The STR finder's speed: the performance session on `perf/str-finder`.
+- Running loci on threads, and how many sample-parsing threads each reader uses: the stages keep
+  their defaults; both are for the performance work, once a whole run is measured.
+- The STR finder's parameters on `compare`: `str-regions` takes them.
