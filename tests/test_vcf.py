@@ -2137,3 +2137,16 @@ def test_ref_that_differs_counts_only_the_records_read_before_it(
         " 'C' there. The 2 records before it with no symbolic allele agree with the"
         " reference, so this line looks damaged: correct it or remove it, and run again."
     )
+
+
+def test_contigs_given_as_one_string_raises_type_error(
+    tmp_path: Path, four_contigs: IndexedFasta
+) -> None:
+    # A str is a collection of its letters, which would read nothing in silence.
+    path = write_vcf(tmp_path, CONTIG_LINES)
+
+    with pytest.raises(
+        TypeError,
+        match=r"^contigs must be a collection of contig names or None, not the string 'chr1'$",
+    ):
+        list(parse_vcf(path, four_contigs, contigs="chr1"))

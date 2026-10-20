@@ -211,7 +211,8 @@ def parse_vcf(
     taken as absent, and those are counted in a warning at the end too. Raises
     ValueError, when the stream starts, for a span_limit
     that is neither None nor a whole number of 1 or more, for a num_threads that is not
-    a whole number from 1 to 256, and for a ploidy that is not a whole number of 1 or more.
+    a whole number from 1 to 256, and for a ploidy that is not a whole number of 1 or more;
+    TypeError, when the stream starts, for contigs given as one string.
     """
     # §5.2: a limit of 0 would cut every insertion, whose span holds the base after it.
     if span_limit is not None and not _is_whole_number_from_1(span_limit):
@@ -224,6 +225,11 @@ def parse_vcf(
         )
     if not _is_whole_number_from_1(ploidy):
         raise ValueError(f"ploidy must be a whole number of 1 or more, not {ploidy!r}")
+    # A str is a collection of its letters, which would read nothing in silence.
+    if isinstance(contigs, str):
+        raise TypeError(
+            f"contigs must be a collection of contig names or None, not the string {contigs!r}"
+        )
     contigs_read = None if contigs is None else frozenset(contigs)
     records_in_file_order = _parse_records_in_file_order(
         path, reference, span_limit, num_threads, ploidy, contigs_read
