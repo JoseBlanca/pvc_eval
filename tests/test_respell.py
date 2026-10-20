@@ -390,6 +390,37 @@ def test_an_output_that_is_the_input_raises(case_files: CaseFiles, tmp_path: Pat
     assert vcf.read_text() == text
 
 
+def test_an_output_that_is_a_hard_link_to_the_input_raises(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    reference = case_files.write_reference(1, "GACGTA")
+    vcf = _write_vcf(tmp_path / "a.vcf", ["2 A T 0/1"])
+    text = vcf.read_text()
+    output = tmp_path / "b.vcf"
+    output.hardlink_to(vcf)
+    with pytest.raises(ValueError, match="is the input"):
+        respell_by_decomposing(vcf, reference, output)
+    assert vcf.read_text() == text
+
+
+def test_an_output_named_as_the_input_in_other_case_raises_where_case_is_ignored(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    # macOS's file system, APFS as it comes, ignores case, so A.VCF there is a.vcf; on a file
+    # system that does not, A.VCF is another file and is written.
+    reference = case_files.write_reference(1, "GACGTA")
+    vcf = _write_vcf(tmp_path / "a.vcf", ["2 A T 0/1"])
+    text = vcf.read_text()
+    output = tmp_path / "A.VCF"
+    if not output.exists():
+        respell_by_decomposing(vcf, reference, output)
+        assert _read_case_lines(output) == ["2 A T 0|1:1"]
+        return
+    with pytest.raises(ValueError, match="is the input"):
+        respell_by_decomposing(vcf, reference, output)
+    assert vcf.read_text() == text
+
+
 def test_records_are_sorted_by_the_contigs_of_the_input(
     case_files: CaseFiles, tmp_path: Path
 ) -> None:

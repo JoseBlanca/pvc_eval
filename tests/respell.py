@@ -172,7 +172,9 @@ def _is_any_piece_near(
 
 
 def _check_output(vcf: Path, output: Path) -> None:
-    if output.resolve() == vcf.resolve():
+    """output must not be vcf, under its own name or another: a hard link, or a name that
+    differs in case on a file system that ignores it."""
+    if output.resolve() == vcf.resolve() or (output.exists() and output.samefile(vcf)):
         raise ValueError(f"the output {output} is the input VCF; give another path to write to")
 
 
