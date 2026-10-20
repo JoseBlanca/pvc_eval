@@ -1652,6 +1652,28 @@ def test_a_record_joins_the_run_before_it_one_time_in_two(
     assert all(400 <= count <= 600 for count in outputs.values()), outputs
 
 
+# §10: 800 unphased heterozygous SNPs with 2 positions between each two make one chain of
+# neighbours none of which merges with another; a search that tried every run of the chain
+# from every record took 43 s on 20 October 2026.
+@pytest.mark.slow
+def test_merging_800_neighbouring_snps_that_do_not_merge_takes_under_5_seconds(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    num_snps = 800
+    bases = "GATTACA" * (3 * num_snps // 7 + 1)
+    reference = case_files.write_contigs({CONTIG: bases})
+    lines = []
+    for pos in range(2, 3 * num_snps + 2, 3):
+        ref = bases[pos - 1]
+        lines.append(f"{pos} {ref} {'C' if ref != 'C' else 'G'} 0/1")
+    vcf = _write_vcf(tmp_path / "a.vcf", lines)
+    started = time.perf_counter()
+    respell_by_merging(vcf, reference, tmp_path / "b.vcf")
+    elapsed = time.perf_counter() - started
+    assert read_case_lines(tmp_path / "b.vcf") == lines
+    assert elapsed < 5, f"{elapsed:.1f} s"
+
+
 # --- The oracle and bcftools (§2.3, §8, §9) ---
 
 _BCFTOOLS = shutil.which("bcftools")

@@ -1206,14 +1206,18 @@ def _find_chained_records(
 ) -> list[_RecordEdits]:
     """The records a run from input_records[first] can hold: it and those after it,
     consecutive, of its contig and each mergeable, while each one's REF overlaps the stretch
-    of those before it or starts at most _MAX_POSITIONS_BETWEEN positions after it. Empty
-    when the first is not mergeable."""
+    of those before it or starts at most _MAX_POSITIONS_BETWEEN positions after it, and up to
+    the first that would give a sample's heterozygous VCF genotypes a second phase unit, which
+    no longer run repairs (§6). Empty when the first is not mergeable."""
     chained: list[_RecordEdits] = []
     stretch_start, stretch_end = 0, 0
+    units_by_sample: dict[int, _PhaseUnit] = {}
     for input_record in itertools.islice(input_records, first, None):
         if input_record.place not in mergeable_places:
             break
         record_edits = record_index.by_place[input_record.place]
+        if not _is_adding_one_phase_unit(record_edits, units_by_sample):
+            break
         vcf_record = record_edits.vcf_record
         start, end = vcf_record.start, vcf_record.end
         if chained:
@@ -1229,6 +1233,23 @@ def _find_chained_records(
             stretch_start, stretch_end = start, end
         chained.append(record_edits)
     return chained
+
+
+def _is_adding_one_phase_unit(
+    record_edits: _RecordEdits, units_by_sample: dict[int, _PhaseUnit]
+) -> bool:
+    """Whether the heterozygous VCF genotypes of a record are, for each sample, in the phase
+    unit units_by_sample gives the sample, or in its first one; units_by_sample is given those
+    of the record when they are."""
+    record_units = {
+        sample: _find_phase_unit(genotype, record_edits.place)
+        for sample, genotype in enumerate(record_edits.vcf_record.genotypes)
+        if isinstance(genotype, VcfGenotype) and len(set(genotype.alleles)) > 1
+    }
+    if any(units_by_sample.get(sample, unit) != unit for sample, unit in record_units.items()):
+        return False
+    units_by_sample.update(record_units)
+    return True
 
 
 def _count_drawn_records(num_chained: int, draws: random.Random) -> int:
