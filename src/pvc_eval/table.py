@@ -6,6 +6,7 @@ format_table_row, one row's fields as text; write_table, which writes the table 
 summary from the rows.
 """
 
+import os
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from contextlib import suppress
@@ -107,14 +108,11 @@ def write_table(
 
     Raises PvcEvalInputError, before any row is read, naming --output or --summary, for a
     path that is a directory or whose `.tmp` cannot be made, and for a summary that is the
-    same file as output; and, naming the option, for an error of the system while a file is
+    same file as output, however either is spelled, or one is the other's `.tmp`; and, naming the option, for an error of the system while a file is
     written or renamed, a full disk among them.
     """
-    if summary is not None and summary.resolve() == output.resolve():
-        raise PvcEvalInputError(
-            f"--summary {summary} is the same file as --output {output}. Give the summary a"
-            " path of its own, and run again."
-        )
+    if summary is not None:
+        _check_distinct_paths(output, summary)
     targets = [("--output", output)]
     if summary is not None:
         targets.append(("--summary", summary))
@@ -127,6 +125,8 @@ def write_table(
             compress = path.name.endswith(".gz")
             file = open_temporary_output(path, temporary, option, compress=compress)
             outputs.append(_Output(option, path, temporary, file))
+        if len(outputs) == 2:
+            _check_distinct_files(*outputs)
         _write_rows(rows, outputs[0], outputs[1] if len(outputs) == 2 else None, all_rows=all_rows)
         for written in outputs:
             _close_output(written)
@@ -138,6 +138,54 @@ def write_table(
     except BaseException:
         _remove_temporary_files(outputs)
         raise
+
+
+def _check_distinct_paths(output: Path, summary: Path) -> None:
+    """Raise PvcEvalInputError when summary and output, or one and the other's `.tmp`, are
+    one file by their paths, or are two files that exist and are one.
+
+    Checked before anything is opened, so that a refused run does not empty an earlier
+    file.
+    """
+    pairs = [
+        (output, summary),
+        (output, Path(f"{summary}.tmp")),
+        (Path(f"{output}.tmp"), summary),
+    ]
+    for first, second in pairs:
+        if first.resolve() == second.resolve() or (
+            first.exists() and second.exists() and first.samefile(second)
+        ):
+            raise _make_same_file_error(output, summary)
+
+
+def _check_distinct_files(table: _Output, summary: _Output) -> None:
+    """Raise PvcEvalInputError when the two temporary files, now open, are one file, or one
+    is the other's path: names that differ only in letter case on a file system that
+    ignores it, which _check_distinct_paths cannot see while neither file exists."""
+    table_stat = os.fstat(table.file.fileno())
+    summary_stat = os.fstat(summary.file.fileno())
+    if (
+        os.path.samestat(table_stat, summary_stat)
+        or _is_file_at(summary.path, table_stat)
+        or _is_file_at(table.path, summary_stat)
+    ):
+        raise _make_same_file_error(table.path, summary.path)
+
+
+def _is_file_at(path: Path, file_stat: os.stat_result) -> bool:
+    """Whether the file at path, when there is one, is the file of file_stat."""
+    try:
+        return os.path.samestat(path.stat(), file_stat)
+    except FileNotFoundError:
+        return False
+
+
+def _make_same_file_error(output: Path, summary: Path) -> PvcEvalInputError:
+    return PvcEvalInputError(
+        f"--summary {summary} is the same file as --output {output}. Give the summary a path"
+        " of its own, and run again."
+    )
 
 
 @dataclass(frozen=True, slots=True)

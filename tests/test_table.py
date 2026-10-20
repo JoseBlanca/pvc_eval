@@ -539,21 +539,60 @@ def test_a_write_that_fails_is_refused_and_leaves_no_temporary_file(tmp_path: Pa
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize(
+def _is_case_insensitive(directory: Path) -> bool:
+    """Whether the file system of directory takes `a` and `A` for one name."""
+    probe = directory / "probe"
+    probe.write_text("", encoding="utf-8")
+    insensitive = (directory / "PROBE").exists()
+    probe.unlink()
+    return insensitive
+
+
+# Spellings of --output and --summary that are one file, or one the other's .tmp, and
+# whether the test needs a file system that ignores letter case.
+_SAME_FILES = [
+    ("loci.tsv", "loci.tsv", False),
+    ("loci.tsv", "sub/../loci.tsv", False),
+    ("loci.tsv", "LOCI.tsv", True),
+    ("s.tsv.tmp", "s.tsv", False),
+    ("s.tsv", "s.tsv.tmp", False),
+    ("S.TSV.TMP", "s.tsv", True),
+    ("s.tsv", "S.TSV.TMP", True),
+]
+_SAME_FILE_IDS = [
     "same_path",
-    [Path("loci.tsv"), Path("sub") / ".." / "loci.tsv"],
-    ids=["same_path", "same_file_by_another_path"],
+    "through_parent",
+    "letter_case",
+    "output_is_summarys_tmp",
+    "summary_is_outputs_tmp",
+    "output_is_summarys_tmp_in_other_case",
+    "summary_is_outputs_tmp_in_other_case",
+]
+
+
+@pytest.mark.parametrize("earlier", [False, True], ids=["new_files", "earlier_files"])
+@pytest.mark.parametrize(
+    ("output_name", "summary_name", "needs_case"), _SAME_FILES, ids=_SAME_FILE_IDS
 )
-def test_a_summary_equal_to_the_output_is_refused(tmp_path: Path, same_path: Path) -> None:
+def test_a_summary_that_is_the_output_or_its_tmp_is_refused(
+    tmp_path: Path, output_name: str, summary_name: str, needs_case: bool, earlier: bool
+) -> None:
+    if needs_case and not _is_case_insensitive(tmp_path):
+        pytest.skip("the file system tells letter case apart")
     (tmp_path / "sub").mkdir()
-    output, summary = tmp_path / "loci.tsv", tmp_path / same_path
+    output, summary = tmp_path / output_name, tmp_path / summary_name
+    if earlier:
+        output.write_text("earlier\n", encoding="utf-8")
+    before = sorted(path.name for path in tmp_path.iterdir())
     with pytest.raises(PvcEvalInputError) as raised:
         write_table(_refuse_to_be_read(), output, summary=summary)
     assert str(raised.value) == (
         f"--summary {summary} is the same file as --output {output}. Give the summary a path"
         " of its own, and run again."
     )
-    assert sorted(path.name for path in tmp_path.iterdir()) == ["sub"]
+    assert sorted(path.name for path in tmp_path.iterdir()) == before
+    if earlier:
+        assert output.read_text(encoding="utf-8") == "earlier\n"
 
 
 def _make_summary_row(
