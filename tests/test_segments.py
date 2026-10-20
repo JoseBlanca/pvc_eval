@@ -40,6 +40,7 @@ from pvc_eval.segments import (
     _make_grown_satellites,
     _make_repeat_runs,
     _make_runs,
+    _make_satellites_absorbing,
     _make_score_blocks,
     _Rejection,
     _Segment,
@@ -2016,6 +2017,95 @@ def test_absorption_merges_satellites_that_a_feature_reaches_on_both_sides() -> 
     )
     assert satellites == [(0, 300)]
     assert members == []
+
+
+_FOUR_SATELLITES = [(0, 50), (100, 200), (300, 400), (500, 600)]
+_TWO_CLOSE_SATELLITES = [(0, 50), (100, 200), (230, 330), (500, 600)]
+
+
+@pytest.mark.parametrize(
+    ("satellites", "member", "expected"),
+    [
+        (_FOUR_SATELLITES, (276, 286), [(0, 50), (100, 200), (276, 400), (500, 600)]),
+        (_FOUR_SATELLITES, (275, 285), _FOUR_SATELLITES),
+        (_FOUR_SATELLITES, (414, 424), [(0, 50), (100, 200), (300, 424), (500, 600)]),
+        (_FOUR_SATELLITES, (415, 425), _FOUR_SATELLITES),
+        (_FOUR_SATELLITES[1:], (76, 86), [(76, 200), (300, 400), (500, 600)]),
+        (_FOUR_SATELLITES[1:], (75, 85), _FOUR_SATELLITES[1:]),
+        (_FOUR_SATELLITES, (614, 620), [(0, 50), (100, 200), (300, 400), (500, 620)]),
+        (_FOUR_SATELLITES, (615, 620), _FOUR_SATELLITES),
+        (_TWO_CLOSE_SATELLITES, (214, 216), [(0, 50), (100, 330), (500, 600)]),
+        (_TWO_CLOSE_SATELLITES, (215, 216), [(0, 50), (100, 200), (215, 330), (500, 600)]),
+        (_TWO_CLOSE_SATELLITES, (214, 215), [(0, 50), (100, 215), (230, 330), (500, 600)]),
+    ],
+    ids=[
+        "before-inner-14",
+        "before-inner-15",
+        "after-inner-14",
+        "after-inner-15",
+        "before-first-14",
+        "before-first-15",
+        "after-last-14",
+        "after-last-15",
+        "between-14-and-14-reaches-both",
+        "between-15-and-14-reaches-right",
+        "between-14-and-15-reaches-left",
+    ],
+)
+def test_among_several_satellites_a_feature_grows_only_those_at_fewer_than_the_bundle_distance(
+    satellites: list[tuple[int, int]], member: tuple[int, int], expected: list[tuple[int, int]]
+) -> None:
+    # The bundle distance is 15: a gap of 14 bases between the member and a satellite is
+    # absorbed, one of 15 is not. doc/specs/str_finder.md step 7, worked by hand.
+    candidate = _make_candidate(*member, 2, 1)
+    grown, members, _ = _make_grown_satellites(satellites, [candidate], [], 15)
+    assert grown == expected
+    assert members == ([] if expected != satellites else [candidate])
+
+
+@st.composite
+def _make_satellites_and_span(
+    draw: st.DrawFn,
+) -> tuple[list[tuple[int, int]], tuple[int, int], int]:
+    """Satellites sorted, disjoint and not abutting, a span, and a bundle distance."""
+    satellites = []
+    position = draw(st.integers(min_value=0, max_value=30))
+    for _ in range(draw(st.integers(min_value=0, max_value=8))):
+        length = draw(st.integers(min_value=1, max_value=30))
+        satellites.append((position, position + length))
+        position += length + draw(st.integers(min_value=1, max_value=30))
+    start = draw(st.integers(min_value=0, max_value=position + 30))
+    span = (start, start + draw(st.integers(min_value=1, max_value=30)))
+    return satellites, span, draw(st.integers(min_value=0, max_value=20))
+
+
+@settings(max_examples=2000, deadline=None)
+@given(case=_make_satellites_and_span())
+def test_the_satellites_a_span_reaches_are_those_a_scan_of_every_satellite_finds(
+    case: tuple[list[tuple[int, int]], tuple[int, int], int],
+) -> None:
+    # The oracle is step 7's rule written as a scan of every satellite, then the merge of
+    # those that overlap or abut, which a bundle distance of 0 can leave.
+    satellites, (start, end), distance = case
+    reached = [
+        (satellite_start, satellite_end)
+        for satellite_start, satellite_end in satellites
+        if start - satellite_end < distance and satellite_start - end < distance
+    ]
+    got = _make_satellites_absorbing(satellites, (start, end), distance)
+    if not reached:
+        assert got is None
+        return
+    grown = (min(start, reached[0][0]), max(end, reached[-1][1]))
+    expected: list[tuple[int, int]] = []
+    for satellite_start, satellite_end in sorted(
+        [*(satellite for satellite in satellites if satellite not in reached), grown]
+    ):
+        if expected and satellite_start <= expected[-1][1]:
+            expected[-1] = (expected[-1][0], max(expected[-1][1], satellite_end))
+        else:
+            expected.append((satellite_start, satellite_end))
+    assert got == expected
 
 
 def _write_fasta(directory: Path, contigs: dict[str, str]) -> Path:

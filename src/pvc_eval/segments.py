@@ -881,20 +881,23 @@ def _make_satellites_absorbing(
     it: one overlapping it, or with fewer than bundle_distance bases between them. The
     span and the satellites it reaches become one satellite over all of them, which is then
     joined with any it overlaps or abuts (pvc region_typing/mod.rs, absorb_into).
-    Positions are 0-based and half-open."""
+    Positions are 0-based and half-open.
+
+    The satellites are sorted, disjoint and not abutting, as _make_runs gives them, so both
+    their starts and their ends ascend. A satellite reaches the span when its end is past
+    start - bundle_distance and its start is before end + bundle_distance. The first
+    condition holds from some satellite to the last, the second from the first satellite to
+    some satellite, so the satellites that meet both are one slice of the list, found by
+    two binary searches instead of a scan of every satellite."""
     start, end = span
-    reached = [
-        satellite
-        for satellite in satellites
-        if start - satellite[1] < bundle_distance and satellite[0] - end < bundle_distance
-    ]
-    if not reached:
-        return None
-    grown = (
-        min(start, *(satellite[0] for satellite in reached)),
-        max(end, *(satellite[1] for satellite in reached)),
+    first = bisect.bisect_right(
+        satellites, start - bundle_distance, key=lambda satellite: satellite[1]
     )
-    return _make_runs([*(satellite for satellite in satellites if satellite not in reached), grown])
+    stop = bisect.bisect_left(satellites, end + bundle_distance, key=lambda satellite: satellite[0])
+    if first >= stop:
+        return None
+    grown = (min(start, satellites[first][0]), max(end, satellites[stop - 1][1]))
+    return _make_runs([*satellites[:first], grown, *satellites[stop:]])
 
 
 def _make_grown_satellites(
@@ -907,7 +910,12 @@ def _make_grown_satellites(
     member, by its detected span, and every STR segment, by its cut, that one reaches,
     repeated until a pass absorbs nothing; and the members and STR segments left, in their
     order (pvc's plain fixed point, its test helper absorb_by_iteration). Positions are
-    0-based and half-open."""
+    0-based and half-open.
+
+    The satellites are taken sorted, disjoint and not abutting, as _make_runs gives them,
+    and each absorption gives them back so, since it goes through _make_runs again:
+    _make_satellites_absorbing finds the satellites a span reaches by bisection, which
+    relies on it."""
     grown = list(satellites)
     members_left = list(members)
     str_segments_left = list(str_segments)
