@@ -121,11 +121,23 @@ fills the `gq` columns of `doc/spec.md` §6, which §7.4 does not check.
 the input that is a whole number, 0 when there is none, and n is the place of the record it is
 made for among the input's record lines, from 1. Each record gets its own, and a sample's new PS
 is the record's. `parse_vcf` compares PS values as text, so a PS of the input that is not a whole
-number cannot equal one.
+number cannot equal one. Python turns text of at most 4,300 digits into a number, so a PS of more
+digits, leading zeros aside, counts as one that is not a whole number; no new phase set reaches
+its length.
 
-**The header** is the input's, line by line, with one line added before `#CHROM` when the output
-writes a rewritten record, the header has no `##FORMAT=<ID=PS,` line, and every PS of the input
-is a whole number:
+**The header** is the input's, line by line, with up to two lines added before `#CHROM` when the
+output writes a rewritten record. The first, when a rewritten record has sample columns and the
+header has no `##FORMAT=<ID=GT,` line, since a rewritten record writes GT whatever the input's
+FORMAT holds:
+
+```
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+```
+
+The second, when the header has no `##FORMAT=<ID=PS,` line, and every PS of the input and every
+new phase set the output writes is a whole number of at most 2,147,483,647, the largest that
+bcftools 1.24 keeps in an `Integer`; it sets 2,147,483,648 to missing, with a warning (seen on 20
+October 2026):
 
 ```
 ##FORMAT=<ID=PS,Number=1,Type=Integer,Description="Phase set">
@@ -133,9 +145,9 @@ is a whole number:
 
 bcftools 1.24 warns about a FORMAT field the header lacks, even with only `.` as its values. It
 stops with exit status 8 on a PS such as `chr1_5` declared `Integer`, and warns that PS "should be
-declared as Type=Integer" when it is declared `String`. An input with such a PS and no PS line
-already gets the warning that PS is not in its header, so the output adds no line and gets the
-same warnings (seen by the reviews on 20 October 2026, which found that the first version of this
+declared as Type=Integer" when it is declared `String`. An input with such a PS, or one above
+2,147,483,647, and no PS line already gets the warning that PS is not in its header, so the
+output adds no line and gets the same warnings (seen by the reviews on 20 October 2026, which found that the first version of this
 rule, a `Type=String` line, broke the rule of validity below).
 
 **The order.** Records are sorted by contig, in the input's order of contigs, and by POS, which is
