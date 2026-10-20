@@ -113,6 +113,17 @@ def _check(
             " only in A: {., .}",
             id="a-star-beside-a-missing-haplotype-is-missing",
         ),
+        # §8: a `.` covers a `*` only through an edit of an ALT of its own record, and the
+        # T at 2 replaces no base of the `*` record's REF, 3.
+        pytest.param(
+            1,
+            _O_BASES,
+            ["2 A T .|0:1", "3 C G,* 2|0:1"],
+            ["2 A T .|0:1", "3 C G,* 1|0:1"],
+            "chr1:2-3, sample S0: file A gives no genotype and file B 1 genotype;"
+            " only in B: {AC, .}",
+            id="a-missing-haplotype-whose-alts-do-not-cover-the-star",
+        ),
         pytest.param(
             1,
             _O_BASES,
@@ -238,6 +249,21 @@ def test_ploidy_1_gives_one_genotype_a_window(case_files: CaseFiles, tmp_path: P
     assert _check(
         tmp_path, reference, lines_a, ["2 A G 1", "3 C T 1"], ploidy=1
     ) == HaplotypeComparison(num_windows=1, num_linked_pairs=0, num_over_cap=0)
+
+
+def test_a_missing_haplotype_whose_alts_do_not_cover_a_star_is_impossible_with_ploidy_1(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    reference = case_files.write_reference(1, _O_BASES)
+    message = "chr1:2-3, sample S0: file A gives no genotype and file B 1 genotype; only in B: {.}"
+    with pytest.raises(AssertionError, match=f"^{re.escape(message)}$"):
+        _check(
+            tmp_path,
+            reference,
+            ["2 A T .", "3 C G,* 2"],
+            ["2 A T .", "3 C G,* 1"],
+            ploidy=1,
+        )
 
 
 def test_a_window_over_the_cap_is_counted_and_not_compared(

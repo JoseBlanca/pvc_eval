@@ -328,10 +328,12 @@ def _find_haplotype_value(
     order_of_unit: Mapping[_UnitKey, tuple[int, ...]],
 ) -> _HaplotypeValue | _IMPOSSIBLE:
     """What one haplotype gives over one window (§8): _IMPOSSIBLE when two of its edits
-    collide, or when it carries a `*` no edit of it covers and is `.` at no record; MISSING
-    when it is `.` at a record; otherwise the reference over the window with its edits
-    applied."""
+    collide, or when it carries a `*` that neither an edit it carries nor an edit of an ALT
+    of a record where it is `.` covers; MISSING when it is `.` at a record; otherwise the
+    reference over the window with its edits applied."""
     edits: list[_Edit] = []
+    # The edits of every ALT of the records where the haplotype is `.`, which it might carry.
+    missing_edits: list[_Edit] = []
     star_refs: list[tuple[int, int]] = []
     is_missing = False
     for vcf_record in records:
@@ -341,6 +343,7 @@ def _find_haplotype_value(
         allele = genotype.alleles[haplotype if order is None else order[haplotype]]
         if allele is MISSING:
             is_missing = True
+            missing_edits.extend(_make_alt_edits(vcf_record))
         elif vcf_record.alleles[allele] == _SPANNING_DELETION:
             star_refs.append((vcf_record.start, vcf_record.end))
         elif allele != 0:
@@ -349,11 +352,20 @@ def _find_haplotype_value(
                 edits.append(edit)
     if any(_is_colliding(edit, other) for edit, other in itertools.combinations(edits, 2)):
         return _IMPOSSIBLE
+    covering_edits = [*edits, *missing_edits]
+    if any(not _is_covered(star_ref, covering_edits) for star_ref in star_refs):
+        return _IMPOSSIBLE
     if is_missing:
         return MISSING
-    if any(not _is_covered(star_ref, edits) for star_ref in star_refs):
-        return _IMPOSSIBLE
     return _apply_edits(window, edits)
+
+
+def _make_alt_edits(vcf_record: VcfRecord) -> Iterator[_Edit]:
+    for alt in vcf_record.alleles[1:]:
+        if alt != _SPANNING_DELETION:
+            edit = _make_edit(vcf_record, alt)
+            if edit is not None:
+                yield edit
 
 
 def _make_edit(vcf_record: VcfRecord, alt: str) -> _Edit | None:
