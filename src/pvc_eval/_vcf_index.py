@@ -82,22 +82,22 @@ def _parse_index(index_path: Path) -> list[str]:
     with gzip.open(index_path, "rb") as index_file:
         magic = _read_exactly(index_file, len(_TBI_MAGIC))
         if magic == _TBI_MAGIC:
-            num_contigs, names = _read_tbi_header(index_file)
+            num_contigs, names = _parse_tbi_header(index_file)
         elif magic == _CSI_MAGIC:
-            num_contigs, names = _read_csi_header(index_file)
+            num_contigs, names = _parse_csi_header(index_file)
         else:
             raise _UnreadableIndexError
     return _parse_names(names, num_contigs)
 
 
-def _read_tbi_header(index_file: BufferedIOBase) -> tuple[int, bytes]:
+def _parse_tbi_header(index_file: BufferedIOBase) -> tuple[int, bytes]:
     """The number of contigs and the bytes of their names, from the .tbi header after the magic."""
     num_contigs, file_format, *_, names_length = struct.unpack("<8i", _read_exactly(index_file, 32))
     _check_format(file_format)
     return num_contigs, _read_exactly(index_file, names_length)
 
 
-def _read_csi_header(index_file: BufferedIOBase) -> tuple[int, bytes]:
+def _parse_csi_header(index_file: BufferedIOBase) -> tuple[int, bytes]:
     """The number of contigs and the bytes of their names, from the .csi header after the magic,
     whose aux holds a tabix header."""
     *_, aux_length = struct.unpack("<3i", _read_exactly(index_file, 12))
