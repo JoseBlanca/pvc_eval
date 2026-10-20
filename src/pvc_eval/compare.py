@@ -555,22 +555,16 @@ class _Finder:
         self._waited_contig: str | None = None
 
     def start(self, reference_path: Path) -> None:
-        """Starts the finder's threads, each with the FASTA at reference_path opened here for
-        it alone and closed when it ends, so that a scan still running after compare() has
-        closed its reference reads a descriptor of its own. They are daemon threads, so that
-        a scan in progress does not keep Python from exiting.
-
-        Raises what IndexedFasta raises for the FASTA, before any thread starts.
+        """Starts the finder's threads. Each opens the FASTA at reference_path for itself and
+        closes it when it ends, so that a scan still running after compare() has closed its
+        reference reads a descriptor of its own, and nothing is opened for a thread that does
+        not start. They are daemon threads, so that a scan in progress does not keep Python
+        from exiting.
         """
-        with ExitStack() as opened:
-            references = [
-                opened.enter_context(IndexedFasta(reference_path)) for _ in range(self._num_threads)
-            ]
-            opened.pop_all()
-        for number, reference in enumerate(references, start=1):
+        for number in range(1, self._num_threads + 1):
             thread = threading.Thread(
                 target=self._find_in_line,
-                args=(reference,),
+                args=(reference_path,),
                 name=f"pvc_eval finder {number}",
                 daemon=True,
             )
@@ -625,10 +619,17 @@ class _Finder:
         with self._condition:
             self._condition.notify_all()
 
-    def _find_in_line(self, reference: IndexedFasta) -> None:
-        """A finder thread: the contigs taken from the line, scanned one after another in
-        reference, its own, until the stop. A scan's exception is passed to the loci side, or
-        dropped after the stop."""
+    def _find_in_line(self, reference_path: Path) -> None:
+        """A finder thread: the contigs taken from the line, scanned one after another in the
+        FASTA at reference_path, which it opens for itself, until the stop. A scan's
+        exception, or the one that opening the FASTA raised, is passed to the loci side for
+        each contig it takes, or dropped after the stop."""
+        try:
+            reference = IndexedFasta(reference_path)
+        except BaseException as error:  # noqa: BLE001 -- raised by the loci side, or dropped at the stop
+            while (contig := self._take_contig()) is not None:
+                self._put_result(contig, error)
+            return
         with reference:
             while (contig := self._take_contig()) is not None:
                 try:

@@ -864,10 +864,20 @@ class _CountedFastas:
 
 @pytest.mark.parametrize(
     ("reader", "error"),
-    [("pvc_eval reader B", RuntimeError), ("pvc_eval reader A", KeyboardInterrupt)],
-    ids=["reader B cannot start", "Ctrl-C at reader A's start"],
+    [
+        ("pvc_eval reader B", RuntimeError),
+        ("pvc_eval reader A", KeyboardInterrupt),
+        ("pvc_eval finder 2", RuntimeError),
+        ("pvc_eval finder 1", KeyboardInterrupt),
+    ],
+    ids=[
+        "reader B cannot start",
+        "Ctrl-C at reader A's start",
+        "finder thread 2 cannot start",
+        "Ctrl-C at finder thread 1's start",
+    ],
 )
-def test_reader_that_does_not_start_leaves_no_reference_open(
+def test_thread_that_does_not_start_leaves_no_reference_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reader: str, error: type[BaseException]
 ) -> None:
     case = write_compare_case(tmp_path)
