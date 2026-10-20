@@ -1,6 +1,7 @@
 # Compare
 
-*Status: draft, 20 October 2026, for the owner's review. No code of this part exists yet. It
+*Status: draft, 20 October 2026; the owner answered its seven open points that day, and it waits
+for the owner's approval. No code of this part exists yet. It
 joins stages that exist on `main` and are tested: the readers (`doc/spec.md` §5.2), the STR finder
 (`doc/specs/str_finder.md`), the loci, kind, strata and regions (`doc/specs/loci.md`), and the
 sample pairs, reconciliation and evaluation (`doc/specs/reconciliation.md`). It builds what
@@ -13,7 +14,8 @@ then scans the reference, and on GRCh38 that scan is the longest part of a run. 
 from seconds to 10 to 12 minutes on one thread (forecast for chr1 from the figures so far, below).
 So `compare()` scans only the contigs whose loci need STR regions. It scans them in threads, a few
 contigs ahead of the loci, while the two VCF files are read in threads of their own, as the owner
-decided on 20 October 2026. Seven points are open for the owner, listed at the end.
+decided on 20 October 2026. The owner's answers to the spec's seven open points, the same day,
+are listed at the end, under "Decided by the owner".
 
 Positions in the cases are 1-based and inclusive, as in a VCF and in the table. In the Python
 interface they are 0-based and half-open, as everywhere inside pvc_eval.
@@ -266,7 +268,8 @@ def compare(a: Path, b: Path, reference: Path, config: CompareConfig = CompareCo
 `compare()` yields every row, *reference in both* included, as `doc/spec.md` §3 says. It raises
 what the stages raise: `PvcEvalInputError` for a fault of the input, and `ValueError` for a
 setting out of range or a `finder_threads` that is not a whole number of 0 or more. It has no
-`evaluator` parameter (**Open 1**).
+`evaluator` parameter until a wrapper of `doc/spec.md` §8 exists (decided by the owner on 20
+October 2026, point 1).
 
 The table and the summary are written by one function, since the command line reads the rows
 once and writes both from them. `format_table_row` gives one row's fields as text, for a user who
@@ -274,7 +277,7 @@ writes the table another way.
 
 ```python
 TABLE_COLUMNS: tuple[str, ...]      # the column names of doc/spec.md §6, in its order
-SUMMARY_COLUMNS: tuple[str, ...]    # ("sample_a", "sample_b", "outcome", "kind", "stratum", "count")
+SUMMARY_COLUMNS: tuple[str, ...]    # ("outcome", "stratum", "SNP", "indel", "STR", "complex", "total")
 
 def format_table_row(row: OutcomeRow) -> tuple[str, ...]: ...
 
@@ -290,11 +293,10 @@ removing what it had written.
 ## The table
 
 `doc/spec.md` §6 gives the columns and what each holds. This section gives how each field of
-`OutcomeRow` (`doc/specs/reconciliation.md` §6) becomes text (**Open 3** for the choices the
-owner has not made).
+`OutcomeRow` (`doc/specs/reconciliation.md` §6) becomes text.
 
 The file is UTF-8 text, one line per row, its fields separated by tabs, each line ending in `\n`.
-The first line is the column names, with no `#` (**Open 3**): `chrom`, `start`, `end`, `kind`,
+The first line is the column names, with no `#`, which pandas, R and `csvtk` read as names: `chrom`, `start`, `end`, `kind`,
 `stratum`, `str_regions`, `sample_a`, `sample_b`, `outcome`, `alleles`, `genotype_a`,
 `genotype_b`, `possible_a`, `possible_b`, `quality_a`, `quality_b`, `gq_a`, `gq_b`, `records_a`,
 `records_b`, `invalid_reason_a`, `invalid_reason_b`. A field that is `None` is written `.`.
@@ -312,7 +314,7 @@ The first line is the column names, with no `#` (**Open 3**): `chrom`, `start`, 
 | `alleles` | `alleles` | the locus alleles joined with `,`; a locus allele that is empty, a deletion of the whole locus, is written `-` |
 | `genotype_a`, `genotype_b` | `genotype_a`, `genotype_b` | the indices joined with `/`, `MISSING` written `.` |
 | `possible_a`, `possible_b` | `possible_a`, `possible_b` | a whole number |
-| `quality_a`, `quality_b` | `quality_a`, `quality_b` | the shortest decimal that reads back as the same number, with no `.0` at the end of a whole number (**Open 3**) |
+| `quality_a`, `quality_b` | `quality_a`, `quality_b` | the shortest decimal that reads back as the same number, with no `.0` at the end of a whole number |
 | `gq_a`, `gq_b` | `gq_a`, `gq_b` | a whole number |
 | `records_a`, `records_b` | `records_a`, `records_b` | a whole number |
 | `invalid_reason_a`, `invalid_reason_b` | `invalid_reason_a`, `invalid_reason_b` | the enum's value |
@@ -337,28 +339,31 @@ tells them apart, 1 or more against `.` or 0. A diploid `(MISSING, MISSING)` is 
 **The QUAL.** `VcfRecord.qual` is a float, so the text the VCF wrote is not kept. `50` and `50.00`
 are both 50.0 and both written `50`; `29.53` is written `29.53`; `1e-05` is written `1e-05`,
 as Python's `repr` gives it. Writing QUAL as the VCF wrote it needs `VcfRecord` to keep the text,
-which changes `pvc_eval.vcf` (**Open 3**).
+which changes `pvc_eval.vcf`; the owner kept the shortest form on 20 October 2026 (point 3).
 
 ## The summary
 
-With `--summary`, a second file counts the rows by sample pair, outcome, kind and stratum, in a
-long table (**Open 2**): one line per combination that has at least one row, with the columns
-`sample_a`, `sample_b`, `outcome`, `kind`, `stratum` and `count`, and a first line of these names.
-The values are written as in the table, `.` for no stratum.
+With `--summary`, a second file counts the rows in a wide table (decided by the owner on 20
+October 2026, point 2, to be tried first): one line per outcome and stratum, one column per kind,
+and a total. Its columns are `outcome`, `stratum`, `SNP`, `indel`, `STR`, `complex` and `total`,
+and its first line is these names.
 
+- The counts are summed over every sample pair. A cohort's summary therefore does not say which
+  pair disagrees; the table does.
 - Every row `compare()` yields is counted, *reference in both* included, with or without
   `--all-rows`. Loci that `--regions` skips give no row and are not counted.
-- The lines come by sample pair, in the order of the pairs; then by outcome, in the order of
-  `doc/spec.md` §5.5's table; then by kind, in the order SNP, indel, STR, complex; then by
-  stratum, sorted by code point.
-- A combination with no row has no line, so a count of 0 is never written.
+- A line is written for each outcome and stratum that have at least one row; in it, a kind with
+  no row is written `0`. Without `--strata` the stratum is `.` on every line, so the table keeps
+  one layout.
+- The lines come by outcome, in the order of `doc/spec.md` §5.5's table, and then by stratum,
+  sorted by code point. `total` is the sum of the four kinds.
 
 ```
-sample_a  sample_b  outcome            kind   stratum  count
-HG002     HG002     reference in both  SNP    generic  1204
-HG002     HG002     same genotype      SNP    generic  80311
-HG002     HG002     same genotype      indel  generic  5102
-HG002     HG002     same genotype      STR    str      2210
+outcome            stratum  SNP    indel  STR   complex  total
+reference in both  generic  1204   88     0     3        1295
+same genotype      generic  80311  5102   0     240      85653
+same genotype      str      0      0      2210  0        2210
+different          str      0      0      61    0        61
 ```
 
 (Aligned for reading; separated by tabs in the file. The counts are made up for the example.)
@@ -371,8 +376,9 @@ stopped by an error or by Ctrl-C removes the temporary files and leaves the tabl
 as they were before it. A run killed by a signal that Python cannot catch leaves the `.tmp` files
 behind.
 
-A path ending in `.gz` is written compressed with gzip, at level 6. It is not bgzipped, so tabix
-cannot index it (**Open 3**).
+A path ending in `.gz` is written compressed with gzip, at level 6, which `zcat`, pandas and R
+read. It is not bgzipped, so tabix cannot index it; the owner decided on 20 October 2026 that gzip
+is enough (point 3).
 
 Before the first row is read, `write_table` opens both temporary files. It raises
 `PvcEvalInputError` naming the option for a path that is a directory, whose directory does not
@@ -390,7 +396,7 @@ pvc_eval compare --reference ref.fa --a a.vcf.gz --b b.vcf.gz --output loci.tsv
 ```
 
 These are the options of `doc/spec.md` §3, with the same meanings and defaults, less
-`--evaluator` (**Open 1**). The command runs `compare()` with two finder threads and writes its
+`--evaluator` (point 1). The command runs `compare()` with two finder threads and writes its
 rows with `write_table`. The STR finder runs with its defaults. A user who wants other parameters
 runs `pvc_eval str-regions` with them and passes its BED with `--str-regions`. Nothing else is
 set from the command line.
@@ -401,7 +407,7 @@ option, and run again." `--span-limit` takes a whole number of 1 or more or the 
 `--chain-distance` a whole number of 0 or more; `--phasing-cap` one of 1 or more. A value that is
 not a number at all is argparse's error, with its usage line and status 2, as in `str-regions`.
 
-**Messages**, all on stderr (**Open 5**):
+**Messages**, all on stderr (point 5):
 
 - the warnings of the stages, as they log them: the samples in no pair, the VCF records skipped or
   cut, an index that could not be read;
@@ -466,7 +472,7 @@ these mean:
 - **Many contigs, with indexed VCFs.** Two finder threads scan two contigs at once while the loci
   side works on an earlier one. Without an index the scans run nearly one after another: a reader
   waits on its full buffer, 10,000 records into a contig being scanned, and reaches the next contig
-  only when the loci side has used those records (Open 7). A whole genome, about 1 hour 40 minutes on one thread, would take a little more than half
+  only when the loci side has used those records (point 7). A whole genome, about 1 hour 40 minutes on one thread, would take a little more than half
   that, since chr1 alone is 10 to 12 minutes; the cost is a second scan's memory, 1 to 1.5 GB on
   the largest contigs.
 - **With `--str-regions`**, nothing is scanned, and only the readers run beside the loci side.
@@ -532,8 +538,9 @@ type; a QUAL of 50.0, 29.53 and 1e-05; each enum's value.
 **The files, at `write_table`:** the header and the rows of a short list, with and without
 `all_rows`; a `.gz` path, read back with `gzip`; rows whose iterator raises after two rows, which
 leave no output, no `.tmp`, and an older file at the path unchanged; each refusal of "Writing the
-files" with its message; and the summary of a list of rows over two sample pairs, with its order
-and its counts as literals, *reference in both* counted without `all_rows`.
+files" with its message; and the summary of a list of rows over two sample pairs and two
+strata, with its lines, their order and their counts as literals, a 0 among them, and
+*reference in both* counted without `all_rows`.
 
 **The command, at `main()`:** a run on the four-contig case writes the table that `write_table`
 writes for `compare()`'s rows; each option's value out of range, with its message and status 1; a
@@ -545,93 +552,47 @@ benchmark VCF for GRCh38 against itself, over chr20, every row *same genotype*, 
 both*, *missing in both*, *invalid in both* or *too complex*, the last three only where the file
 itself has a missing haplotype, an invalid sample or a sample over the cap. It reads GRCh38 from
 the path in `PVC_EVAL_GRCH38` and the VCF from `PVC_EVAL_HG002_VCF`, and is skipped, with a
-message naming the variable, without either (**Open 6**). It is marked slow, since the finder's
+message naming the variable, without either (point 6). It is marked slow, since the finder's
 scan of chr20 takes about 100 s.
 
-## Changes to `doc/spec.md`
+## Changes to `doc/spec.md` and `doc/specs/loci.md`
 
-After the owner approves this spec, in commits of their own:
+After the owner approves this spec, each in a commit of its own:
 
-- §3: a pointer to this spec for `compare()`, the command, the table writer and the summary; the
-  owner's answers to the open points, among them, if Open 1 is taken, `--evaluator` and the
-  `evaluator` parameter out until §8 is built; `finder_threads` in `compare()`'s signature.
-- §6: a pointer to "The table" and "The summary" of this spec, and the summary's form.
-- §4, if Open 4 is taken: `RegionType` a `StrEnum`.
+- `doc/spec.md` §3: a pointer to this spec for `compare()`, the command, the table writer and the
+  summary; `--evaluator` and the `evaluator` parameter out until a wrapper of §8 exists;
+  `finder_threads` in `compare()`'s signature.
+- `doc/spec.md` §6: a pointer to "The table" and "The summary" of this spec, and the summary's
+  wide form.
+- `doc/spec.md` §4 and `doc/specs/loci.md`: `RegionType` and `Kind` are `StrEnum`, with the code of
+  `src/pvc_eval/segments.py` and `src/pvc_eval/kind.py` in the same commit. This changes no output.
 
-## Open points
+## Decided by the owner
 
-Each is put as a choice with a recommendation. What the spec does meanwhile is what it says now,
-so an answer that takes the recommendation changes nothing but the status line; another answer
-changes the sections named, before the plan is written.
+The owner answered the seven open points of the draft on 20 October 2026:
 
-**Open 1. `--evaluator` and the `evaluator` parameter.** None of the other evaluators of
-`doc/spec.md` §8 exists. Leaving the option and the parameter out breaks nobody when they are
-added with §8, since both would default to `pvc`. Keeping them now gives an option whose only
-other values stop the run with an error. Recommended: leave them out. If kept, "The Python
-interface" and "The `compare` command" gain them, with the error for the values not built.
-
-**Open 2. The summary's form.** A long table, one line per sample pair, outcome, kind and stratum
-with its count, as "The summary" gives it, keeps each pair apart, so a cohort shows which samples
-disagree; the totals over samples are one group-by away. A wide table, one line per outcome with a
-column per kind, reads at a glance for one pair, but a cohort then needs one table per pair or
-loses which pair disagrees. Recommended: the long table. *Reference in both* is always counted,
-and loci skipped by `--regions` never are. Another form rewrites "The summary".
-
-**Open 3. The table's format.** Four choices, each answered apart:
-
-- **(a)** a header line of the column names with no `#`, which pandas, R and `csvtk` read as
-  names; with `#`, tools in the style of bcftools skip it, and pandas reads `#chrom` as the first
-  name;
-- **(b)** QUAL as the shortest decimal that reads back as the same number. QUAL exactly as the VCF
-  wrote it, `50.00` for `50.00`, needs `VcfRecord` to keep QUAL's text, a change to `pvc_eval.vcf`
-  that this part may not make without the owner. The two differ only in trailing zeros and in how
-  an exponent is written;
-- **(c)** a path ending in `.gz` written with gzip, which `zcat`, pandas and R read. bgzip would
-  let tabix index the table, whose rows come by contig and start; it needs a writer of BGZF blocks
-  on `zlib`, about 40 lines, which can be added when someone needs to look rows up by position;
-- **(d)** the table and the summary written to `.tmp` files and renamed, so that a failed run
-  leaves no half-written table.
-
-Recommended: all four. Another answer changes "The table" or "Writing the files"; QUAL as written
-in the VCF also adds a field to `VcfRecord`, in a commit of its own on `pvc_eval.vcf`.
-
-**Open 4. `Kind` and `RegionType` as `StrEnum`.** `Outcome` and `InvalidReason` are `StrEnum`,
-`Kind` and `RegionType` plain `Enum`, so `f"{Kind.SNP}"` gives `Kind.SNP` where
-`f"{Outcome.SAME_GENOTYPE}"` gives `same genotype`. The table writer uses `.value` for all four and
-works either way, so the change helps whoever formats them next and changes no output. It costs
-four lines of code and a line in each of `doc/spec.md` §4 and `doc/specs/loci.md`. One of the
-files, `src/pvc_eval/segments.py`, is being changed on `perf/str-finder`, so whichever branch is
-merged second resolves a one-line conflict. Recommended: make them `StrEnum`, in a commit of their
-own on this branch. Meanwhile they stay `Enum`.
-
-**Open 5. The messages.** On stderr: the warnings of the stages; a line when a contig's scan
-starts; a line when a contig's loci are done; an input error with its message, no traceback
-and status 1; Ctrl-C with status 130. Their text is in "The `compare` command". Without the line
-when a scan starts, a run on chr1 shows nothing for 10 to 12 minutes. Recommended: as written.
-Other texts change "The `compare` command" and its tests.
-
-**Open 6. Real data for the end-to-end check.** GIAB's HG002 v4.2.1 benchmark VCF for GRCh38,
-with its `.tbi`, is on this machine at
-`/Users/jose/devel/pop_var_caller/benchmarks/giab/all_bench_regions/vcfs/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz`,
-and GRCh38's analysis set without alts, with its `.fai`, at
-`/Users/jose/genomes/h_sapiens/gca_grch38/GCA_000001405.15_GRCh38_no_alt_plus_hs38d1_analysis_set.fna`;
-both were there on 20 October 2026. On chr20 the VCF holds 85,951 records, and
-`bcftools norm -c e` (1.24) finds no REF that differs from the reference. Recommended: use these,
-through the variables `PVC_EVAL_GRCH38` and `PVC_EVAL_HG002_VCF`, over chr20. Another file changes
-only the variable's name and the test's description.
-
-**Open 7. Reading the indexes.** Planning the contigs from the indexes needs a reader of the
-`.tbi` and `.csi` headers. With `gzip` and `struct` it is about 15 lines and adds no dependency.
-Without it, a contig is scanned only when a reader reaches it, and a reader stops when its buffer
-is full: on a run of several contigs it waits, 10,000 records into chr1, while chr1 is scanned,
-and reaches chr2 only once the loci side has used chr1's records. The scans then run nearly one
-after another, and a second finder thread gains little. Recommended: the reader, in
-`pvc_eval.compare`. Without it, "Which contigs are scanned" loses its planned contigs and the
-index reader's tests go.
+1. **`--evaluator`** and the `evaluator` parameter are left out until a wrapper of `doc/spec.md`
+   §8 exists. Adding them then breaks nobody, since their default is `pvc`.
+2. **The summary** is a wide table, one line per outcome and stratum and one column per kind,
+   counted over all sample pairs ("The summary"), to be tried first. The long table, one line per
+   sample pair, outcome, kind and stratum, was the other option.
+3. **The table**: a header line with no `#`; QUAL as the shortest decimal that reads back as the
+   same number, not as the VCF wrote it, which would change `pvc_eval.vcf`; plain gzip for a path
+   ending in `.gz`, not bgzip; and the files written to `.tmp` and renamed.
+4. **`Kind` and `RegionType` become `StrEnum`**, like `Outcome` and `InvalidReason`, so that
+   formatting one gives its word. Whichever of this branch and `perf/str-finder` is merged second
+   resolves a one-line conflict in `src/pvc_eval/segments.py`.
+5. **The messages** are those of "The `compare` command".
+6. **The real data** of the end-to-end check is GIAB's HG002 v4.2.1 benchmark VCF for GRCh38,
+   at `/Users/jose/devel/pop_var_caller/benchmarks/giab/all_bench_regions/vcfs/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz`,
+   with GRCh38's analysis set without alts at
+   `/Users/jose/genomes/h_sapiens/gca_grch38/GCA_000001405.15_GRCh38_no_alt_plus_hs38d1_analysis_set.fna`,
+   read through `PVC_EVAL_HG002_VCF` and `PVC_EVAL_GRCH38`, over chr20.
+7. **The indexes** are read, with `gzip` and `struct`, so that the contigs they list are planned.
 
 ## Not in this spec
 
-- The other evaluators of `doc/spec.md` §8, and the `evaluator` parameter (Open 1).
+- The other evaluators of `doc/spec.md` §8, and the `evaluator` parameter (point 1).
 - The re-spellings of `doc/spec.md` §7.4: the next part, once `compare` runs.
 - pvc's hard cases of `doc/spec.md` §7.5 (its Open 3).
 - The STR finder's speed: the performance session on `perf/str-finder`.
