@@ -11,7 +11,8 @@ This part makes pvc_eval usable: `compare()` runs the stages from two VCF files 
 table, and `pvc_eval compare` writes those rows as the table and, when asked, a summary of counts.
 It also decides where the time of a run goes when no `--str-regions` BED is given. The STR finder
 then scans the reference, and on GRCh38 that scan is the longest part of a run. One contig takes
-from seconds to 10 to 12 minutes on one thread (forecast for chr1 from the figures so far, below).
+from 13 s to 89 s on one thread with the faster finder of the branch `perf/str-finder`, and
+five to nine times longer with the finder on `main` (below).
 So `compare()` scans only the contigs whose loci need STR regions. It scans them in threads, a few
 contigs ahead of the loci, while the two VCF files are read in threads of their own, as the owner
 decided on 20 October 2026. The owner's answers to the spec's seven open points, the same day,
@@ -216,7 +217,7 @@ exception in the code that reads it, or by Ctrl-C. Once it is set:
   and its pool, and ends. `compare()` waits for both readers to end, which takes at most one batch
   of `parse_vcf`'s work, before it closes the reference;
 - the finder starts no new contig. A contig already being scanned is not waited for. Its thread
-  ends when the scan does, a few seconds to 10 to 12 minutes later on GRCh38 (forecast, below),
+  ends when the scan does, up to 89 s later on GRCh38 with the faster finder (below),
   and its segments are dropped. A scan that calls `segment_contig` after the reference is closed
   gets a `ValueError`, which is dropped;
 - every thread catches every exception it meets. Before the stop it passes it to the loci side,
@@ -224,7 +225,8 @@ exception in the code that reads it, or by Ctrl-C. Once it is set:
   threads, which would print a traceback after "Stopped; nothing was written."
 
 The finder's threads are daemon threads, `threading.Thread(daemon=True)`, so that a scan in
-progress does not keep Python from exiting for up to 12 minutes after Ctrl-C. A
+progress does not keep Python from exiting for up to 89 s after Ctrl-C, and several minutes with
+the finder on `main`. A
 `ThreadPoolExecutor`, which `.claude/skills/coding/python.md` asks for, makes threads that Python
 waits for when it exits: with one worker sleeping 3 s, the program ended 3.03 s after its last
 line (measured by the spec's reviewer on 20 October 2026). The finder departs from `python.md`
@@ -411,8 +413,8 @@ not a number at all is argparse's error, with its usage line and status 2, as in
 
 - the warnings of the stages, as they log them: the samples in no pair, the VCF records skipped or
   cut, an index that could not be read;
-- one line when the finder starts a contig, since on GRCh38 a contig takes up to 10 to 12 minutes
-  (forecast for chr1) and nothing else would show: "chr1: finding STR regions in 248,956,422 bases.";
+- one line when the finder starts a contig, since on GRCh38 a contig takes up to 89 s,
+  and several minutes with the finder on `main`, and nothing else would show: "chr1: finding STR regions in 248,956,422 bases.";
 - one line when the loci of a contig are done: "chr20: 31,204 loci compared, 1,880 skipped by
   --regions; 4 min 12 s since the start." The clause about `--regions` is there only when it is
   given. It counts loci, not rows, since `compare()` does not know which rows the command writes.
@@ -439,7 +441,7 @@ holds:
 | what | at most | measured |
 |---|---|---|
 | each reader's buffer | 10,000 VCF records | 665 bytes per record with one GATK-like sample, 6,350 bytes with 200: so 7 MB and 64 MB per file |
-| the finder's scans in progress | `finder_threads` contigs at once | chr1 forecast at 1 to 1.5 GB per scan (below) |
+| the finder's scans in progress | `finder_threads` contigs at once | 1.15 GB for chr1, 339 MB for chr20 (below) |
 | contigs scanned and waiting for the loci side | `finder_threads + 1` contigs ahead in all, scanned or being scanned, and the contig the loci side reads | STR regions take about 0.85 MiB per Mb of contig: chr1, 249 Mb, about 210 MiB |
 
 None of these grows with the number of contigs or the length of the VCFs. The bytes per record
@@ -450,35 +452,48 @@ were measured with tracemalloc on records `parse_vcf` held, from VCFs that
 segments held 6.8 MiB, half of them STR regions. All of it on 20 October 2026, at aaaf31b, on the
 Apple M5 Pro, CPython 3.15.0t with the GIL off.
 
-**What the threads gain.** The STR finder's speed is being measured by a performance review on
-the branch `perf/str-finder`, whose first figures were sent on 20 October 2026. They are for the
-code of b71c83c, a commit of `main` with the same finder as aaaf31b, on the same machine, one
-run each of `pvc_eval str-regions` on stretches of chr1 starting at 10 Mb: 1 Mb in 1.7 s, 4 Mb in
-5.7 s, 16 Mb in 23.7 s with a peak of 129 MB, and 64 Mb in about 106 s. Of the 106 s, finding the
-candidate repeats took 90 s, about 1.4 s per Mb, and absorbing them into satellites 14.6 s, which
-grows with the square of the contig's length. Nothing longer was run. From these, chr20, 64 Mb,
-takes about 100 s, and chr1, 249 Mb, is forecast by that review at 10 to 12 minutes and 1 to 1.5
-GB. Summed over GRCh38's chromosomes the same way, 1.4 s per Mb plus 14.6 s times the square of
-the length over 64 Mb, a whole genome comes to about 1 hour 40 minutes on one thread, and chr1 to chr19 to
-about 1½ hours. These are extrapolations, not measurements. Reading chr20 with `parse_vcf` takes
-0.7 s with one sample and 13 s with 200 (`doc/reports/perf-vcf-parser-2026-10-19.md`). For a run,
-these mean:
+**What the threads gain.** The STR finder's time was measured by the performance review on the
+branch `perf/str-finder`, which sent its figures on 20 October 2026. That branch makes the finder
+faster and is not merged into `main` yet; the owner decides. Its figures, at its commit c31b3b0,
+on the same machine, one run of `segment_contig` per chromosome of GRCh38 one after another in
+one process, default parameters:
 
-- **One contig, the usual benchmark on chr20.** The finder's scan of chr20, about 100 s, is the
-  wait. The readers fill their buffers meanwhile. With one sample, 10,000 records are less than a
-  second of reading, so the threads gain under a second. What saves time on such a run is that
-  chr1 to chr19 are not scanned, about 1½ hours on one thread. A buffer large enough to hold all of chr20 with 200 samples would hide 13 s and
-  cost about 1.5 GB per file, which this spec does not take.
+| chromosome | time | peak of one chromosome alone |
+|---|---|---|
+| chr1 | 77.7 s | 1.15 GB |
+| chr4, the slowest | 89.1 s | 1.01 GB |
+| chr20 | 22.1 s | 339 MB |
+| chr21, chr22 | 12.9 s, 12.5 s | |
+| the 2,556 contigs that are not chromosomes | 3.2 s together | |
+| GRCh38 in all | 1,104 s | 1.86 GB for the process |
+
+The peak while a contig is resolved is 4.6 to 5.3 MB per Mb of contig. A process that scans
+several contigs peaks above the largest one alone, since CPython's allocator keeps the pages the
+earlier ones freed: chr1 then chr2 peaked at 1.65 GB. On four threads, one `segment_contig` per
+thread on a 4 Mb contig took 1.38 to 1.42 s each, against 1.18 s on one thread.
+
+The finder on `main` today, at aaaf31b, is slower: 64 Mb of chr1 took about 106 s, and chr1 whole
+is forecast at 10 to 12 minutes by the same review. The figures below are for the faster finder;
+with `main`'s, a chromosome takes five to nine times longer (64 Mb, 106 s against chr20's 22 s; chr1, 10 to 12 minutes against 78 s), and the conclusions hold.
+
+Reading chr20 with `parse_vcf` takes 0.7 s with one sample and 13 s with 200
+(`doc/reports/perf-vcf-parser-2026-10-19.md`). For a run, these mean:
+
+- **One contig, the usual benchmark on chr20.** The finder's scan of chr20, 22 s, is the wait.
+  The readers fill their buffers meanwhile. With one sample, 10,000 records are less than a second
+  of reading, so the threads gain under a second. What saves time on such a run is that chr1 to
+  chr19 are not scanned: 984 s, about 16 minutes, by the table's run. A buffer large enough to
+  hold all of chr20 with 200 samples would hide 13 s and cost about 1.5 GB per file, which this
+  spec does not take.
 - **Many contigs, with indexed VCFs.** Two finder threads scan two contigs at once while the loci
-  side works on an earlier one. Without an index the scans run nearly one after another: a reader
-  waits on its full buffer, 10,000 records into a contig being scanned, and reaches the next contig
-  only when the loci side has used those records (point 7). A whole genome, about 1 hour 40 minutes on one thread, would take a little more than half
-  that, since chr1 alone is 10 to 12 minutes; the cost is a second scan's memory, 1 to 1.5 GB on
-  the largest contigs.
+  side works on an earlier one. The whole of GRCh38, 1,104 s on one thread, would take a little
+  more than half that on two, since each thread runs a little slower beside another and the last
+  contigs leave a thread idle; this is not measured. The cost is a second scan's memory: two of
+  the largest chromosomes at once, about 2.2 GB, more than that once the allocator keeps freed
+  pages. Without an index the scans run nearly one after another: a reader waits on its full
+  buffer, 10,000 records into a contig being scanned, and reaches the next contig only when the
+  loci side has used those records (point 7).
 - **With `--str-regions`**, nothing is scanned, and only the readers run beside the loci side.
-
-The performance review will send figures for whole chromosomes, and for its faster finder, with
-their commit; they go into this section when they come.
 
 ## How it is verified
 
@@ -553,7 +568,7 @@ both*, *missing in both*, *invalid in both* or *too complex*, the last three onl
 itself has a missing haplotype, an invalid sample or a sample over the cap. It reads GRCh38 from
 the path in `PVC_EVAL_GRCH38` and the VCF from `PVC_EVAL_HG002_VCF`, and is skipped, with a
 message naming the variable, without either (point 6). It is marked slow, since the finder's
-scan of chr20 takes about 100 s.
+scan of chr20 takes 22 s, and about 106 s with the finder on `main`.
 
 ## Changes to `doc/spec.md` and `doc/specs/loci.md`
 
