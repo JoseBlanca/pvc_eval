@@ -133,6 +133,34 @@ P4 on step 7, P5 and P6 on the peak memory.
   leaves the function. The frozen form costs 283 ns per build against 135 ns, and is what stops
   threads from scaling. Measured after P1 and P2, which leave few builds, and at one and eight
   threads.
+
+  *Changed into the search for what makes threads contend, and kept as commit 0f6c2d7.* After P2 only 112,962 open subsequences are built on 4 Mb, so unfreezing them could not
+  matter, but threads still lost: on 4 Mb, one `segment_contig` per thread, eight threads took
+  4.9 to 5.7 s each and eight processes 3.1 s. Trying one change at a time, with outputs equal,
+  the cause was the match objects of `re.finditer` in P1's score function: in a micro-benchmark
+  of step 1's pieces, `finditer` took 0.36 s on one thread and 4.35 to 4.45 s on each of eight,
+  while `translate`, the XOR and `split` scaled. The shared parameters, the tables, generator
+  expressions and lambdas were not causes. The runs are now found with two `bytes.find` calls
+  over the XOR and a second translation of it, which make no objects; 15 lines added, 5
+  removed, about as readable, with a comment that gives these numbers.
+
+  | 4 Mb, seconds per call | 1 thread | 4 threads | 8 threads | 8 processes |
+  |---|---|---|---|---|
+  | before (P2) | 2.28 | 2.90 to 3.04 | 4.98 to 5.71 | 3.08 to 3.26 |
+  | after | 2.06 | 2.44 to 2.64 | 2.85 to 3.81 | 2.83 to 2.98 |
+
+  One thread, in alternating pairs against P2: 2.114 ± 0.007 s instead of 2.317 ± 0.009 s on
+  4 Mb (median ratio 0.912), 9.446 ± 0.127 s instead of 10.294 ± 0.223 s on 16 Mb (0.921); peak
+  unchanged. Outputs equal on 4, 16 and 64 Mb; 912 tests pass.
+
+  A smaller cause remains. A frozen dataclass's generated `__init__` reads `object` from a
+  closure cell that every thread shares, and on 3.15t a shared cell contends: 4 million calls
+  through it took 0.18 s on one thread and 3.5 to 3.8 s on each of eight, against 0.21 to 0.27 s
+  through a module global. `_Candidate`, built about a million times per 4 Mb, stays frozen:
+  unfrozen it gave about 5% on one thread and an uneven gain at eight threads (median of the
+  slowest thread 3.89 s against 4.76 s over nine runs), it departs from python.md's rule for
+  records, and it would need `unsafe_hash=True`, since a test puts candidates in a set. The
+  shared cell is a behaviour of CPython 3.15t that could be reported upstream.
 - **P4. Step 7: find the satellites a feature reaches by bisection.** The satellites stay sorted
   and disjoint, so those within the bundle distance of a span are one slice of the list, found
   with two binary searches instead of a scan of all of them. The fixed point and its passes stay
