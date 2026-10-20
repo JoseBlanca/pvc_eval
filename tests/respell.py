@@ -189,9 +189,12 @@ def respell_by_shifting(
         distance drawn evenly from 1 to that, with random.Random(seed), so that the same seed
         writes the same file.
 
-    Raises what parse_vcf raises, before output is written, and ValueError when output is
-    vcf itself.
+    Raises what parse_vcf raises, before output is written; ValueError when output is vcf
+    itself, or seed is neither None nor a whole number.
     """
+    # bool is an int to Python, and random.Random takes a float or a str as a seed too.
+    if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
+        raise ValueError(f"the seed must be None or a whole number, not {seed!r}")
     _check_output(vcf, output)
     respelling_input = _parse_input(vcf, reference, ploidy)
     contig_edits = _make_contig_edits(respelling_input.input_records)

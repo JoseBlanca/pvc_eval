@@ -15,6 +15,7 @@ from collections import Counter
 from collections.abc import Sequence
 from contextlib import ExitStack
 from pathlib import Path
+from typing import cast
 
 import pytest
 from hypothesis import given, settings
@@ -947,6 +948,24 @@ def test_the_same_seed_writes_the_same_bytes(case_files: CaseFiles, tmp_path: Pa
     for output in outputs:
         respell_by_shifting(vcf, reference, output, seed=20261020)
     assert outputs[0].read_bytes() == outputs[1].read_bytes()
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [pytest.param(True, id="bool"), pytest.param(1.5, id="float"), pytest.param("7", id="str")],
+)
+def test_a_seed_that_is_not_a_whole_number_raises_before_any_output(
+    case_files: CaseFiles, tmp_path: Path, seed: object
+) -> None:
+    reference = case_files.write_reference(1, _SEEDED_BASES)
+    vcf = _write_vcf(tmp_path / "a.vcf", _SEEDED_LINES)
+    output = tmp_path / "b.vcf"
+    # A caller without a type checker can pass any of these; cast lets the test do so.
+    wrong_seed = cast(int, seed)
+    message = f"^the seed must be None or a whole number, not {seed!r}$"
+    with pytest.raises(ValueError, match=message):
+        respell_by_shifting(vcf, reference, output, seed=wrong_seed)
+    assert not output.exists()
 
 
 def test_seeds_write_every_placement_from_one_to_the_largest_shift(
