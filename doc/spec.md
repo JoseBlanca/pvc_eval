@@ -86,8 +86,11 @@ pvc_eval compare --reference ref.fa --a a.vcf.gz --b b.vcf.gz --output loci.tsv
                  [--sample-map pairs.tsv] [--ploidy-a N] [--ploidy-b N] [--phasing-cap N]
                  [--span-limit N|none] [--chain-distance N]
                  [--summary summary.tsv] [--all-rows]
-                 [--evaluator pvc|vcfeval|happy|naive]
 ```
+
+`compare()`, the command, the table writer and the summary are given in full in
+`doc/specs/compare.md`, approved by the owner on 20 October 2026, with how its threads scan only
+the contigs whose loci need STR regions.
 
 | option | what it does |
 |---|---|
@@ -102,9 +105,8 @@ pvc_eval compare --reference ref.fa --a a.vcf.gz --b b.vcf.gz --output loci.tsv
 | `--chain-distance` | default 10 (§5.3): a whole number of 0 or more. |
 | `--span-limit` | how far, in bases, a VCF record's span may reach beyond its REF before it is cut back to the REF (§5.2): a whole number of 1 or more, default 10000, or `none` for no limit. |
 | `--output` | the table of §6, one row per sample pair and locus. |
-| `--summary` | counts of outcomes by kind and stratum. |
+| `--summary` | counts of the rows over all sample pairs, one line per outcome and stratum, one column per kind (§6). |
 | `--all-rows` | also write the rows whose outcome is *reference in both* (§5.5). |
-| `--evaluator` | what decides each locus's outcome: `pvc`, pvc_eval's own rules (§5.4, §5.5), the default; or `vcfeval`, `happy` or `naive`, another evaluator wrapped behind the same interface (§8). |
 
 **Errors, which stop the run:** a VCF not sorted in the `.fai`'s contig order and by position; a
 contig in a VCF but not in the reference; a VCF record whose REF reaches past the end of its
@@ -119,15 +121,19 @@ another ploidy, contradicting VCF records. Those make the affected locus
 
 The Python API offers each stage of §4 as a function over iterators, so a user can, for example,
 filter VCF records between reading and grouping, or read loci and genotypes without evaluating them.
-Above the stages, one function does what `compare` does, whichever the evaluator: it takes the
+Above the stages, one function does what `compare` does: it takes the
 two VCFs, the reference and the options of the table above, and yields the rows of §6 in position
 order, one per sample pair and compared locus, *reference in both* included; `--all-rows` only
 decides which of them the command line writes.
 
 ```python
-def compare(a: Path, b: Path, reference: Path, config: CompareConfig,
-            evaluator: Evaluator = PVC) -> Iterator[OutcomeRow]: ...
+def compare(a: Path, b: Path, reference: Path, config: CompareConfig = CompareConfig(), *,
+            finder_threads: int = DEFAULT_FINDER_THREADS) -> Iterator[OutcomeRow]: ...
 ```
+
+`--evaluator`, which would choose another evaluator of §8, and an `evaluator` parameter of
+`compare()` are left out until a wrapper of §8 exists (decided by the owner on 20 October 2026):
+adding them then breaks nobody, since their default is pvc_eval's own rules.
 
 `CompareConfig` holds `--regions`, `--strata`, `--str-regions`, `--sample-map`, `--ploidy-a`,
 `--ploidy-b`, `--phasing-cap`,
@@ -718,7 +724,10 @@ Tab-separated, one row per sample pair and locus (without `--all-rows`, rows who
 | `records_a`, `records_b` | how many VCF records with an ALT of each file the locus holds |
 | `invalid_reason_a`, `invalid_reason_b` | for an invalid sample, whatever the outcome, the first that applies: `malformed GT`, `ploidy mismatch`, `contradicting records`; `.` otherwise |
 
-The summary (`--summary`) counts rows by outcome, kind and stratum.
+The summary (`--summary`) counts the rows, *reference in both* included, summed over all sample
+pairs: one line per outcome and stratum, one column per kind and a total (decided by the owner on
+20 October 2026, to be tried first). `doc/specs/compare.md` gives how each field of a row and of
+the summary is written.
 
 ## 7. Tests
 
