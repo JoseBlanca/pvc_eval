@@ -1,6 +1,7 @@
 # The re-spelling program — specification
 
-*Status: draft, 20 October 2026, for the owner's approval. No code of it exists yet. The tests
+*Status: approved by the owner on 20 October 2026, with Open 1 not yet answered, so that the
+implementer keeps the rule meanwhile. No code of it exists yet. The tests
 of reconciliation already decompose records, in `_make_decomposed_lines` of
 `tests/test_reconcile_property.py`, and the decomposition here replaces it. It builds the program
 `doc/spec.md` §7.4 asks for, and stands on `doc/spec.md` §2, §5.2, §5.4 and §7, on
