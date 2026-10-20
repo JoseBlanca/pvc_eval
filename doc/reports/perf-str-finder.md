@@ -19,7 +19,8 @@ stretches of chr1 they make the run 4.6 to 5.2 times faster and the peak 5% to 1
 recommends against, since the time left is in a loop numpy cannot take over; pvc's single sweep
 for absorption, which would take about 200 s more off GRCh38 and is recommended; `str-regions`
 on threads, which needs a `--threads` option; and bundles without their members, which is not
-recommended.
+recommended. And the merge of `perf/str-finder` into main, which this report asks for: its
+commits change only `segments.py`, its tests, `benchmarks/` and this report.
 
 ## The workload and the baseline
 
@@ -66,10 +67,16 @@ the ratios of its pairs. The same code against itself, at 15:15 with a load aver
 | 64 Mb | 90.34 s | 14.62 s | 1.12 s |
 
 (`benchmarks/stages_str_finder.py`, one run each.) Step 1 grows with the length of the contig.
-It scores every base once per period, 6 times, and passes each of the 24 million scores of 4 Mb
-through Python, building a frozen dataclass for each of the 6.76 million positive ones. Step 7
-grows with the number of passes times the features times the satellites of the contig, which is
-close to the square of its length: 2.4 million comparisons of a feature with a satellite on 4 Mb,
+For each period from 1 to 6 it scores every base against the base one period before it, the
+match reward (2) when they are the same A, C, G or T and minus the mismatch penalty (7)
+otherwise, and finds the maximal scoring subsequences of those scores with Ruzzo and Tompa's
+algorithm, which keeps a stack of the subsequences still open; each subsequence of two copies
+or more is a candidate. It passes each of the 24 million scores of 4 Mb through Python, building
+a frozen dataclass for each of the 6.76 million positive ones. Step 7, absorption, compares every
+bundle member and STR segment with every satellite and grows a satellite over those it reaches;
+one such round is a pass, and the passes repeat until one absorbs nothing. It grows with the
+number of passes times the features times the satellites of the contig, which is close to the
+square of its length: 2.4 million comparisons of a feature with a satellite on 4 Mb,
 56.5 million on 16 Mb and 690 million on 64 Mb, in 3, 5 and 5 passes.
 
 The Tachyon profiles (16 Mb in wall and cpu mode, 64 Mb in wall mode) name the same places, and
@@ -80,8 +87,8 @@ attempts during step 1 and almost none during step 7; this was found by the meth
 from the timestamps of the samples, and matches the step timer.
 
 **Forecast for chr1** (249 Mb, 18.5 Mb of it N), from the 64 Mb stretch, which has the same
-features and satellites per Mb of sequence as chr1 (counted on pvc's typing of chr1 at
-pvc_eval's floors): step 1 about 330 s, step 7 about 180 to 225 s, so 9 to 10 minutes. GRCh38 one
+features and satellites per Mb of sequence as chr1 (counted on the STR regions pvc gives for
+chr1 at pvc_eval's copy floors): step 1 about 330 s, step 7 about 180 to 225 s, so 9 to 10 minutes. GRCh38 one
 contig after another: about 100 minutes.
 
 **Memory.** The peak comes at the end of a contig, when it holds at once the bases (1 byte per
@@ -171,7 +178,8 @@ P4 on step 7, P5 and P6 on the peak memory.
   through a module global. `_Candidate`, built about a million times per 4 Mb, stays frozen:
   unfrozen it gave about 5% on one thread and an uneven gain at eight threads (median of the
   slowest thread 3.89 s against 4.76 s over nine runs), it departs from python.md's rule for
-  records, and it would need `unsafe_hash=True`, since a test puts candidates in a set. The
+  records, and it would need `unsafe_hash=True`, since a dataclass that compares by value and
+  is not frozen has no hash, and a test puts candidates in a set. The
   shared cell is a behaviour of CPython 3.15t that could be reported upstream.
 - **P4. Step 7: find the satellites a feature reaches by bisection.** The satellites stay sorted
   and disjoint, so those within the bundle distance of a span are one slice of the list, found
@@ -267,7 +275,7 @@ between 17:18 and 17:26 (load average 1.4 to 2.1), outputs equal:
 |---|---|---|---|---|
 | 4 Mb, 10 pairs | 5.669 ± 0.026 s | 1.234 ± 0.015 s | 0.217 | 57.1 → 53.3 MB |
 | 16 Mb, 5 pairs | 23.836 ± 0.193 s | 4.964 ± 0.009 s | 0.209 | 128.7 → 122.8 MB |
-| 64 Mb, 2 pairs | 104.905 ± 0.064 s | 20.230 ± 0.000 s | 0.193 | 393.5 → 334.3 MB |
+| 64 Mb, 2 pairs (both candidate runs 20.23 s) | 104.905 ± 0.064 s | 20.230 ± 0.000 s | 0.193 | 393.5 → 334.3 MB |
 
 **chr1 and GRCh38**, at commit c31b3b0, one run each:
 
@@ -292,10 +300,13 @@ chr20 339 MB). A run over several contigs peaks higher: chr1 then chr2 1.65 GB, 
 534 MB, GRCh38 1.86 GB. The objects are freed between contigs (19,947 objects after each of four
 contigs, from 17,356 at the start), but the resident memory stays: 219, 359, 420 and 430 MB
 after chr21, chr20, chr21 and chr19. So CPython's allocator, mimalloc, keeps the pages of the
-contigs before; `MIMALLOC_PURGE_DELAY=0` changed nothing, and the free-threaded build refuses
+contigs before, and a later contig, whose bases and candidates need new memory, adds to them
+rather than reusing all of them; chr2 alone was not measured. `MIMALLOC_PURGE_DELAY=0` changed
+nothing, and the free-threaded build refuses
 `PYTHONMALLOC=malloc`. It levels off rather than growing with the genome.
 
-**Where the time is now.** Step 1 is about 85% of a run. cProfile on 4 Mb gives its Ruzzo–Tompa
+**Where the time is now.** Step 1 is about 80% of a run over GRCh38 (1,104 s less absorption's
+220 s) and 90% on the 16 Mb stretch. cProfile on 4 Mb gives its Ruzzo–Tompa
 loop 0.85 s and the work on the candidates it finds about 2 s (inflated by the profiler): about a
 million candidates per 4 Mb, 78% of them of period 1, every run of two equal bases, nearly all
 dropped at the copy floor after they have served the drop rule. **Threads**, one
@@ -316,11 +327,13 @@ thirds. Pure Python gives GRCh38 in 17 minutes, chr1 in 77 s, and threads for th
 **pvc's single sweep for absorption: recommended.** The algorithms reviewer ported pvc's
 `absorb_by_sweep` (about 60 lines). On whole chromosomes it gives the same satellites, bundle
 members and STR segments as the fixed point, and takes chr4's absorption from 23.8 to 0.91 s,
-chr18's from 8.03 to 0.52 s and chr21's from 0.63 to 0.22 s (one run each). Over GRCh38 that is
-about 200 s of the 1,026, 20%, and chr4, the slowest contig, from 89 to about 66 s. The cost is a
+chr18's from 8.03 to 0.52 s and chr21's from 0.63 to 0.22 s (one run each). Absorption takes
+about 220 s over GRCh38 with the fixed point; with the sweep about a twentieth of that, so the
+gain is about 200 s of the 1,026, 20%, and chr4, the slowest contig, from 89 to about 66 s. The cost is a
 second absorption in the code, with pvc's argument for why it is exact, and the fixed point kept
 as the test oracle, as pvc keeps it. On the 64 Mb stretch, 5 passes, it would gain only about 1
-s; the number of passes on some chromosomes, up to about 30, is what makes it worth it.
+s, which is what the reviewer first estimated for chr1 too, assuming its 5 passes; the number
+of passes on some chromosomes, up to about 30, is what makes it worth it.
 
 **`str-regions` on threads, one contig per thread.** It needs a `--threads` option, since
 python.md asks for the number of threads to be a parameter, and so a change to the spec's
