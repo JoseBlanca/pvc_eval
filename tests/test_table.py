@@ -305,6 +305,15 @@ def test_write_table_gzips_at_level_6(tmp_path: Path) -> None:
     assert output.read_bytes()[8] == 0
 
 
+def test_write_table_gzips_with_no_file_name_in_the_header(tmp_path: Path) -> None:
+    output = tmp_path / "loci.tsv.gz"
+    write_table(iter(_SHORT_ROWS), output)
+    header = output.read_bytes()
+    # FLG, the fourth byte, has FNAME (8) clear, so `gunzip -N` restores no `.tmp` name;
+    # MTIME, bytes 4 to 7, is 0.
+    assert (header[3] & 8, header[4:8]) == (0, bytes(4))
+
+
 def test_write_table_writes_utf8_with_no_carriage_return(tmp_path: Path) -> None:
     output, summary = tmp_path / "loci.tsv", tmp_path / "summary.tsv"
     write_table(iter([_make_row(sample_a="Müller")]), output, summary=summary)

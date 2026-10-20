@@ -6,6 +6,7 @@ their numbers; open_temporary_output, which opens the temporary file of an outpu
 """
 
 import gzip
+import io
 import zlib
 from collections.abc import Generator
 from pathlib import Path
@@ -85,6 +86,10 @@ def open_temporary_output(path: Path, temporary: Path, option: str, *, compress:
     option: the command-line option that gave path, "--output" or "--summary", for the
     messages.
 
+    Lines end in "\n" on every system. A gzipped file's header holds no file name and a
+    time of 0, so `gunzip -N` does not restore the `.tmp` name (doc/specs/compare.md,
+    "Writing the files").
+
     Raises PvcEvalInputError, naming option, when path is a directory or temporary cannot
     be made.
     """
@@ -95,8 +100,8 @@ def open_temporary_output(path: Path, temporary: Path, option: str, *, compress:
     cannot = f"{option} {path} cannot be written:"
     try:
         if compress:
-            return gzip.open(temporary, "wt", compresslevel=_GZIP_LEVEL, encoding="utf-8")
-        return temporary.open("w", encoding="utf-8")
+            return _open_gzipped_output(temporary)
+        return temporary.open("w", encoding="utf-8", newline="\n")
     except FileNotFoundError:
         raise PvcEvalInputError(
             f"{cannot} its directory, {path.parent}, does not exist. Make it, or give another"
@@ -117,3 +122,20 @@ def open_temporary_output(path: Path, temporary: Path, option: str, *, compress:
             f"{cannot} {temporary}, where it is written first, is a directory. Move it away,"
             " and run again."
         ) from None
+
+
+def _open_gzipped_output(temporary: Path) -> TextIO:
+    """Open temporary to be written as gzipped UTF-8 text, with no name and no time in the
+    gzip header."""
+    raw = temporary.open("wb", buffering=0)
+    try:
+        compressed = gzip.GzipFile(
+            filename="", mode="wb", compresslevel=_GZIP_LEVEL, fileobj=raw, mtime=0
+        )
+    except BaseException:
+        raw.close()
+        raise
+    # GzipFile closes, when it is closed, the file it holds as myfileobj, which it sets only
+    # for a file it opened itself; given this one, it would leave it open.
+    compressed.myfileobj = raw
+    return io.TextIOWrapper(compressed, encoding="utf-8", newline="\n")
