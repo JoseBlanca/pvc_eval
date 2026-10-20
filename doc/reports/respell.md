@@ -128,3 +128,41 @@ against any other; the cause in A is checked for *too complex* only, since `eval
 *missing in both* and *invalid in both* only when A has the cause; and the harness of the case
 tests and the properties is in one place, so milestones 4 to 6 add a row of the table of
 re-spellings. Not taken now: the reference as a path, deferred to `compare()` as above.
+
+## Milestone 4: shift
+
+Done in 5e28f5d and fixed in f3afcea to 92df6bb. `respell_by_shifting` moves each indel that
+nothing touches right within its repeat, as far as the spec's §4 allows, or a distance drawn
+from a seed, with the VCF genotypes as read.
+
+- `uv run pytest tests/test_respell.py tests/test_respell_check.py` passes: S1 to S9 with their
+  outputs as literals; the records the shift keeps; the phase cases; the blocking edit just past
+  the last placement; a long REF behind a short one; the span limit at 10,000 and 10,001 bases;
+  IUPAC bases in the reference; the seed; the AT repeat with its file B now made by the shift;
+  the oracle, bcftools and §7.4 properties.
+- **GIAB HG002 v4.2.1, chr20, against its shift: it passes.** 10,458 of 85,951 records shifted,
+  all 81,257 rows *same genotype*, 126 s, 557 MB, of which the shift itself takes 1.1 s.
+- Over 5,000 generated files outside the suite, 1,174 had a shifted record, with no failure of
+  the oracle or of §7.4. The reviewers ran 16,000 more files and 2,700 of a generator of their
+  own through `reconcile` and the §7.4 check, seeded and not: no difference.
+- The five checks pass on 92df6bb; the whole suite gives "1175 passed, 6 skipped".
+
+Changed in the spec: the shift slides only over the reference's own A, C, G or T (abaf79d); a PS
+line is declared `Integer` only when every PS fits in 32 bits, and a GT line is added when the
+header lacks one (33a1c41); the rewritten share is counted on a fixed set of 300 files, since in
+random runs the shifted files ranged from 22 to 77 around the 30 asserted (2617cca).
+
+The review found one wrong shift: where the VCF's REF matches the reference only by an IUPAC code,
+`A` over `M`, the shift slid on the VCF's letters and changed the haplotype (reference `GCMAAAT`,
+`2 CA C`); fixed, confirmed by the reviewer's second look, which also notes that one of its four
+cases, the slide up to an `N`, would pass without the fix. Fixed besides: two outputs bcftools
+warned about, a PS of 2^31 or more and an input with no GT in its FORMAT; the tests of a bad input
+for every re-spelling, not only the decomposition; four plausible wrong rules no test could fail
+on, at the end of the slide and in the search by REF; one search by REF where there were three;
+the seed checked as a whole number; and the generator draws a repeat's indel at either edge again.
+Not taken: splitting `tests/respell.py`, which reads by its sections at 900 lines.
+
+For the owner, outside this plan: `parse_vcf` gives a record its span by sliding on the VCF's own
+letters, while reconciliation builds each haplotype from the reference's bases. Where a REF
+matches the reference only by an IUPAC code, as above, the two can disagree. It is in pvc_eval's
+code, and only a reference with IUPAC codes under a deletion reaches it.

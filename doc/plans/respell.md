@@ -123,7 +123,7 @@ what 1 builds.
   interact. The report gives, from a run outside the suite of 5,000 examples, how many rows had
   each outcome.
 
-- [ ] **4. Shift**
+- [x] **4. Shift**
 
   What it gives: `respell_by_shifting`, checked by the oracle and then through the stages.
 
