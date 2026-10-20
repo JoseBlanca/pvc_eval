@@ -166,6 +166,22 @@ P4 on step 7, P5 and P6 on the peak memory.
   with two binary searches instead of a scan of all of them. The fixed point and its passes stay
   as they are. On 4 Mb, 0.018 s against 0.059 s; forecast 0.5 s against 14.6 s on 64 Mb. Code:
   about the same, with the invariant of sorted, disjoint satellites stated.
+
+  *Kept, commit d9601a8.* Two binary searches, on the satellites' ends
+  and on their starts, replace the scan; the rest of absorption is unchanged, and on 64 Mb it
+  still makes 2,377,895 calls in 5 passes. The function is shorter (34 lines changed in
+  segments.py), and its docstring states the invariant and why the satellites reached are one
+  slice. Twelve tests were added: eleven hand-worked cases at gaps of exactly 14 and 15 bases
+  around several satellites, and a hypothesis comparison with a scan written in the test from
+  the spec's rule. Each of four deliberate breaks (either search one base off, the satellite
+  before the slice not looked at, only one satellite of the slice grown) failed 3 to 11 tests.
+  Outputs equal on 4, 16 and 64 Mb; 924 tests pass. Step 7 on 64 Mb takes 1.84 s instead of
+  14.62 s. In alternating pairs against P3:
+
+  | input | P3 | P4 | median ratio | peak RSS |
+  |---|---|---|---|---|
+  | 64 Mb, 3 pairs | 46.677 ± 0.060 s | 34.280 ± 0.050 s | 0.735 | 393.6 → 393.6 MB |
+  | 16 Mb, 5 pairs | 9.360 ± 0.024 s | 8.398 ± 0.023 s | 0.898 | 128.5 → 128.5 MB |
 - **P5. Step 8 as a generator.** `_make_segments` yields instead of building the list of all
   segments, and `_find_segments` returns before the first segment, which frees the candidates
   while the segments are written. tracemalloc on 4 Mb: the peak from 20.9 to 19.6 MB. Code:
