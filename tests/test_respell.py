@@ -306,29 +306,34 @@ def test_a_record_at_the_last_base_of_its_contig_is_decomposed(
     assert read_case_lines(tmp_path / "b.vcf") == ["3 GT G 0|1:1"]
 
 
+@pytest.mark.parametrize("respelling", RESPELLING_PARAMS)
 def test_a_ref_that_differs_from_the_reference_stops_before_any_output(
-    case_files: CaseFiles, tmp_path: Path
+    case_files: CaseFiles, tmp_path: Path, respelling: Respelling
 ) -> None:
     reference = case_files.write_reference(1, "GACGTA")
     vcf = _write_vcf(tmp_path / "a.vcf", ["2 A T 0/1", "4 T C 0/1"])
     output = tmp_path / "b.vcf"
     with pytest.raises(PvcEvalInputError, match="line 4: the REF of chr1:4 is 'T'"):
-        respell_by_decomposing(vcf, reference, output)
+        respelling.respell(vcf, reference, output, 2, None)
     assert not output.exists()
 
 
-def test_an_output_that_is_the_input_raises(case_files: CaseFiles, tmp_path: Path) -> None:
+@pytest.mark.parametrize("respelling", RESPELLING_PARAMS)
+def test_an_output_that_is_the_input_raises(
+    case_files: CaseFiles, tmp_path: Path, respelling: Respelling
+) -> None:
     reference = case_files.write_reference(1, "GACGTA")
     vcf = _write_vcf(tmp_path / "a.vcf", ["2 A T 0/1"])
     text = vcf.read_text()
     (tmp_path / "sub").mkdir()
     with pytest.raises(ValueError, match="is the input"):
-        respell_by_decomposing(vcf, reference, tmp_path / "sub" / ".." / "a.vcf")
+        respelling.respell(vcf, reference, tmp_path / "sub" / ".." / "a.vcf", 2, None)
     assert vcf.read_text() == text
 
 
+@pytest.mark.parametrize("respelling", RESPELLING_PARAMS)
 def test_an_output_that_is_a_hard_link_to_the_input_raises(
-    case_files: CaseFiles, tmp_path: Path
+    case_files: CaseFiles, tmp_path: Path, respelling: Respelling
 ) -> None:
     reference = case_files.write_reference(1, "GACGTA")
     vcf = _write_vcf(tmp_path / "a.vcf", ["2 A T 0/1"])
@@ -336,12 +341,13 @@ def test_an_output_that_is_a_hard_link_to_the_input_raises(
     output = tmp_path / "b.vcf"
     output.hardlink_to(vcf)
     with pytest.raises(ValueError, match="is the input"):
-        respell_by_decomposing(vcf, reference, output)
+        respelling.respell(vcf, reference, output, 2, None)
     assert vcf.read_text() == text
 
 
+@pytest.mark.parametrize("respelling", RESPELLING_PARAMS)
 def test_an_output_named_as_the_input_in_other_case_raises_where_case_is_ignored(
-    case_files: CaseFiles, tmp_path: Path
+    case_files: CaseFiles, tmp_path: Path, respelling: Respelling
 ) -> None:
     # macOS's file system, APFS as it comes, ignores case, so A.VCF there is a.vcf; on a file
     # system that does not, A.VCF is another file and is written.
@@ -350,11 +356,12 @@ def test_an_output_named_as_the_input_in_other_case_raises_where_case_is_ignored
     text = vcf.read_text()
     output = tmp_path / "A.VCF"
     if not output.exists():
-        respell_by_decomposing(vcf, reference, output)
-        assert read_case_lines(output) == ["2 A T 0|1:1"]
+        respelling.respell(vcf, reference, output, 2, None)
+        respelling.respell(vcf, reference, tmp_path / "b.vcf", 2, None)
+        assert output.read_bytes() == (tmp_path / "b.vcf").read_bytes()
         return
     with pytest.raises(ValueError, match="is the input"):
-        respell_by_decomposing(vcf, reference, output)
+        respelling.respell(vcf, reference, output, 2, None)
     assert vcf.read_text() == text
 
 
