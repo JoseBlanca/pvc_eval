@@ -750,6 +750,20 @@ def test_bcftools_reads_the_decomposition_of_a_case_as_its_input(
     _check_bcftools_reads_as_input(vcf, output)
 
 
+@settings(max_examples=_ORACLE_EXAMPLES, deadline=None)
+@given(generated=make_generated_vcf())
+def test_the_gts_of_a_generated_record_with_no_alt_are_of_0_and_dot(
+    generated: GeneratedVcf,
+) -> None:
+    # §9.2: an allele 1 at a record with no ALT would make the GT malformed.
+    for line in generated.lines:
+        _, _, _, alt, *sample_fields = line.split()
+        if alt == ".":
+            gts = [sample_field.split(":")[0] for sample_field in sample_fields]
+            alleles = {allele for gt in gts for allele in re.split(r"[/|]", gt)}
+            assert alleles <= {"0", "."}, line
+
+
 def _is_rewritten(vcf: Path, output: Path) -> bool:
     """Whether output has a record line vcf does not: some record was rewritten. A record
     rewritten into the line it had is not counted."""

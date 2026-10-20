@@ -138,9 +138,8 @@ def make_generated_vcf(draw: st.DrawFn) -> GeneratedVcf:
     lines = []
     for contig in contigs:
         for record in draw(_make_records(contig)):
-            sample_fields = [
-                draw(_make_sample_field(len(record.alts), ploidy)) for _ in range(num_samples)
-            ]
+            num_alts = 0 if record.alts == (".",) else len(record.alts)
+            sample_fields = [draw(_make_sample_field(num_alts, ploidy)) for _ in range(num_samples)]
             fields = [contig.name, str(record.start + 1), record.ref, ",".join(record.alts)]
             lines.append(" ".join([*fields, *sample_fields]))
     return GeneratedVcf(
@@ -332,11 +331,12 @@ def _make_alt(ref: str) -> st.SearchStrategy[str]:
 def _make_sample_field(draw: st.DrawFn, num_alts: int, ploidy: int) -> str:
     """A sample's field: a GT phased in one draw of two, a phased one with a PS of `1`, `2`
     or none; `.` in one allele of ten; malformed, with an allele past the ALTs, in one GT of
-    fifty; and of the other ploidy in one GT of fifty."""
+    fifty, but at a record with no ALT, whose GTs are of `0` and `.` alone (§9.2); and of the
+    other ploidy in one GT of fifty."""
     kind = draw(st.integers(0, 49))
     num_alleles = (3 - ploidy) if kind == 48 else ploidy
     alleles = [draw(_make_allele(num_alts)) for _ in range(num_alleles)]
-    if kind == 49:
+    if kind == 49 and num_alts > 0:
         alleles[0] = str(num_alts + 1)
     if num_alleles == 1:
         return alleles[0]
