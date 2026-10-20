@@ -216,13 +216,13 @@ def _parse_input(vcf: Path, reference: IndexedFasta, ploidy: int) -> _Respelling
                 continue
             fields = tuple(line.split("\t"))
             phase_sets.update(_find_phase_sets(fields))
+            # parse_vcf gives no record for a line with a symbolic allele.
+            vcf_record = records_by_line.pop(line_number, None)
+            if vcf_record is not None:
+                _check_line_matches(fields, line_number, vcf_record)
             input_records.append(
                 _InputRecord(
-                    line=line,
-                    place=len(input_records) + 1,
-                    fields=fields,
-                    # parse_vcf gives no record for a line with a symbolic allele.
-                    vcf_record=records_by_line.pop(line_number, None),
+                    line=line, place=len(input_records) + 1, fields=fields, vcf_record=vcf_record
                 )
             )
     assert not records_by_line, "every record of parse_vcf is on a line read"
@@ -234,6 +234,28 @@ def _parse_input(vcf: Path, reference: IndexedFasta, ploidy: int) -> _Respelling
         max_phase_set=max(whole_phase_sets, default=0),
         has_text_phase_set=len(whole_phase_sets) < len(phase_sets),
     )
+
+
+def _check_line_matches(fields: Sequence[str], line_number: int, vcf_record: VcfRecord) -> None:
+    """The record parse_vcf gives for a line is on the line's contig, and its REF, trimmed,
+    lies in the line's REF where its start puts it, which is the line's POS once trimmed.
+
+    Raises AssertionError otherwise: the two readers number the lines differently, which is
+    a defect of this module, not of the input.
+    """
+    offset = vcf_record.start - (int(fields[_POS_COLUMN]) - 1)
+    trimmed_ref = vcf_record.alleles[0]
+    line_ref = fields[_REF_COLUMN].upper()
+    if (
+        fields[_CHROM_COLUMN] != vcf_record.contig
+        or offset < 0
+        or line_ref[offset : offset + len(trimmed_ref)] != trimmed_ref
+    ):
+        raise AssertionError(
+            f"line {line_number}, {fields[_CHROM_COLUMN]}:{fields[_POS_COLUMN]}, is matched to"
+            f" the record parse_vcf gives at {vcf_record.contig}:{vcf_record.start + 1},"
+            " which is not on it"
+        )
 
 
 def _open_text(vcf: Path, *, is_gzipped: bool) -> TextIO:
