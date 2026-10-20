@@ -8,11 +8,13 @@ with its header, its order, its new phase sets and, for a gzipped input, BGZF.
 Positions are 0-based and half-open, as everywhere inside pvc_eval, but for POS, which is
 1-based where a name says so.
 
-Public: respell_by_decomposing (§3).
+Public: respell_by_decomposing (§3), respell_by_shifting (§4).
 """
 
 import bisect
 import gzip
+import itertools
+import random
 import struct
 import zlib
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -133,7 +135,7 @@ def respell_by_decomposing(
     """
     _check_output(vcf, output)
     respelling_input = _parse_input(vcf, reference, ploidy)
-    touched_places = _find_touched_places(respelling_input.input_records)
+    touched_places = _find_touched_places(_make_contig_edits(respelling_input.input_records))
     spanning_deletion_refs = _find_spanning_deletion_refs(respelling_input.input_records)
     output_records = []
     for input_record in respelling_input.input_records:
@@ -158,6 +160,63 @@ def respell_by_decomposing(
             _make_piece_record(input_record, piece, allele_indices, new_phase_set)
             for piece, allele_indices in pieces.items()
         )
+    _write_output(output, respelling_input, output_records)
+
+
+def respell_by_shifting(
+    vcf: Path,
+    reference: IndexedFasta,
+    output: Path,
+    *,
+    seed: int | None = None,
+    ploidy: int = DEFAULT_PLOIDY,
+) -> None:
+    """Respell vcf by moving each record that is not kept, of one ALT whose edit is an
+    insertion or a deletion, further right in its repeat, written to output
+    (doc/specs/respell.md §4). A record is moved at most as far as its span, the contig's end
+    and the edits of other records that may share a haplotype carrying it allow.
+
+    vcf: a VCF file, plain or gzipped, read with parse_vcf over reference with ploidy.
+    output: the file written, bgzipped when vcf is gzipped.
+    seed: None to move each record as far as it goes; a whole number to move it by a
+        distance drawn evenly from 1 to that, with random.Random(seed), so that the same seed
+        writes the same file.
+
+    Raises what parse_vcf raises, before output is written, and ValueError when output is
+    vcf itself.
+    """
+    _check_output(vcf, output)
+    respelling_input = _parse_input(vcf, reference, ploidy)
+    contig_edits = _make_contig_edits(respelling_input.input_records)
+    touched_places = _find_touched_places(contig_edits)
+    spanning_deletion_refs = _find_spanning_deletion_refs(respelling_input.input_records)
+    draws = None if seed is None else random.Random(seed)
+    output_records = []
+    for input_record in respelling_input.input_records:
+        vcf_record = input_record.vcf_record
+        if (
+            vcf_record is None
+            or len(vcf_record.alleles) != 2
+            or _is_kept_whatever_is_written(vcf_record, input_record.place, touched_places)
+        ):
+            output_records.append(_make_kept_record(input_record))
+            continue
+        record_edits = _RecordEdits(input_record.place, vcf_record, _find_edits(vcf_record))
+        largest_shift = _count_largest_shift(
+            record_edits, contig_edits[vcf_record.contig], reference
+        )
+        if largest_shift < 1:
+            output_records.append(_make_kept_record(input_record))
+            continue
+        shift = largest_shift if draws is None else draws.randint(1, largest_shift)
+        start, alleles = _make_shifted_alleles(record_edits, shift, reference)
+        written = [(vcf_record.start, vcf_record.alleles), (start, alleles)]
+        if _is_near_spanning_deletion(
+            vcf_record.contig, written, spanning_deletion_refs, reference
+        ):
+            output_records.append(_make_kept_record(input_record))
+            continue
+        output_records.append(_make_shifted_record(input_record, start, alleles))
     _write_output(output, respelling_input, output_records)
 
 
@@ -338,14 +397,19 @@ class _RecordEdits:
     edits: tuple[_Edit | None, ...]
 
 
-def _find_touched_places(input_records: Iterable[_InputRecord]) -> set[int]:
-    """The places of the touched records (§2.2): those at which some sample carries an edit
-    that touches an edit it carries at another record of the contig, the two VCF alleles
-    being ones that may share a haplotype.
+@dataclass(frozen=True, slots=True)
+class _ContigEdits:
+    """The records of a contig with an ALT, with their edits, sorted by REF start; and for
+    each, the furthest end of the REFs up to it, so that a search for the REFs that touch a
+    stretch stops where no REF before reaches it."""
 
-    An edit lies within its record's REF, its ends included, so the records are swept by REF
-    and each is compared only with those before it whose REF reaches its start (§10).
-    """
+    record_edits: tuple[_RecordEdits, ...]
+    starts: tuple[int, ...]
+    furthest_ends: tuple[int, ...]
+
+
+def _make_contig_edits(input_records: Iterable[_InputRecord]) -> dict[str, _ContigEdits]:
+    """The records with an ALT that parse_vcf gives, with their edits, by contig."""
     by_contig: dict[str, list[_RecordEdits]] = {}
     for input_record in input_records:
         vcf_record = input_record.vcf_record
@@ -353,11 +417,44 @@ def _find_touched_places(input_records: Iterable[_InputRecord]) -> set[int]:
             continue
         record_edits = _RecordEdits(input_record.place, vcf_record, _find_edits(vcf_record))
         by_contig.setdefault(vcf_record.contig, []).append(record_edits)
-    touched_places: set[int] = set()
-    for contig_records in by_contig.values():
+    contig_edits = {}
+    for contig, contig_records in by_contig.items():
         contig_records.sort(key=lambda record_edits: record_edits.vcf_record.start)
+        furthest_ends = itertools.accumulate(
+            (record_edits.vcf_record.end for record_edits in contig_records), max
+        )
+        contig_edits[contig] = _ContigEdits(
+            record_edits=tuple(contig_records),
+            starts=tuple(record_edits.vcf_record.start for record_edits in contig_records),
+            furthest_ends=tuple(furthest_ends),
+        )
+    return contig_edits
+
+
+def _find_ref_touching_records(contig_edits: _ContigEdits, stretch: Span) -> Iterator[_RecordEdits]:
+    """The records whose REF overlaps stretch or lies next to it, from the right. Every edit
+    that touches stretch is one of theirs, since an edit lies within its REF, ends included."""
+    stretch_start, stretch_end = stretch
+    index = bisect.bisect_right(contig_edits.starts, stretch_end) - 1
+    while index >= 0 and contig_edits.furthest_ends[index] >= stretch_start:
+        record_edits = contig_edits.record_edits[index]
+        if record_edits.vcf_record.end >= stretch_start:
+            yield record_edits
+        index -= 1
+
+
+def _find_touched_places(contig_edits: Mapping[str, _ContigEdits]) -> set[int]:
+    """The places of the touched records (§2.2): those at which some sample carries an edit
+    that touches an edit it carries at another record of the contig, the two VCF alleles
+    being ones that may share a haplotype.
+
+    An edit lies within its record's REF, its ends included, so the records are swept by REF
+    and each is compared only with those before it whose REF reaches its start (§10).
+    """
+    touched_places: set[int] = set()
+    for one_contig_edits in contig_edits.values():
         reaching: list[_RecordEdits] = []
-        for record_edits in contig_records:
+        for record_edits in one_contig_edits.record_edits:
             start = record_edits.vcf_record.start
             reaching = [earlier for earlier in reaching if earlier.vcf_record.end >= start]
             for earlier in reaching:
@@ -570,6 +667,108 @@ def _make_piece_record(
         [piece.alt],
         input_record.fields[_QUAL_COLUMN],
         sample_fields,
+    )
+
+
+# --- Shift (§4) ---
+
+
+def _count_largest_shift(
+    record_edits: _RecordEdits, contig_edits: _ContigEdits, reference: IndexedFasta
+) -> int:
+    """How far right the one edit of a record, an insertion or a deletion, can be moved: as
+    far as it slides, within the record's span and the contig, and short of every edit of
+    another record that a sample carries on a haplotype that may share one carrying the
+    indel; 0 when it cannot be moved, or is no indel."""
+    vcf_record = record_edits.vcf_record
+    edit = record_edits.edits[1]
+    if edit is None or bool(edit.deleted) == bool(edit.inserted):
+        return 0
+    contig_length = reference.get_length(vcf_record.contig)
+    num_slide = _count_slide_right(
+        reference, vcf_record.contig, edit.end, edit.deleted or edit.inserted
+    )
+    largest_shift = min(num_slide, _count_span_shift(edit, vcf_record.span, contig_length))
+    if largest_shift < 1:
+        return 0
+    # The stretch the indel crosses moved by largest_shift: a to b + k for a deletion of a
+    # to b, and the positions its point passes over for an insertion.
+    crossed = (edit.start, edit.end + largest_shift)
+    for other in _find_ref_touching_records(contig_edits, crossed):
+        if other.place == record_edits.place:
+            continue
+        for other_edit in _find_blocking_edits(record_edits, other):
+            # Crossing up to edit.end + k touches an edit that starts at edit.end + k + 1 or
+            # before; one that ends before edit.start lies apart whatever k is.
+            if other_edit.end >= edit.start:
+                largest_shift = min(largest_shift, other_edit.start - edit.end - 1)
+    return max(largest_shift, 0)
+
+
+def _count_span_shift(edit: _Edit, span: Span, contig_length: int) -> int:
+    """How far an indel can move with its placement within span (§4): its deleted positions,
+    or the base after its point, which the contig's end cuts as it cuts the span. A span the
+    span limit cut back to the REF allows none."""
+    _, span_end = span
+    if edit.deleted:
+        return span_end - edit.end
+    if span_end == contig_length:
+        return contig_length - edit.start
+    return span_end - edit.start - 1
+
+
+def _find_blocking_edits(record_edits: _RecordEdits, other: _RecordEdits) -> Iterator[_Edit]:
+    """The edits a sample carries at other on a haplotype that may share one on which it
+    carries the indel of record_edits."""
+    genotype_pairs = zip(record_edits.vcf_record.genotypes, other.vcf_record.genotypes, strict=True)
+    for genotype, other_genotype in genotype_pairs:
+        if not (isinstance(genotype, VcfGenotype) and isinstance(other_genotype, VcfGenotype)):
+            continue
+        carrying = [haplotype for haplotype, _ in _find_carried_edits(genotype, record_edits.edits)]
+        for other_haplotype, other_edit in _find_carried_edits(other_genotype, other.edits):
+            if any(
+                _is_haplotype_shareable(genotype, haplotype, other_genotype, other_haplotype)
+                for haplotype in carrying
+            ):
+                yield other_edit
+
+
+def _make_shifted_alleles(
+    record_edits: _RecordEdits, shift: int, reference: IndexedFasta
+) -> tuple[int, tuple[str, str]]:
+    """The start, 0-based, and the REF and ALT of a record's indel moved right by shift, with
+    the base before it as anchor. An inserted sequence turns as it slides: its first base
+    moves to its end at each step."""
+    vcf_record = record_edits.vcf_record
+    edit = record_edits.edits[1]
+    assert edit is not None, "only an indel is shifted"
+    anchor = edit.start + shift - 1
+    if edit.deleted:
+        ref = reference.get_bases(vcf_record.contig, anchor, edit.end + shift)
+        return anchor, (ref, ref[0])
+    anchor_base = reference.get_bases(vcf_record.contig, anchor, anchor + 1)
+    turn = shift % len(edit.inserted)
+    return anchor, (anchor_base, anchor_base + edit.inserted[turn:] + edit.inserted[:turn])
+
+
+def _make_shifted_record(
+    input_record: _InputRecord, start: int, alleles: tuple[str, str]
+) -> _OutputRecord:
+    """A shifted record, with its VCF genotypes as read: the shift moves an edit, not a
+    haplotype's phase."""
+    vcf_record = input_record.vcf_record
+    assert vcf_record is not None, "a record with a symbolic allele is kept"
+    sample_fields = []
+    for genotype in vcf_record.genotypes:
+        assert isinstance(genotype, VcfGenotype), "a record with an invalid GT is kept"
+        alleles_written = ["." if allele is MISSING else str(allele) for allele in genotype.alleles]
+        is_phased = genotype.phased and len(alleles_written) > 1
+        sample_fields.append(
+            _format_sample(alleles_written, phased=is_phased, phase_set=genotype.phase_set)
+        )
+    ref, alt = alleles
+    return _make_rewritten_record(
+        input_record, start + 1, ref, [alt], input_record.fields[_QUAL_COLUMN], sample_fields
     )
 
 

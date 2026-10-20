@@ -1,6 +1,6 @@
 """The cases of doc/specs/respell.md in its notation, for the tests of the re-spelling
 program and of what checks it: RespellingCase, the D cases of §3 as DECOMPOSITION_CASES,
-and the readers of a VCF file in the notation, read_case_lines, read_header and
+the S cases of §4 as SHIFT_CASES, and the readers of a VCF file in the notation, read_case_lines, read_header and
 read_vcf_lines. A case's input is written with write_case_vcf of tests.conftest, with
 fills_ps=False.
 
@@ -19,14 +19,16 @@ _GZIP_MAGIC = b"\x1f\x8b"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RespellingCase:
-    """A case of the spec: its name, the reference's bases from position 1 (N after them),
-    the input's lines, the output's lines and the ploidy."""
+    """A case of the spec: its name, the reference's bases from position 1, the input's
+    lines, the output's lines and the ploidy. The bases are followed by N, but when
+    is_whole_contig, where they are the whole contig, as in S7 and S8."""
 
     name: str
     bases: str
     input_lines: tuple[str, ...]
     output_lines: tuple[str, ...]
     ploidy: int = 2
+    is_whole_contig: bool = False
 
 
 DECOMPOSITION_CASES = (
@@ -102,6 +104,65 @@ DECOMPOSITION_CASES = (
         bases="TAAC",
         input_lines=("3 AC G,AA 0/1", "3 A G,AA 1/2"),
         output_lines=("3 AC G,AA 0/1", "3 A G,AA 1/2"),
+    ),
+)
+
+SHIFT_CASES = (
+    RespellingCase(
+        name="S1-deletion-moved-to-the-last-a",
+        bases="GCAAAAT",
+        input_lines=("2 CA C 0/1",),
+        output_lines=("5 AA A 0/1:.",),
+    ),
+    RespellingCase(
+        name="S2-insertion-rotated-as-it-slides",
+        bases="TCACACAG",
+        input_lines=("2 C CAC 1/1",),
+        output_lines=("7 A ACA 1/1:.",),
+    ),
+    RespellingCase(
+        name="S3-next-to-a-snp-that-may-share-its-haplotype-kept",
+        bases="GCAAAAT",
+        input_lines=("2 CA C 0/1", "5 A G 0/1"),
+        output_lines=("2 CA C 0/1", "5 A G 0/1"),
+    ),
+    RespellingCase(
+        name="S4-moved-short-of-a-snp",
+        bases="GCAAAAAT",
+        input_lines=("2 CA C 0/1", "7 A G 0/1"),
+        output_lines=("4 AA A 0/1:.", "7 A G 0/1"),
+    ),
+    RespellingCase(
+        name="S5-snp-on-the-other-haplotype",
+        bases="GCAAAAT",
+        input_lines=("2 CA C 1|0:9", "5 A G 0|1:9"),
+        output_lines=("5 AA A 1|0:9", "5 A G 0|1:9"),
+    ),
+    RespellingCase(
+        name="S6-snp-of-another-sample",
+        bases="GCAAAAT",
+        input_lines=("2 CA C 0/1 0/0", "5 A G 0/0 0/1"),
+        output_lines=("5 AA A 0/1:. 0/0:.", "5 A G 0/0 0/1"),
+    ),
+    RespellingCase(
+        name="S7-deletion-of-the-last-base-of-the-contig",
+        bases="GCAAAA",
+        input_lines=("2 CA C 0/1",),
+        output_lines=("5 AA A 0/1:.",),
+        is_whole_contig=True,
+    ),
+    RespellingCase(
+        name="S8-insertion-after-the-last-base-of-the-contig",
+        bases="GCAAAA",
+        input_lines=("2 C CA 0/1",),
+        output_lines=("6 A AA 0/1:.",),
+        is_whole_contig=True,
+    ),
+    RespellingCase(
+        name="S9-two-alts-kept",
+        bases="GCAAAAT",
+        input_lines=("2 CA C,CAA 1/2",),
+        output_lines=("2 CA C,CAA 1/2",),
     ),
 )
 

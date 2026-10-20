@@ -1,8 +1,8 @@
-"""The re-spelling program of doc/specs/respell.md: what every re-spelling does (§2) and the
-decomposition (§3), at respell_by_decomposing, with the expected records as literals in the
-notation of the cases, which tests.respell_cases describes; each case's output against its
-input through the oracle of §8 and through bcftools; and the properties of §9.2 over the
-files of tests.respell_generator.
+"""The re-spelling program of doc/specs/respell.md: what every re-spelling does (§2), the
+decomposition (§3), at respell_by_decomposing, and the shift (§4), at respell_by_shifting,
+with the expected records as literals in the notation of the cases, which
+tests.respell_cases describes; each case's output against its input through the oracle of §8
+and through bcftools; and the properties of §9.2 over the files of tests.respell_generator.
 """
 
 import gzip
@@ -20,9 +20,8 @@ import pytest
 from hypothesis import given, settings
 from tests.conftest import CONTIG, FILEFORMAT_LINE, CaseFiles, make_chrom_line, write_case_vcf
 from tests.haplotype_oracle import check_same_haplotypes
-from tests.respell import _find_reach, _make_bgzf, respell_by_decomposing
+from tests.respell import _find_reach, _make_bgzf, respell_by_decomposing, respell_by_shifting
 from tests.respell_cases import (
-    DECOMPOSITION_CASES,
     RespellingCase,
     read_case_lines,
     read_header,
@@ -35,6 +34,7 @@ from tests.respell_generator import (
     Respelling,
     check_generated_respellings,
     check_respelled_haplotypes,
+    check_rewritten_share,
     make_generated_vcf,
     write_and_respell_case,
     write_generated_vcf,
@@ -78,14 +78,12 @@ def _decompose(
     return read_case_lines(output)
 
 
-@pytest.mark.parametrize("case", [pytest.param(case, id=case.name) for case in DECOMPOSITION_CASES])
-def test_decomposition_gives_the_case_of_the_spec(
-    case_files: CaseFiles, tmp_path: Path, case: RespellingCase
+@pytest.mark.parametrize(("respelling", "case"), RESPELLING_CASE_PARAMS)
+def test_the_respelling_gives_the_case_of_the_spec(
+    case_files: CaseFiles, tmp_path: Path, respelling: Respelling, case: RespellingCase
 ) -> None:
-    output_lines = _decompose(
-        case_files, tmp_path, case.bases, case.input_lines, ploidy=case.ploidy
-    )
-    assert output_lines == list(case.output_lines)
+    _, _, output = write_and_respell_case(case_files, tmp_path, respelling, case)
+    assert read_case_lines(output) == list(case.output_lines)
 
 
 # The cases of the tests of reconciliation that the D cases do not repeat.
@@ -671,6 +669,235 @@ def test_decomposing_20000_snps_with_touching_records_takes_under_10_seconds(
     assert elapsed < 10, f"{elapsed:.1f} s"
 
 
+# --- The shift (§4) ---
+
+
+def _shift(
+    case_files: CaseFiles,
+    directory: Path,
+    bases: str,
+    case_lines: Sequence[str],
+    *,
+    seed: int | None = None,
+    ploidy: int = 2,
+) -> list[str]:
+    """The shift's records, of a case on a reference that is N but for bases from position
+    1."""
+    reference = case_files.write_reference(1, bases)
+    vcf = _write_vcf(directory / "a.vcf", case_lines)
+    output = directory / "b.vcf"
+    respell_by_shifting(vcf, reference, output, seed=seed, ploidy=ploidy)
+    return read_case_lines(output)
+
+
+# §2.2 for the shift, on reference GCAAAATCGTTTA: each record every re-spelling keeps, and
+# the records the shift keeps for itself, written as read beside the deletion of the T at 10,
+# which the shift moves to 12.
+_SHIFTED_NEIGHBOUR = "9 GT G 0/1"
+_NEIGHBOUR_SHIFTED = "11 TT T 0/1:."
+
+
+@pytest.mark.parametrize(
+    "case_lines",
+    [
+        pytest.param(["2 C . ./."], id="no-alt"),
+        pytest.param(["2 C G,* 0/2"], id="a-star-alt"),
+        # The deletion of the A at 3 slides to 6, so its reach, 2-6, lies next to the `*`
+        # record's REF at 7.
+        pytest.param(["2 CA C 0/1", "7 T G,* 0/2"], id="reach-touches-a-star-ref"),
+        pytest.param(["2 C <DEL> 0/1"], id="symbolic"),
+        pytest.param(["2 CA C 0/5"], id="malformed-gt"),
+        pytest.param(["2 CA C 1"], id="other-ploidy"),
+        pytest.param(["2 CA C 0/1", "3 A G 0/1"], id="touched"),
+        pytest.param(["2 C G 0/1"], id="a-snp"),
+        pytest.param(["2 CA GT 0/1"], id="a-complex-record"),
+        pytest.param(["2 CA C,CAA 1/2"], id="two-alts"),
+        pytest.param(["5 AA A 0/1"], id="already-at-its-last-placement"),
+    ],
+)
+def test_a_record_the_shift_keeps_is_written_as_read(
+    case_files: CaseFiles, tmp_path: Path, case_lines: Sequence[str]
+) -> None:
+    lines = [*case_lines, _SHIFTED_NEIGHBOUR]
+    assert _shift(case_files, tmp_path, "GCAAAATCGTTTA", lines) == [
+        *case_lines,
+        _NEIGHBOUR_SHIFTED,
+    ]
+
+
+# §4, the phase: what stops a shift and what does not, on reference GCAAAAT.
+@pytest.mark.parametrize(
+    ("case_lines", "ploidy", "expected"),
+    [
+        # The point of the insertion passes over 3 and 4, and a third position, 5, would lie
+        # next to the SNP at 6.
+        pytest.param(
+            ["2 C CA 0/1", "6 A G 0/1"],
+            2,
+            ["4 A AA 0/1:.", "6 A G 0/1"],
+            id="insertion-moved-short-of-a-snp",
+        ),
+        pytest.param(
+            ["2 CA C 1|0:9", "5 A G 0|1:8"],
+            2,
+            ["2 CA C 1|0:9", "5 A G 0|1:8"],
+            id="two-phase-sets-kept",
+        ),
+        pytest.param(
+            ["2 CA C 1|0", "5 A G 0|1"],
+            2,
+            ["5 AA A 1|0:.", "5 A G 0|1"],
+            id="phased-with-no-ps-on-the-other-haplotype",
+        ),
+        pytest.param(
+            ["2 CA C 1|0", "5 A G 0|1:9"],
+            2,
+            ["2 CA C 1|0", "5 A G 0|1:9"],
+            id="no-ps-and-a-ps-are-two-phase-sets",
+        ),
+        pytest.param(
+            ["2 CA C 1|0:9", "5 A G 1|0:9"],
+            2,
+            ["2 CA C 1|0:9", "5 A G 1|0:9"],
+            id="phased-on-one-haplotype-kept",
+        ),
+        pytest.param(["2 CA C 1", "5 A G 1"], 1, ["2 CA C 1", "5 A G 1"], id="ploidy-1-kept"),
+        pytest.param(["2 CA C 1"], 1, ["5 AA A 1:."], id="ploidy-1-moved"),
+        pytest.param(["2 CA C ./1"], 2, ["5 AA A ./1:."], id="missing-carried"),
+        # A `.` and REF carry no edit, and a record with no ALT makes none.
+        pytest.param(
+            ["2 CA C 0/1", "5 A G ./0"],
+            2,
+            ["5 AA A 0/1:.", "5 A G ./0"],
+            id="a-missing-allele-does-not-stop-it",
+        ),
+        pytest.param(
+            ["2 CA C 0/1", "5 A . ./."],
+            2,
+            ["5 AA A 0/1:.", "5 A . ./."],
+            id="a-record-with-no-alt-does-not-stop-it",
+        ),
+        # The record at 1 has a REF that starts before the deletion and two ALTs, the first
+        # of which, carried, is a SNP at 7: the deletion moves two positions and not three.
+        pytest.param(
+            ["1 GCAAAAT GCAAAAC,G 0/1", "2 CA C 0/1"],
+            2,
+            ["1 GCAAAAT GCAAAAC,G 0/1", "4 AA A 0/1:."],
+            id="an-edit-of-a-record-whose-ref-starts-before",
+        ),
+        # The same REF, whose carried ALT is now a SNP at 1, apart from the deletion at 3:
+        # the REF reaches the stretch the deletion crosses, but the edit does not.
+        pytest.param(
+            ["1 GCAAAAT TCAAAAT,G 0/1", "2 CA C 0/1"],
+            2,
+            ["1 GCAAAAT TCAAAAT,G 0/1", "5 AA A 0/1:."],
+            id="an-edit-apart-on-the-left-in-a-ref-that-reaches-it",
+        ),
+        # Deletions of 3 and of 5 on the two haplotypes of one phase set: neither stops the
+        # other, and both move to 6.
+        pytest.param(
+            ["2 CA C 1|0:9", "4 AA A 0|1:9"],
+            2,
+            ["5 AA A 1|0:9", "5 AA A 0|1:9"],
+            id="two-deletions-on-two-haplotypes-both-moved",
+        ),
+    ],
+)
+def test_the_shift_stops_short_of_an_edit_that_may_share_the_haplotype(
+    case_files: CaseFiles,
+    tmp_path: Path,
+    case_lines: Sequence[str],
+    ploidy: int,
+    expected: Sequence[str],
+) -> None:
+    assert _shift(case_files, tmp_path, "GCAAAAT", case_lines, ploidy=ploidy) == expected
+
+
+def test_the_shift_stops_only_for_edits_of_its_own_contig(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    reference = case_files.write_contigs({"chr1": "GCAAAAT", "chr2": "GCAAAAT"})
+    vcf = _write_vcf(tmp_path / "a.vcf", ["chr1 2 CA C 0/1", "chr2 5 A G 0/1"], has_chrom=True)
+    respell_by_shifting(vcf, reference, tmp_path / "b.vcf")
+    assert read_case_lines(tmp_path / "b.vcf", has_chrom=True) == [
+        "chr1 5 AA A 0/1:.",
+        "chr2 5 A G 0/1",
+    ]
+
+
+# §4, the span: with the span limit of 10,000, the deletion of an A at 3 in a run of As
+# moves when its span reaches 10,000 positions past its REF and stays when the limit cuts it.
+@pytest.mark.parametrize(
+    ("num_as", "expected"),
+    [
+        pytest.param(10_001, ["10002 AA A 0/1:."], id="span-at-the-limit-moved"),
+        pytest.param(10_002, ["2 CA C 0/1"], id="span-cut-kept"),
+    ],
+)
+def test_a_span_cut_by_the_span_limit_allows_no_shift(
+    case_files: CaseFiles, tmp_path: Path, num_as: int, expected: Sequence[str]
+) -> None:
+    reference = case_files.write_contigs({CONTIG: "GC" + "A" * num_as + "T"})
+    vcf = _write_vcf(tmp_path / "a.vcf", ["2 CA C 0/1"])
+    respell_by_shifting(vcf, reference, tmp_path / "b.vcf")
+    assert read_case_lines(tmp_path / "b.vcf") == expected
+
+
+def test_a_shifted_record_is_written_with_its_qual_and_its_gt_and_ps(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    reference = case_files.write_reference(1, "GCAAAAT")
+    vcf = tmp_path / "a.vcf"
+    vcf.write_text(
+        f"{FILEFORMAT_LINE}\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS0\n"
+        "chr1\t2\trs1\tCa\tc\t50\tPASS\tDP=10\tGT:GQ\t0/1:30\n",
+        encoding="utf-8",
+    )
+    respell_by_shifting(vcf, reference, tmp_path / "b.vcf")
+    assert read_vcf_lines(tmp_path / "b.vcf") == [
+        FILEFORMAT_LINE,
+        _PS_INTEGER,
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS0",
+        "chr1\t5\t.\tAA\tA\t50\t.\t.\tGT:PS\t0/1:.",
+    ]
+
+
+# §4: with a seed, each shift is drawn from 1 to the largest, here 3 for the deletion and 5
+# for the insertion of S2.
+_SEEDED_LINES = ["2 CA C 0/1", "11 C CAC 1/1"]
+_SEEDED_BASES = "GCAAAATNNTCACACAG"
+
+
+def test_the_same_seed_writes_the_same_bytes(case_files: CaseFiles, tmp_path: Path) -> None:
+    reference = case_files.write_reference(1, _SEEDED_BASES)
+    vcf = _write_vcf(tmp_path / "a.vcf", _SEEDED_LINES)
+    outputs = [tmp_path / "b1.vcf", tmp_path / "b2.vcf"]
+    for output in outputs:
+        respell_by_shifting(vcf, reference, output, seed=20261020)
+    assert outputs[0].read_bytes() == outputs[1].read_bytes()
+
+
+def test_seeds_write_every_placement_from_one_to_the_largest_shift(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    placements: set[str] = set()
+    for seed in range(40):
+        directory = tmp_path / str(seed)
+        directory.mkdir()
+        placements.update(_shift(case_files, directory, _SEEDED_BASES, _SEEDED_LINES, seed=seed))
+    assert placements == {
+        "3 AA A 0/1:.",
+        "4 AA A 0/1:.",
+        "5 AA A 0/1:.",
+        "12 A ACA 1/1:.",
+        "13 C CAC 1/1:.",
+        "14 A ACA 1/1:.",
+        "15 C CAC 1/1:.",
+        "16 A ACA 1/1:.",
+    }
+
+
 # --- The oracle and bcftools (§2.3, §8, §9) ---
 
 _BCFTOOLS = shutil.which("bcftools")
@@ -785,8 +1012,8 @@ def test_a_fifth_of_the_generated_files_have_a_pair_of_windows_a_block_joins(
     assert tally["with a linked pair"] * 5 >= tally["files"], tally
 
 
-# §9.2: each property runs over generated files, and asserts that at least one file in ten
-# had a record rewritten.
+# §9.2: each property runs over generated files; the oracle's asserts that at least one file
+# in ten had a record rewritten.
 @pytest.mark.parametrize("respelling", RESPELLING_PARAMS)
 def test_the_respelling_of_a_generated_file_passes_the_oracle(
     tmp_path_factory: pytest.TempPathFactory, respelling: Respelling
@@ -797,7 +1024,10 @@ def test_the_respelling_of_a_generated_file_passes_the_oracle(
         check_respelled_haplotypes(vcf, output, reference, ploidy=generated.ploidy)
         return {}
 
-    check_generated_respellings(respelling, check, tmp_path_factory, max_examples=_ORACLE_EXAMPLES)
+    tally = check_generated_respellings(
+        respelling, check, tmp_path_factory, max_examples=_ORACLE_EXAMPLES
+    )
+    check_rewritten_share(tally)
 
 
 @_needs_bcftools

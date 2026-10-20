@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 from tests.conftest import CaseFiles, write_case_vcf
-from tests.respell import _make_bgzf, respell_by_decomposing
-from tests.respell_cases import RespellingCase
+from tests.respell import _make_bgzf, respell_by_decomposing, respell_by_shifting
+from tests.respell_cases import RespellingCase, read_case_lines
 from tests.respell_check import _make_checked_rows, check_respelling_outcomes
 from tests.respell_generator import (
     RESPELLING_CASE_PARAMS,
@@ -26,6 +26,7 @@ from tests.respell_generator import (
     Respelling,
     check_generated_respellings,
     check_respelled_haplotypes,
+    check_rewritten_share,
     is_rewritten,
     write_and_respell_case,
     write_planted_repeats,
@@ -59,11 +60,14 @@ def test_an_insertion_shifted_through_an_at_repeat_is_one_str_locus_of_same_geno
     case_files: CaseFiles, tmp_path: Path
 ) -> None:
     # §9.1: the AT repeat at 26-45, 1-based, found by segment_contig. `25 G GAT` inserts AT
-    # before the repeat, and `45 T TAT` after it, the same haplotype: both span 25-46, so
-    # they share one locus, which holds the repeat, (25, 45) 0-based and half-open.
+    # before the repeat, and the shift moves it through the repeat to after it, `45 T TAT`,
+    # the same haplotype: both span 25-46, so they share one locus, which holds the repeat,
+    # (25, 45) 0-based and half-open.
     reference = case_files.write_contigs({"chr1": AT_REPEAT_REFERENCE})
     vcf = _write_vcf(tmp_path / "a.vcf", ["25 G GAT 0/1"])
-    output = _write_vcf(tmp_path / "b.vcf", ["45 T TAT 0/1"])
+    output = tmp_path / "b.vcf"
+    respell_by_shifting(vcf, reference, output)
+    assert read_case_lines(output) == ["45 T TAT 0/1:."]
 
     rows = list(_make_checked_rows(vcf, output, reference, str_regions=None, ploidy=2))
 
@@ -229,6 +233,7 @@ def test_a_generated_file_against_its_respelling_gives_the_outcomes_of_itself(
     tally = check_generated_respellings(
         respelling, check, tmp_path_factory, max_examples=_PROPERTY_EXAMPLES
     )
+    check_rewritten_share(tally)
     assert tally["rows in an STR locus"] > 0, tally
 
 
