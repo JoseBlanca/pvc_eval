@@ -1251,6 +1251,25 @@ def test_a_record_under_a_deletion_that_is_kept_gets_no_star(
             ["9 CAGT C 1 0", "11 G A,* 2:. 1:."],
             id="ploidy-1-of-two-samples",
         ),
+        pytest.param(
+            ["9 CAGT C 1", "11 G A ."], 1, ["9 CAGT C 1", "11 G A ."], id="ploidy-1-missing-kept"
+        ),
+        # Each unphased deletion is a phase unit of its own: two, of 10 and of 12, over the
+        # REF 10-12, which joins neither.
+        pytest.param(
+            ["9 CA C 0/1", "10 AGT CGA 0/0", "11 GT G 0/1"],
+            2,
+            ["9 CA C 0/1", "10 AGT CGA 0/0", "11 GT G 0/1"],
+            id="two-unphased-deletions-are-two-phase-units",
+        ),
+        # Two unphased deletions, the first and the third record lines, each phased in its
+        # own new phase set with the record under it.
+        pytest.param(
+            ["9 CA C 0/1", "10 A G 0/0", "12 TC T 0/1", "13 C T 0/0"],
+            2,
+            ["9 CA C 0|1:1", "10 A G,* 0|2:1", "12 TC T 0|1:3", "13 C T,* 0|2:3"],
+            id="two-unphased-deletions-in-two-new-phase-sets",
+        ),
     ],
 )
 def test_a_record_gets_a_star_where_its_haplotype_carries_a_deletion_in_known_phase(

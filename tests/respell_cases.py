@@ -220,6 +220,15 @@ SPANNING_DELETION_CASES = (
         input_lines=("9 CAGT C 0/1", "11 G A,* 1/2"),
         output_lines=("9 CAGT C 0/1", "11 G A,* 1/2"),
     ),
+    # §5, the second way: the deletions over 11-13, of 11 and of 13, come from phase sets 5
+    # and 6, and the record joins neither, though the first way alone would give a `*` on
+    # the first haplotype.
+    RespellingCase(
+        name="all-ref-under-two-phase-units-kept",
+        bases="NNNNNNNNCAGTCAGTCA",
+        input_lines=("10 AG A 1|0:5", "11 GTC ACA 0|0:5", "12 TC T 0|1:6"),
+        output_lines=("10 AG A 1|0:5", "11 GTC ACA 0|0:5", "12 TC T 0|1:6"),
+    ),
     # §5, the first condition: R's REF as parse_vcf trims it. `12 TC TA` is `13 C A`, which a
     # deletion of 12 alone does not delete, so its haplotype gets no `*`.
     RespellingCase(
