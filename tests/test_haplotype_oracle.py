@@ -319,6 +319,13 @@ def test_a_file_whose_haplotypes_differ_raises_with_the_window_and_both_sets(
             HaplotypeComparison(num_windows=3, num_linked_pairs=2, num_over_cap=0),
             id="a-block-in-three-windows-gives-two-pairs",
         ),
+        # A record with no ALT whose REF starts where the window 2-2 ends is in no window.
+        pytest.param(
+            ["2 A T 0/1", "3 C . ./."],
+            ["2 A T 0/1"],
+            HaplotypeComparison(num_windows=1, num_linked_pairs=0, num_over_cap=0),
+            id="a-record-with-no-alt-after-a-window",
+        ),
     ],
 )
 def test_two_spellings_of_the_same_haplotypes_pass(
