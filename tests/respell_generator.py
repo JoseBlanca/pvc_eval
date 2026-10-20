@@ -2,10 +2,13 @@
 contigs of random bases and planted repeats, and a few records on them dense enough to
 interact. make_generated_vcf is the strategy, GeneratedVcf what it gives, PlantedRepeat
 one repeat of it, and write_generated_vcf writes one to a directory. RESPELLINGS is the
-table of the re-spellings the tests run, each a Respelling with its cases;
-write_and_respell writes a generated file and its re-spelling, write_planted_repeats the
-BED of its planted repeats, and is_rewritten says whether a re-spelling rewrote a record;
-and check_respelled_haplotypes is the oracle's check of a re-spelling as its tests make it.
+table of the re-spellings the tests run, each a Respelling with its cases, and
+RESPELLING_PARAMS and RESPELLING_CASE_PARAMS its rows, and each case of each, for
+pytest.mark.parametrize. write_and_respell writes a generated file and its re-spelling,
+write_and_respell_case a case and its re-spelling, write_planted_repeats the BED of a
+generated file's planted repeats, and is_rewritten says whether a re-spelling rewrote a
+record. check_generated_respellings runs a property over generated files, and
+check_respelled_haplotypes is the oracle's check of a re-spelling as its tests make it.
 
 hypothesis draws the ends of a range of whole numbers more often than its middle, so a rare
 kind is drawn at the top of its range, where it is also not what shrinking leads to. One run
@@ -20,12 +23,15 @@ GTs of ploidy 2: 86% phased, 46% homozygous, `./.` 0.8%; with no sample phased i
 Positions are 0-based and half-open, but for POS in the lines, which is 1-based.
 """
 
-from collections.abc import Callable, Sequence
+from collections import Counter
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+import pytest
+from hypothesis import given, settings
 from hypothesis import strategies as st
 from tests.conftest import CaseFiles, write_case_vcf
 from tests.haplotype_oracle import ORACLE_CAP, HaplotypeComparison, check_same_haplotypes
@@ -138,6 +144,13 @@ def _respell_by_decomposing(
 RESPELLINGS = (
     Respelling(name="decomposition", cases=DECOMPOSITION_CASES, respell=_respell_by_decomposing),
 )
+# Each re-spelling, and each case of each with its re-spelling, for pytest.mark.parametrize.
+RESPELLING_PARAMS = [pytest.param(respelling, id=respelling.name) for respelling in RESPELLINGS]
+RESPELLING_CASE_PARAMS = [
+    pytest.param(respelling, case, id=f"{respelling.name}-{case.name}")
+    for respelling in RESPELLINGS
+    for case in respelling.cases
+]
 
 
 def write_and_respell(
@@ -149,6 +162,57 @@ def write_and_respell(
     output = directory / "b.vcf"
     respelling.respell(vcf, reference, output, generated.ploidy, generated.seed)
     return reference, vcf, output
+
+
+def write_and_respell_case(
+    case_files: CaseFiles, directory: Path, respelling: Respelling, case: RespellingCase
+) -> tuple[IndexedFasta, Path, Path]:
+    """A case's reference and input, and its re-spelling beside the input, with no seed."""
+    reference = case_files.write_reference(1, case.bases)
+    vcf = write_case_vcf(directory / "a.vcf", case.input_lines, fills_ps=False)
+    output = directory / "b.vcf"
+    respelling.respell(vcf, reference, output, case.ploidy, None)
+    return reference, vcf, output
+
+
+# A check of a property: a generated file, its reference, its VCF and its re-spelling; it
+# raises when the property fails, and gives what it counted, to be added up over the files.
+type GeneratedCheck = Callable[[GeneratedVcf, IndexedFasta, Path, Path], Mapping[str, int]]
+
+
+def check_generated_respellings(
+    respelling: Respelling,
+    check: GeneratedCheck,
+    tmp_path_factory: pytest.TempPathFactory,
+    *,
+    max_examples: int,
+) -> Counter[str]:
+    """Run check over max_examples generated files and their re-spellings, and return what
+    it counted, added up, with the files and those whose re-spelling rewrote a record. Raises
+    AssertionError when fewer files ran, or fewer than one in ten were rewritten, so that a
+    re-spelling that kept everything fails (doc/specs/respell.md §9.2).
+
+    The counts are kept in a Counter of the call's own: one in the module would be state
+    that changes between tests (python.md, threads) and would tie a test's assertion to the
+    order the tests run in; hypothesis's own statistics are reported and cannot be asserted.
+    """
+    tally: Counter[str] = Counter()
+
+    @settings(max_examples=max_examples, deadline=None)
+    @given(generated=make_generated_vcf())
+    def check_respelling(generated: GeneratedVcf) -> None:
+        with ExitStack() as stack:
+            directory = tmp_path_factory.mktemp("generated")
+            reference, vcf, output = write_and_respell(generated, respelling, directory, stack)
+            counts = check(generated, reference, vcf, output)
+        tally.update(counts)
+        tally["files"] += 1
+        tally["rewritten"] += is_rewritten(vcf, output)
+
+    check_respelling()
+    assert tally["files"] >= max_examples, tally
+    assert tally["rewritten"] * 10 >= tally["files"], tally
+    return tally
 
 
 def write_planted_repeats(generated: GeneratedVcf, directory: Path) -> Path:

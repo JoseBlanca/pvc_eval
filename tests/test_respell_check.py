@@ -12,24 +12,22 @@ from the environment and is skipped, naming them, without them:
 import gzip
 import os
 import re
-from collections import Counter
-from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
-from hypothesis import given, settings
 from tests.conftest import CaseFiles, write_case_vcf
 from tests.respell import _make_bgzf, respell_by_decomposing
 from tests.respell_cases import RespellingCase
 from tests.respell_check import _make_checked_rows, check_respelling_outcomes
 from tests.respell_generator import (
-    RESPELLINGS,
+    RESPELLING_CASE_PARAMS,
+    RESPELLING_PARAMS,
     GeneratedVcf,
     Respelling,
+    check_generated_respellings,
     check_respelled_haplotypes,
     is_rewritten,
-    make_generated_vcf,
-    write_and_respell,
+    write_and_respell_case,
     write_planted_repeats,
 )
 from tests.test_loci_from_vcf import AT_REPEAT_REFERENCE
@@ -43,26 +41,16 @@ _PROPERTY_EXAMPLES = 300  # doc/specs/respell.md §9.2
 _GIAB_CONTIG = "chr20"
 _GIAB_SEED = 20261020  # §9.4: the seed of the re-spellings that draw, fixed
 
-_RESPELLING_CASES = [
-    pytest.param(respelling, case, id=f"{respelling.name}-{case.name}")
-    for respelling in RESPELLINGS
-    for case in respelling.cases
-]
-_RESPELLINGS = [pytest.param(respelling, id=respelling.name) for respelling in RESPELLINGS]
-
 
 def _write_vcf(path: Path, case_lines: list[str]) -> Path:
     return write_case_vcf(path, case_lines, fills_ps=False)
 
 
-@pytest.mark.parametrize(("respelling", "case"), _RESPELLING_CASES)
+@pytest.mark.parametrize(("respelling", "case"), RESPELLING_CASE_PARAMS)
 def test_the_respelling_of_a_case_gives_the_outcomes_of_its_input_against_itself(
     case_files: CaseFiles, tmp_path: Path, respelling: Respelling, case: RespellingCase
 ) -> None:
-    reference = case_files.write_reference(1, case.bases)
-    vcf = _write_vcf(tmp_path / "a.vcf", list(case.input_lines))
-    output = tmp_path / "b.vcf"
-    respelling.respell(vcf, reference, output, case.ploidy, None)
+    reference, vcf, output = write_and_respell_case(case_files, tmp_path, respelling, case)
 
     check_respelling_outcomes(vcf, output, reference, ploidy=case.ploidy)
 
@@ -219,38 +207,28 @@ def test_files_with_no_samples_raise(case_files: CaseFiles, tmp_path: Path) -> N
         check_respelling_outcomes(vcf, output, reference)
 
 
-# The property counts, in a Counter of its own test, the files whose re-spelling rewrote a
-# record and the rows in a locus with an STR region, as the oracle's property counts in
-# tests/test_respell.py, and asserts both once hypothesis has run every example (§9.2: at
-# least one file in ten rewritten).
-@pytest.mark.parametrize("respelling", _RESPELLINGS)
+# §9.2: the property asserts that at least one file in ten had a record rewritten, and that
+# some row is in a locus with an STR region, so that a check that did not read the BED of
+# the planted repeats fails: 9,415 of 12,152 rows were over 5,000 files on 20 October 2026.
+@pytest.mark.parametrize("respelling", RESPELLING_PARAMS)
 def test_a_generated_file_against_its_respelling_gives_the_outcomes_of_itself(
     tmp_path_factory: pytest.TempPathFactory, respelling: Respelling
 ) -> None:
-    tally: Counter[str] = Counter()
+    def check(
+        generated: GeneratedVcf, reference: IndexedFasta, vcf: Path, output: Path
+    ) -> dict[str, int]:
+        rows = _make_checked_rows(
+            vcf,
+            output,
+            reference,
+            str_regions=write_planted_repeats(generated, vcf.parent),
+            ploidy=generated.ploidy,
+        )
+        return {"rows in an STR locus": sum(bool(row.str_regions) for row in rows)}
 
-    @settings(max_examples=_PROPERTY_EXAMPLES, deadline=None)
-    @given(generated=make_generated_vcf())
-    def check_respelling(generated: GeneratedVcf) -> None:
-        with ExitStack() as stack:
-            directory = tmp_path_factory.mktemp("generated")
-            reference, vcf, output = write_and_respell(generated, respelling, directory, stack)
-            rows = _make_checked_rows(
-                vcf,
-                output,
-                reference,
-                str_regions=write_planted_repeats(generated, directory),
-                ploidy=generated.ploidy,
-            )
-            tally["rows in an STR locus"] += sum(bool(row.str_regions) for row in rows)
-        tally["files"] += 1
-        tally["rewritten"] += is_rewritten(vcf, output)
-
-    check_respelling()
-    assert tally["files"] >= _PROPERTY_EXAMPLES
-    assert tally["rewritten"] * 10 >= tally["files"], tally
-    # The BED of the planted repeats is read: 9,415 of 12,152 rows were in an STR locus over
-    # 5,000 files on 20 October 2026.
+    tally = check_generated_respellings(
+        respelling, check, tmp_path_factory, max_examples=_PROPERTY_EXAMPLES
+    )
     assert tally["rows in an STR locus"] > 0, tally
 
 
@@ -411,7 +389,7 @@ def test_the_records_of_one_contig_are_written_with_the_header(tmp_path: Path) -
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("respelling", _RESPELLINGS)
+@pytest.mark.parametrize("respelling", RESPELLING_PARAMS)
 def test_each_respelling_of_hg002_chr20_passes_the_oracle_and_gives_the_outcomes_of_itself(
     tmp_path: Path, respelling: Respelling
 ) -> None:
