@@ -11,7 +11,7 @@ Public: check_respelling_outcomes.
 """
 
 import itertools
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 from pvc_eval.evaluate import make_outcome_rows
@@ -24,24 +24,19 @@ from pvc_eval.samples import SamplePair
 from pvc_eval.segments import GenomeSegment, read_str_regions, segment_contig
 from pvc_eval.vcf import DEFAULT_PLOIDY, MISSING, parse_vcf, parse_vcf_samples
 
-
-def _is_missing(result: SampleResult) -> bool:
-    """Whether a sample result is missing: every possible genotype has a missing allele."""
-    if result is TOO_COMPLEX or isinstance(result, InvalidReason):
-        return False
-    return all(any(allele is MISSING for allele in genotype) for genotype in result)
-
-
-# The outcomes a file gives against itself (doc/spec.md §7.3), each with what A's own result
-# must be for it, under the name the message gives: the last three come only from a cause in
-# the sample itself, which a file against itself has in both.
-_ALLOWED_OUTCOMES: dict[Outcome, tuple[str, Callable[[SampleResult], bool]] | None] = {
-    Outcome.SAME_GENOTYPE: None,
-    Outcome.REFERENCE_IN_BOTH: None,
-    Outcome.MISSING_IN_BOTH: ("missing", _is_missing),
-    Outcome.INVALID_IN_BOTH: ("invalid", lambda result: isinstance(result, InvalidReason)),
-    Outcome.TOO_COMPLEX: ("too complex", lambda result: result is TOO_COMPLEX),
-}
+# The outcomes a file gives against itself (doc/spec.md §7.3). Of the three that come from a
+# cause in the sample, missing in both and invalid in both need A's own result checked no
+# further: evaluate_pair gives them only when both results are missing, or both invalid. Too
+# complex comes when either result is, so for it A's own result is checked.
+_ALLOWED_OUTCOMES = frozenset(
+    {
+        Outcome.SAME_GENOTYPE,
+        Outcome.REFERENCE_IN_BOTH,
+        Outcome.MISSING_IN_BOTH,
+        Outcome.INVALID_IN_BOTH,
+        Outcome.TOO_COMPLEX,
+    }
+)
 
 
 def check_respelling_outcomes(
@@ -130,12 +125,10 @@ def _check_row(reconciled: ReconciledLocus, sample_pair: SamplePair, row: Outcom
     problem = None
     if outcome not in _ALLOWED_OUTCOMES:
         problem = f"{outcome}, an outcome a file does not give against itself"
-    else:
-        cause = _ALLOWED_OUTCOMES[outcome]
-        if cause is not None and not cause[1](result_a):
-            problem = f"{outcome}, where file A's own result is not {cause[0]}"
-        elif result_b != result_a:
-            problem = "file B's result is not file A's"
+    elif outcome is Outcome.TOO_COMPLEX and result_a is not TOO_COMPLEX:
+        problem = f"{outcome}, where file A's own result is not too complex"
+    elif result_b != result_a:
+        problem = "file B's result is not file A's"
     if problem is None:
         return
     locus = reconciled.locus
