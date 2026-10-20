@@ -213,6 +213,26 @@ def test_records_whose_edits_touch_on_a_haplotype_they_may_share_are_kept(
             ["2 AC TCT 0/1", "7 G A,* 0/1", "10 T A 0|1:3"],
             id="a-piece-reach-touches-a-star-ref",
         ),
+        # ACGTA -> TCGTC reaches 2-6, which holds the `*` at 4; its pieces, SNPs at 2 and 6,
+        # do not reach it.
+        pytest.param(
+            "GACGTA",
+            ["2 ACGTA TCGTC 0/1", "4 G T,* 0/2"],
+            ["2 ACGTA TCGTC 0/1", "4 G T,* 0/2"],
+            id="the-record-reach-holds-a-star-ref",
+        ),
+        pytest.param(
+            "GACGTA",
+            ["2 A G,* 0/2", "3 C T 0/1"],
+            ["2 A G,* 0/2", "3 C T 0/1"],
+            id="next-to-a-star-ref-on-the-left",
+        ),
+        pytest.param(
+            "GACGTA",
+            ["2 A T 0/1", "3 C G,* 0/2"],
+            ["2 A T 0/1", "3 C G,* 0/2"],
+            id="next-to-a-star-ref-on-the-right",
+        ),
         pytest.param(
             "GACGTA",
             ["2 A <DEL> 0/1", "5 T G 0/1"],
@@ -316,6 +336,16 @@ def test_an_output_named_as_the_input_in_other_case_raises_where_case_is_ignored
     with pytest.raises(ValueError, match="is the input"):
         respell_by_decomposing(vcf, reference, output)
     assert vcf.read_text() == text
+
+
+def test_a_star_on_another_contig_keeps_nothing(case_files: CaseFiles, tmp_path: Path) -> None:
+    reference = case_files.write_contigs({"chr1": "GACGTA", "chr2": "GACGTA"})
+    vcf = _write_vcf(tmp_path / "a.vcf", ["chr1 2 A T 0/1", "chr2 2 A G,* 0/2"], has_chrom=True)
+    respell_by_decomposing(vcf, reference, tmp_path / "b.vcf")
+    assert read_case_lines(tmp_path / "b.vcf", has_chrom=True) == [
+        "chr1 2 A T 0|1:1",
+        "chr2 2 A G,* 0/2",
+    ]
 
 
 def test_records_are_sorted_by_the_contigs_of_the_input(
