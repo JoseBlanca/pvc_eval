@@ -7,12 +7,12 @@ write_and_respell writes a generated file and its re-spelling; and
 check_respelled_haplotypes is the oracle's check of a re-spelling as its tests make it.
 
 hypothesis draws the ends of a range of whole numbers more often than its middle, so a rare
-kind is drawn at the top of its range, where it is also not what shrinking leads to. Over
-2,000 files on 20 October 2026 the shares were: two contigs in 18% of files (§9.2 asks one
-in five), ploidy 1 in 21% (one in five), a contig with no N in 27% (one in four); no ALT in
-4.1% of records (one in twenty), a `*` ALT in 4.8% (one in twenty); `.` in 8.2% of alleles
-(one in ten); a malformed GT in 4.4% of GTs and one of the other ploidy in 1.6% (one in
-fifty each).
+kind is drawn at the top of its range, where it is also not what shrinking leads to. One run
+of 2,000 files on 20 October 2026 gave these shares, which another run moves by a few
+points: two contigs in 22% of files (§9.2 asks one in five), ploidy 1 in 20% (one in five),
+a contig with no N in 25% (one in four); no ALT in 5.4% of records (one in twenty), a `*`
+ALT in 3.6% (one in twenty); `.` in 8.5% of alleles (one in ten); a malformed GT in 1.4% of
+GTs and one of the other ploidy in 1.4% (one in fifty each).
 
 Positions are 0-based and half-open, but for POS in the lines, which is 1-based.
 """
