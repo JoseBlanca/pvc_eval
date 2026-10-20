@@ -94,7 +94,7 @@ a contig that should get its STR regions gets none, and its loci come out narrow
 rows. The rows-equal-to-the-nine-steps tests guard it, so in them the nine steps feed `build_loci`
 the segments of every contig with records, by `segment_contig` over each, not by the iterator.
 
-- [ ] 2. The table and the summary
+- [x] 2. The table and the summary
 
 **What it gives.** `pvc_eval.table`: `TABLE_COLUMNS`, `SUMMARY_COLUMNS`, `format_table_row` and
 `write_table`, which writes the table and the wide summary from any iterator of `OutcomeRow`.

@@ -76,3 +76,37 @@ least 6; the five checks pass, with "1109 passed, 4 skipped" three runs in a row
   contigs an index lists that the reference lacks moved to milestone 5, with a test.
 - Also fixed: five checks of the header that no test guarded, the contigs returned as a set since
   no caller uses their order, and two helpers renamed for what they do. Not taken: none.
+
+## Milestone 2: the table and the summary
+
+Built in 848a543 and fixed in 3793fd2 to d756456. `TABLE_COLUMNS`, `SUMMARY_COLUMNS`,
+`format_table_row` and `write_table` are in `src/pvc_eval/table.py`; the opener of an output's
+temporary file is now one function, `open_temporary_output` in `src/pvc_eval/_text_files.py`, used
+by the table and by `str-regions`. On d756456 `uv run pytest tests/test_table.py -q` gives "97
+passed", the plan asked for at least 12; the five checks pass.
+
+- The worked row of the spec's "The table" comes out as its exact line. QUAL is written 50.0 as
+  `50`, 29.53 as `29.53`, 1e-05 as `1e-05`, 1e+20 as `1e+20`, 1234567.0 as `1234567`.
+- The wide summary over all sample pairs, as the owner decided, with its order, its zeros and its
+  totals as literals; 200,000 rows written with a peak of 2.4 MB under tracemalloc.
+
+**Fixed, two blockers, each confirmed by a second look:**
+- `--output` and `--summary` that are one file under another spelling were not refused. On macOS's
+  file system, which ignores letter case, `loci.tsv` and `Loci.tsv` overwrote each other and lost
+  an earlier table. A path that is the other's `.tmp` gave a wrong file with no error. Both are now
+  refused, by comparing the two open files.
+- A write error, such as a full disk, left both `.tmp` files, because closing a file whose write
+  failed raises again and stopped the cleanup.
+
+**Changed in the spec (b5ac64a):** the summary is renamed before the table. A failure between the
+two renames, which nothing can make atomic, then leaves this run's summary beside the earlier
+table. Any error of the system while writing is a message naming the option, with no traceback,
+since it is a fault of where the output goes. The gzip header holds no file name, and lines end in
+`\n` everywhere.
+
+Also fixed: tests that could not fail on the QUAL's form, the outcomes left out, file B's invalid
+reason, the strata's order, UTF-8, the line ends and the gzip level. Not taken: none.
+
+**Left open, outside this plan:** in `pvc_eval str-regions`, a full disk after the BED is opened
+still ends in a traceback, as before this plan. Its opener now gives messages for every error of
+the system, but its writing loop does not.
