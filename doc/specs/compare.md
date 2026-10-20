@@ -10,10 +10,10 @@ This part makes pvc_eval usable: `compare()` runs the stages from two VCF files 
 table, and `pvc_eval compare` writes those rows as the table and, when asked, a summary of counts.
 It also decides where the time of a run goes when no `--str-regions` BED is given. The STR finder
 then scans the reference, and on GRCh38 that scan is the longest part of a run. One contig takes
-from seconds to about 11 minutes on one thread (measured so far, below). So `compare()` scans only
-the contigs whose loci need STR regions. It scans them in threads, a few contigs ahead of the loci,
-while the two VCF files are read in threads of their own. The design of the threads was given by
-the owner on 20 October 2026; seven points of this spec are open for the owner (listed at the end).
+from seconds to 10 to 12 minutes on one thread (forecast for chr1 from the figures so far, below).
+So `compare()` scans only the contigs whose loci need STR regions. It scans them in threads, a few
+contigs ahead of the loci, while the two VCF files are read in threads of their own, as the owner
+decided on 20 October 2026. Seven points are open for the owner, listed at the end.
 
 Positions in the cases are 1-based and inclusive, as in a VCF and in the table. In the Python
 interface they are 0-based and half-open, as everywhere inside pvc_eval.
@@ -61,7 +61,7 @@ stream reaches it, as in the stages. The stage functions are not changed: the th
 
 **Its rows are the rows of the stages run one after another, whatever its threads.** The same rows,
 in the same order. The same first error, with the same message, after the same rows. This is
-what the threads below must keep, and the first test of this part (see "How it is verified").
+what the threads below must keep, and the first check of "How it is verified".
 
 ### Which thread does what
 
@@ -69,7 +69,9 @@ With the default of two finder threads, a run has these threads:
 
 - **The caller's thread** runs steps 1 to 3, then the loci side, steps 6 to 9, and yields the rows.
 - **Two reader threads**, one per file, each running `parse_vcf` (step 4) into a buffer of at most
-  10,000 VCF records. A reader that finds its buffer full waits until the loci side takes from it.
+  10,000 VCF records. A reader hands its records over in batches, lists of 64 records, the last of
+  a file perhaps shorter, so that the buffer is locked once per batch and not per record. A reader
+  that finds its buffer full waits until the loci side takes from it.
   `parse_vcf` keeps its own pool for the sample columns, 4 threads by default (`doc/spec.md` §5.2).
 - **The finder's pool**, two threads, each scanning one contig with `segment_contig`. A contig's
   segments are kept as its STR regions alone: `build_loci` drops GENERIC segments, and they are
@@ -94,8 +96,8 @@ calls (the docstring of `segment_contig`). So the work can overlap between conti
 the finder and the rest, but not within one contig. What saves most time is scanning only the
 contigs whose loci need STR regions: a benchmark on chr20 must not wait for chr1 to chr19.
 
-**A contig needs scanning** when the loci side builds a locus on it that `--regions` keeps. So it
-is scanned only when both hold:
+**A contig needs scanning** when the loci side builds a locus on it that `--regions` does not
+skip. So it is scanned only when both hold:
 
 - either VCF has a record on it;
 - `--regions` names it, when `--regions` is given. Every locus on another contig is skipped, and
@@ -105,13 +107,12 @@ is scanned only when both hold:
 soon as a reader reaches it, whichever comes first, and only if `--regions`, when given, names it.
 The finder takes the contig of the lowest rank in the `.fai` among those in line.
 
-- **Planned contigs.** When both VCFs are bgzipped with an index beside them, the contigs the two
-  indexes list are planned before any record is read. An index lists every contig with a record
-  in its file, in a header that the standard library reads (`gzip` and `struct`). The reading was
-  tried on 20 October 2026 on a `.tbi` and a `.csi` written by bcftools 1.24, and on the `.tbi`
-  of GIAB's HG002 v4.2.1 for GRCh38, which lists chr1 to chr22. When only one VCF has an index, or
-  neither, no contig is planned: the other file's contigs are not known until its reader reaches
-  them, and planning one file's contigs would scan ahead of the other's.
+- **Planned contigs.** A VCF that is bgzipped with an index beside it plans the contigs its index
+  lists, before any record is read. An index lists every contig with a record in its file, in a
+  header that the standard library reads (`gzip` and `struct`). The reading was tried on 20
+  October 2026 on a `.tbi` and a `.csi` written by bcftools 1.24, and on the `.tbi` of GIAB's
+  HG002 v4.2.1 for GRCh38, which lists chr1 to chr22. A contig with a record in one file needs
+  scanning whatever the other file holds, so one file's index is enough to plan its contigs.
 - **Reached contigs.** For a VCF without an index, a contig is scanned only once a reader reaches
   it, with no guess about the contigs to come.
 
@@ -123,17 +124,24 @@ rows never depend on the index. An index that cannot be read is ignored, with a 
 scanned for STR regions as the reading reaches them, which can take longer." Its contigs that the
 reference lacks are ignored, since a record on one stops the run when the reader reaches it.
 
-With `--regions` and no index, the contigs it names are not scanned ahead. GIAB's benchmark
-regions name chr1 to chr22, and scanning them ahead for a VCF of chr20 would cost the hours this
-section is there to save. This scans fewer contigs than "scan only the contigs `--regions`
-names" read literally, and never more.
+`--regions` never makes a contig planned. A contig it names is scanned only when a record is on
+it, known from an index or from a reader. GIAB's benchmark regions name chr1 to chr22, and
+scanning them all for a VCF of chr20 would cost the hour and a half this section is there to save
+(see "How it runs"). This scans fewer contigs than "scan only the contigs `--regions` names" read
+literally, and never more.
 
-**How far ahead.** The pool starts a scan only while fewer than `finder_threads + 1` contigs are
-being scanned or scanned and not yet read by the loci side, so that at most two contigs wait,
-scanned, ahead of the loci. One exception keeps the loci side from waiting on a full pool: the
-contig the loci side is waiting for is always started. A contig the loci side passes without
-needing it, because no record turned out to be on it, is dropped from the line or, if scanned,
-dropped.
+**How far ahead.** A contig is **ahead** from the moment its scan starts until the loci side
+starts reading its STR regions. The pool starts the next contig in line only while a thread is
+free and fewer than `finder_threads + 1` contigs are ahead. So with two threads at most two
+contigs are being scanned and at most three are ahead, scanned or not. One exception keeps the
+loci side from waiting on the limit: when the loci side waits for a contig that has not started,
+that contig starts as soon as a thread is free, whatever the number ahead. It still waits for a
+free thread, so behind two long scans of later contigs it can wait for both.
+
+A contig the loci side passes without reading its STR regions, because no record turned out to be
+on it, leaves the line if its scan has not started. A scan already started is not interrupted:
+its segments are dropped when it ends, and it stops counting as ahead when the loci side passes
+it.
 
 ### How the segments reach `build_loci`
 
@@ -167,6 +175,15 @@ So a contig in the middle of the `.fai` with no record costs one GENERIC segment
 iterator ends after the last contig of the `.fai`. With `finder_threads=0`, step 1 runs
 `segment_contig` in the caller's thread.
 
+For example, a reference of chr1 to chr4, file A with records on chr1 and chr3, file B on chr2,
+neither indexed, no `--regions`. The readers reach chr1 and chr2 at once, and later chr3, and each
+contig goes in line as it is reached. When `build_loci` handles its first record, on chr1, the
+iterator yields chr1's STR regions, after the scan of chr1 ends. Past them, it yields the GENERIC
+segment at (chr2, 0). The first record on chr2 asks again: a record on chr2 has been taken, so it
+yields chr2's STR regions, then (chr3, 0), and chr3's STR regions in the same way. Past the last
+of chr3's, it yields (chr4, 0) only if a record's span ends at chr3's last base. No record on chr4
+is ever taken, so chr4 is never scanned, and the iterator is not asked again.
+
 ### Errors, and stopping early
 
 **An error in a thread reaches the caller where it would have without threads.** An exception a
@@ -187,8 +204,8 @@ that reads it, or by Ctrl-C, `compare()` sets a stop that every thread checks:
 - a reader blocked on its full buffer wakes, closes its `parse_vcf` stream, which closes its file
   and its pool, and ends;
 - the finder starts no new contig. A contig already being scanned is not waited for. Its thread
-  ends when the scan does, a few seconds to about 11 minutes later on GRCh38 (measured so far,
-  below), and its segments are dropped. The threads are daemon threads, so they do not keep
+  ends when the scan does, a few seconds to 10 to 12 minutes later on GRCh38 (forecast, below),
+  and its segments are dropped. The threads are daemon threads, so they do not keep
   Python from exiting;
 - nothing a thread raises after the stop reaches the caller.
 
@@ -274,7 +291,7 @@ The first line is the column names, with no `#` (**Open 3**): `chrom`, `start`, 
 | `str_regions` | `str_regions` | each region as `start+1-end:type`, with `:motif` after an STR segment's, and `start+1-end` alone for a region with no type; joined with `,`; `.` for none |
 | `sample_a`, `sample_b` | `sample_a`, `sample_b` | as they are |
 | `outcome` | `outcome` | the enum's value, `same alleles, other genotype` for one |
-| `alleles` | `alleles` | joined with `,`, an empty locus allele, a deletion of the whole locus, written `-` |
+| `alleles` | `alleles` | the locus alleles joined with `,`; a locus allele that is empty, a deletion of the whole locus, is written `-` |
 | `genotype_a`, `genotype_b` | `genotype_a`, `genotype_b` | the indices joined with `/`, `MISSING` written `.` |
 | `possible_a`, `possible_b` | `possible_a`, `possible_b` | a whole number |
 | `quality_a`, `quality_b` | `quality_a`, `quality_b` | the shortest decimal that reads back as the same number, with no `.0` at the end of a whole number (**Open 3**) |
@@ -317,9 +334,6 @@ The values are written as in the table, `.` for no stratum.
   `doc/spec.md` §5.5's table; then by kind, in the order SNP, indel, STR, complex; then by
   stratum, sorted by code point.
 - A combination with no row has no line, so a count of 0 is never written.
-
-For a cohort, a pair that disagrees more than others shows in its lines. The totals over samples
-are one group-by away, in any table tool.
 
 ```
 sample_a  sample_b  outcome            kind   stratum  count
@@ -373,8 +387,8 @@ not a number at all is argparse's error, with its usage line and status 2, as in
 
 - the warnings of the stages, as they log them: the samples in no pair, the VCF records skipped or
   cut, an index that could not be read;
-- one line when the finder starts a contig, since on GRCh38 a contig takes up to about 11 minutes
-  and nothing else would show: "chr1: finding STR regions in 248,956,422 bases.";
+- one line when the finder starts a contig, since on GRCh38 a contig takes up to 10 to 12 minutes
+  (forecast for chr1) and nothing else would show: "chr1: finding STR regions in 248,956,422 bases.";
 - one line when the last row of a contig has been written: "chr20: 31,204 loci compared, 1,880
   skipped by --regions, 2,113 rows written; 4 min 12 s since the start." The clause about
   `--regions` is there only when it is given.
@@ -400,7 +414,7 @@ holds:
 |---|---|---|
 | each reader's buffer | 10,000 VCF records | 665 bytes per record with one GATK-like sample, 6,350 bytes with 200: so 7 MB and 64 MB per file |
 | the finder's scans in progress | `finder_threads` contigs at once | chr1 forecast at 1 to 1.5 GB per scan (below) |
-| scanned contigs waiting for the loci side | `finder_threads + 1`, less those being scanned, plus the one the loci side reads | STR regions take about 0.85 MiB per Mb of contig: chr1, 249 Mb, about 210 MiB |
+| contigs scanned and waiting for the loci side | `finder_threads + 1` contigs ahead in all, scanned or being scanned, and the contig the loci side reads | STR regions take about 0.85 MiB per Mb of contig: chr1, 249 Mb, about 210 MiB |
 
 None of these grows with the number of contigs or the length of the VCFs. The bytes per record
 were measured with tracemalloc on records `parse_vcf` held, from VCFs that
@@ -410,28 +424,35 @@ were measured with tracemalloc on records `parse_vcf` held, from VCFs that
 segments held 6.8 MiB, half of them STR regions. All of it on 20 October 2026, at aaaf31b, on the
 Apple M5 Pro, CPython 3.15.0t with the GIL off.
 
-**What the threads gain.** The STR finder's speed is being measured in the session working on
-it, on branch `perf/str-finder`. Its first figures, at b71c83c on the same machine, one run each
-on stretches of chr1 starting at 10 Mb: 1 Mb in 1.7 s, 4 Mb in 5.7 s, 16 Mb in 23.7 s, 64 Mb in
-about 106 s with a peak of 129 MB at 16 Mb. Part of the time grows with the square of the contig's
-length, and chr1 whole is forecast, not measured, at 10 to 12 minutes and 1 to 1.5 GB on one
-thread. Reading chr20 with `parse_vcf` takes 0.7 s with one sample and 13 s with 200
-(`doc/reports/perf-vcf-parser-2026-10-19.md`). For a run, these mean:
+**What the threads gain.** The STR finder's speed is being measured by a performance review on
+the branch `perf/str-finder`, whose first figures were sent on 20 October 2026. They are for the
+code of b71c83c, a commit of `main` with the same finder as aaaf31b, on the same machine, one
+run each of `pvc_eval str-regions` on stretches of chr1 starting at 10 Mb: 1 Mb in 1.7 s, 4 Mb in
+5.7 s, 16 Mb in 23.7 s with a peak of 129 MB, and 64 Mb in about 106 s. Of the 106 s, finding the
+candidate repeats took 90 s, about 1.4 s per Mb, and absorbing them into satellites 14.6 s, which
+grows with the square of the contig's length. Nothing longer was run. From these, chr20, 64 Mb,
+takes about 100 s, and chr1, 249 Mb, is forecast by that review at 10 to 12 minutes and 1 to 1.5
+GB. Summed over GRCh38's chromosomes the same way, 1.4 s per Mb plus 14.6 s times the square of
+the length over 64 Mb, a whole genome comes to about 1 hour 40 minutes on one thread, and chr1 to chr19 to
+about 1½ hours. These are extrapolations, not measurements. Reading chr20 with `parse_vcf` takes
+0.7 s with one sample and 13 s with 200 (`doc/reports/perf-vcf-parser-2026-10-19.md`). For a run,
+these mean:
 
 - **One contig, the usual benchmark on chr20.** The finder's scan of chr20, about 100 s, is the
   wait. The readers fill their buffers meanwhile. With one sample, 10,000 records are less than a
   second of reading, so the threads gain under a second. What saves time on such a run is that
-  chr1 to chr19 are not scanned, which would cost more than an hour on one thread by
-  extrapolating the figures above. A buffer large enough to hold all of chr20 with 200 samples would hide 13 s and
+  chr1 to chr19 are not scanned, about 1½ hours on one thread. A buffer large enough to hold all of chr20 with 200 samples would hide 13 s and
   cost about 1.5 GB per file, which this spec does not take.
-- **Many contigs.** Two finder threads scan two contigs at once while the loci side works on an
-  earlier one. A whole genome, about 1¾ hours on one thread by extrapolating the figures above,
-  takes about half that, at the cost of a second scan's memory, 1 to 1.5 GB on the largest
-  contigs.
+- **Many contigs, with indexed VCFs.** Two finder threads scan two contigs at once while the loci
+  side works on an earlier one. Without an index the scans run nearly one after another: a reader
+  waits on its full buffer, 10,000 records into a contig being scanned, and reaches the next contig
+  only when the loci side has used those records (Open 7). A whole genome, about 1 hour 40 minutes on one thread, would take a little more than half
+  that, since chr1 alone is 10 to 12 minutes; the cost is a second scan's memory, 1 to 1.5 GB on
+  the largest contigs.
 - **With `--str-regions`**, nothing is scanned, and only the readers run beside the loci side.
 
-The finder's figures will change, as that session's work goes on. Each change moves the numbers
-of this section, and none changes the design.
+The performance review will send figures for whole chromosomes, and for its faster finder, with
+their commit; they go into this section when they come.
 
 ## How it is verified
 
@@ -511,62 +532,74 @@ After the owner approves this spec, in commits of their own:
 
 ## Open points
 
+Each is put as a choice with a recommendation. What the spec does meanwhile is what it says now,
+so an answer that takes the recommendation changes nothing but the status line; another answer
+changes the sections named, before the plan is written.
+
 **Open 1. `--evaluator` and the `evaluator` parameter.** None of the other evaluators of
-`doc/spec.md` §8 exists. Leaving the option and the parameter out until one is built breaks nobody
-when they are added, since both would have the default `pvc`. Keeping them now gives an option
-whose only other values stop the run with an error. Recommended: leave them out. Meanwhile this
-spec leaves them out.
+`doc/spec.md` §8 exists. Leaving the option and the parameter out breaks nobody when they are
+added with §8, since both would default to `pvc`. Keeping them now gives an option whose only
+other values stop the run with an error. Recommended: leave them out. If kept, "The Python
+interface" and "The `compare` command" gain them, with the error for the values not built.
 
 **Open 2. The summary's form.** A long table, one line per sample pair, outcome, kind and stratum
 with its count, as "The summary" gives it, keeps each pair apart, so a cohort shows which samples
-disagree, and its totals are one group-by away. A wide table, one line per outcome with a column
-per kind, reads at a glance for one pair, and a cohort needs one table per pair or loses which
-pair disagrees. Recommended: the long table. *Reference in both* is always counted, and loci
-skipped by `--regions` never are. Meanwhile the long table.
+disagree; the totals over samples are one group-by away. A wide table, one line per outcome with a
+column per kind, reads at a glance for one pair, but a cohort then needs one table per pair or
+loses which pair disagrees. Recommended: the long table. *Reference in both* is always counted,
+and loci skipped by `--regions` never are. Another form rewrites "The summary".
 
-**Open 3. The table's format.** Four choices:
+**Open 3. The table's format.** Four choices, each answered apart:
 
-- a header line of the column names, with no `#`, which pandas, R and `csvtk` read as names;
-  with `#`, `bcftools`-style tools skip it, and pandas reads `#chrom` as the first name;
-- QUAL as the shortest decimal that reads back as the same number. QUAL exactly as the VCF wrote
-  it, `50.00` for `50.00`, needs `VcfRecord` to keep QUAL's text, a change to `pvc_eval.vcf`,
-  which this part may not make. The two differ only in trailing zeros and in how an exponent is
-  written;
-- a path ending in `.gz` written with gzip, which `zcat`, pandas and R read. bgzip would let
-  tabix index the table, whose rows come by contig and start; it needs a writer of BGZF blocks on
-  `zlib`, about 40 lines, which can be added when someone needs to look rows up by position;
-- the table and the summary written to `.tmp` files and renamed, so a failed run leaves no
-  half-written table.
+- **(a)** a header line of the column names with no `#`, which pandas, R and `csvtk` read as
+  names; with `#`, tools in the style of bcftools skip it, and pandas reads `#chrom` as the first
+  name;
+- **(b)** QUAL as the shortest decimal that reads back as the same number. QUAL exactly as the VCF
+  wrote it, `50.00` for `50.00`, needs `VcfRecord` to keep QUAL's text, a change to `pvc_eval.vcf`
+  that this part may not make without the owner. The two differ only in trailing zeros and in how
+  an exponent is written;
+- **(c)** a path ending in `.gz` written with gzip, which `zcat`, pandas and R read. bgzip would
+  let tabix index the table, whose rows come by contig and start; it needs a writer of BGZF blocks
+  on `zlib`, about 40 lines, which can be added when someone needs to look rows up by position;
+- **(d)** the table and the summary written to `.tmp` files and renamed, so that a failed run
+  leaves no half-written table.
 
-Recommended: all four as written. Meanwhile, these.
+Recommended: all four. Another answer changes "The table" or "Writing the files"; QUAL as written
+in the VCF also adds a field to `VcfRecord`, in a commit of its own on `pvc_eval.vcf`.
 
 **Open 4. `Kind` and `RegionType` as `StrEnum`.** `Outcome` and `InvalidReason` are `StrEnum`,
-`Kind` and `RegionType` plain `Enum`, so `f"{Kind.SNP}"` gives `Kind.SNP` where `f"{Outcome.
-SAME_GENOTYPE}"` gives `same genotype`. The table writer uses `.value` for all four and works either
-way, so the change is for whoever formats them next. It changes `doc/spec.md` §4,
-`doc/specs/loci.md`, `src/pvc_eval/kind.py` and `src/pvc_eval/segments.py`, which the session on
-`perf/str-finder` is changing too. Recommended: make them `StrEnum`, in a commit of their own.
-Meanwhile they stay `Enum`.
+`Kind` and `RegionType` plain `Enum`, so `f"{Kind.SNP}"` gives `Kind.SNP` where
+`f"{Outcome.SAME_GENOTYPE}"` gives `same genotype`. The table writer uses `.value` for all four and
+works either way, so the change helps whoever formats them next and changes no output. It costs
+four lines of code and a line in each of `doc/spec.md` §4 and `doc/specs/loci.md`. One of the
+files, `src/pvc_eval/segments.py`, is being changed on `perf/str-finder`, so whichever branch is
+merged second resolves a one-line conflict. Recommended: make them `StrEnum`, in a commit of their
+own on this branch. Meanwhile they stay `Enum`.
 
-**Open 5. The messages.** Warnings and the progress lines on stderr, an input error with its
-message, no traceback and status 1, as "The `compare` command" gives them, with one line when a
-contig's scan starts and one when its rows are written. Without the first, a run on chr1 shows
-nothing for up to about 11 minutes. Recommended: as written. Meanwhile, as written.
+**Open 5. The messages.** On stderr: the warnings of the stages; a line when a contig's scan
+starts; a line when a contig's rows are written; an input error with its message, no traceback
+and status 1; Ctrl-C with status 130. Their text is in "The `compare` command". Without the line
+when a scan starts, a run on chr1 shows nothing for 10 to 12 minutes. Recommended: as written.
+Other texts change "The `compare` command" and its tests.
 
-**Open 6. Real data for the end-to-end check.** GIAB's HG002 v4.2.1 benchmark VCF for GRCh38, with
-its `.tbi`, is at
+**Open 6. Real data for the end-to-end check.** GIAB's HG002 v4.2.1 benchmark VCF for GRCh38,
+with its `.tbi`, is on this machine at
 `/Users/jose/devel/pop_var_caller/benchmarks/giab/all_bench_regions/vcfs/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz`,
-and GRCh38's analysis set without alts at
-`/Users/jose/genomes/h_sapiens/gca_grch38/GCA_000001405.15_GRCh38_no_alt_plus_hs38d1_analysis_set.fna`.
-On chr20 it holds 85,951 records, and `bcftools norm -c e` (1.24) finds no REF that differs
-from the reference. Recommended: use these, through the variables `PVC_EVAL_GRCH38` and
-`PVC_EVAL_HG002_VCF`, over chr20. Meanwhile, these.
+and GRCh38's analysis set without alts, with its `.fai`, at
+`/Users/jose/genomes/h_sapiens/gca_grch38/GCA_000001405.15_GRCh38_no_alt_plus_hs38d1_analysis_set.fna`;
+both were there on 20 October 2026. On chr20 the VCF holds 85,951 records, and
+`bcftools norm -c e` (1.24) finds no REF that differs from the reference. Recommended: use these,
+through the variables `PVC_EVAL_GRCH38` and `PVC_EVAL_HG002_VCF`, over chr20. Another file changes
+only the variable's name and the test's description.
 
 **Open 7. Reading the indexes.** Planning the contigs from the indexes needs a reader of the
-`.tbi` and `.csi` headers. With `gzip` and `struct` it is about 15 lines and adds no dependency;
-without it, every contig is scanned only when a reader reaches it, and on a bgzipped VCF the
-finder starts each contig a buffer's worth of records later. Recommended: the reader, in
-`pvc_eval.compare`. Meanwhile, the reader.
+`.tbi` and `.csi` headers. With `gzip` and `struct` it is about 15 lines and adds no dependency.
+Without it, a contig is scanned only when a reader reaches it, and a reader stops when its buffer
+is full: on a run of several contigs it waits, 10,000 records into chr1, while chr1 is scanned,
+and reaches chr2 only once the loci side has used chr1's records. The scans then run nearly one
+after another, and a second finder thread gains little. Recommended: the reader, in
+`pvc_eval.compare`. Without it, "Which contigs are scanned" loses its planned contigs and the
+index reader's tests go.
 
 ## Not in this spec
 
