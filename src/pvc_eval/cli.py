@@ -17,7 +17,12 @@ from pathlib import Path
 
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
-from pvc_eval.segments import StrFinderParameters, write_str_regions
+from pvc_eval.segments import (
+    DEFAULT_NUM_THREADS,
+    MAX_NUM_THREADS,
+    StrFinderParameters,
+    write_str_regions,
+)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -222,6 +227,17 @@ def _make_parser() -> argparse.ArgumentParser:
         " each whole. Only the contigs it names are segmented, each whole, so it changes"
         " which STR regions are written and never where one starts or ends",
     )
+    str_regions.add_argument(
+        "--threads",
+        type=int,
+        default=DEFAULT_NUM_THREADS,
+        metavar="N",
+        help="how many contigs are segmented at once, each on a thread of its own, from 1 to"
+        f" {MAX_NUM_THREADS}. The peak memory grows with N: a contig being segmented holds 4.6 to"
+        " 5.3 MB per Mb of its length, 1.15 GB for GRCh38's chr1. With more than one thread,"
+        " Ctrl-C stops the run once the contigs being segmented have finished, which can take"
+        f" minutes (default {DEFAULT_NUM_THREADS})",
+    )
     defaults = StrFinderParameters()
     for finder_option in _FINDER_OPTIONS:
         default = getattr(defaults, finder_option.field)
@@ -240,8 +256,17 @@ def _make_parser() -> argparse.ArgumentParser:
 def _run_str_regions(arguments: argparse.Namespace) -> None:
     """The `str-regions` command: segment the reference and write its STR regions."""
     parameters = _make_finder_parameters(arguments)
+    # Checked here and not left to write_str_regions, so that a ValueError raised while the
+    # contigs are segmented, a defect, keeps its traceback.
+    if not 1 <= arguments.threads <= MAX_NUM_THREADS:
+        raise PvcEvalInputError(
+            f"--threads is {arguments.threads}; it must be a whole number from 1 to"
+            f" {MAX_NUM_THREADS}. Correct the option, and run again."
+        )
     with IndexedFasta(arguments.reference) as reference:
-        write_str_regions(reference, arguments.output, parameters, arguments.regions)
+        write_str_regions(
+            reference, arguments.output, parameters, arguments.regions, arguments.threads
+        )
 
 
 def _make_finder_parameters(arguments: argparse.Namespace) -> StrFinderParameters:

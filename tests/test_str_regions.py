@@ -5,16 +5,26 @@ import gzip
 import os
 import re
 import subprocess
+import sys
 import sysconfig
-from collections.abc import Sequence
+import threading
+from collections.abc import Iterator, Sequence
 from pathlib import Path
+from types import CodeType
 
 import pytest
 
 from pvc_eval.cli import main
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
-from pvc_eval.segments import GenomeSegment, RegionType, read_str_regions
+from pvc_eval.segments import (
+    GenomeSegment,
+    RegionType,
+    StrFinderParameters,
+    read_str_regions,
+    segment_contig,
+    write_str_regions,
+)
 
 # The worked cases of doc/specs/str_finder.md. Their STR regions are the spec's, which `pvc
 # repeat-catalog` and then `pvc dev type-regions --min-copies 5,5,4,4,4,3` gave, pvc built at
@@ -211,6 +221,257 @@ def test_the_installed_command_runs(tmp_path: Path) -> None:
     command = Path(sysconfig.get_path("scripts")) / "pvc_eval"
     subprocess.run([command, "str-regions", "--reference", fasta, "--output", output], check=True)
     assert output.read_text(encoding="utf-8").splitlines()[-1] == "four_a\t58\t80\tstr\tCA"
+
+
+# ---- --threads --------------------------------------------------------------------------
+
+# A first contig far longer than the others, 302,000 bases against at most 302, so that with
+# several threads the contigs after it are segmented and finished long before it is: rows
+# written in the order the contigs finish would put its rows last. It is four_a 2,000 times
+# over, so its rows are those of `twice` repeated, one (CA) repeat every 151 bases.
+_LONG_COPIES = 2_000
+_LONG_CONTIGS = {"long": _FOUR_A * _LONG_COPIES, **_WORKED_CONTIGS}
+_LONG_ROWS = [
+    f"long\t{58 + 151 * copy}\t{80 + 151 * copy}\tstr\tCA" for copy in range(_LONG_COPIES)
+]
+
+
+def _run_threads(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], contigs: dict[str, str], threads: str
+) -> tuple[int, str, Path]:
+    """The exit status and stderr of `str-regions --threads threads` over these contigs, and
+    the path of the BED it writes."""
+    fasta = _write_fasta(tmp_path, contigs)
+    output = tmp_path / f"str_{threads}.bed"
+    status, stderr = _run(
+        [
+            *("str-regions", "--reference", str(fasta)),
+            *("--output", str(output), "--threads", threads),
+        ],
+        capsys,
+    )
+    return status, stderr, output
+
+
+def test_threads_write_the_rows_in_fai_order_whichever_contig_finishes_first(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Seven contigs on three threads.
+    beds = {}
+    for threads in ["1", "3"]:
+        status, stderr, output = _run_threads(tmp_path, capsys, _LONG_CONTIGS, threads)
+        assert (status, stderr) == (0, "")
+        beds[threads] = output.read_bytes()
+    assert beds["3"] == beds["1"]
+    assert beds["1"].decode().splitlines() == _DEFAULT_HEADER + _LONG_ROWS + _WORKED_ROWS
+
+
+@pytest.mark.parametrize("threads", ["0", "257"])
+def test_threads_outside_1_to_256_stop_the_run_naming_the_option(
+    threads: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    status, stderr, output = _run_threads(tmp_path, capsys, {"four_a": _FOUR_A}, threads)
+    assert (status, stderr) == (
+        1,
+        f"--threads is {threads}; it must be a whole number from 1 to 256. Correct the"
+        " option, and run again.\n",
+    )
+    assert not output.exists()
+    assert not Path(f"{output}.tmp").exists()
+
+
+@pytest.mark.parametrize("threads", ["1", "256"])
+def test_threads_of_1_and_256_are_accepted(
+    threads: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    status, stderr, output = _run_threads(tmp_path, capsys, {"four_a": _FOUR_A}, threads)
+    assert (status, stderr) == (0, "")
+    assert output.read_text(encoding="utf-8").splitlines() == [
+        *_DEFAULT_HEADER,
+        "four_a\t58\t80\tstr\tCA",
+    ]
+
+
+def test_threads_that_are_not_a_number_get_a_usage_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    status, stderr, _ = _run_threads(tmp_path, capsys, {"four_a": _FOUR_A}, "four")
+    assert status == 2
+    assert stderr.startswith("usage: pvc_eval str-regions")
+    assert "argument --threads: invalid int value: 'four'" in stderr
+
+
+# A contig whose byte that is not a letter is its last, after 30,000 that are: IndexedFasta
+# looks for it one byte at a time, so with several threads the short faulty contig after it
+# fails first. Raising the error that comes first in time gave short_bad's message in 200
+# runs out of 200 at 10,000 bases and at 30,000, and long_bad's in 1 out of 200 at 3,000.
+_LONG_BAD = "A" * 30_000 + "-"
+
+
+@pytest.mark.parametrize("threads", ["1", "3"])
+def test_an_error_in_a_later_contig_stops_the_run_with_the_first_faulty_contigs_message(
+    threads: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Two contigs with a byte that is not a letter, after one without: the run stops with the
+    # message of the first in the .fai, as with one thread, though with three the second
+    # fails first.
+    contigs = {"four_a": _FOUR_A, "long_bad": _LONG_BAD, "short_bad": "AC-GT"}
+    output = tmp_path / f"str_{threads}.bed"
+    output.write_text("earlier\n", encoding="utf-8")
+    status, stderr, output = _run_threads(tmp_path, capsys, contigs, threads)
+    fasta = tmp_path / "ref.fa"
+    assert (status, stderr) == (
+        1,
+        f"{fasta}: long_bad:30001 is not a letter where its .fai, line 2, puts a base. Make"
+        f" the .fai again with `samtools faidx {fasta}`, check that the FASTA holds only"
+        " letters between its header lines, and run again.\n",
+    )
+    assert output.read_text(encoding="utf-8") == "earlier\n"
+    assert not Path(f"{output}.tmp").exists()
+
+
+# A value of the wrong type gets the message of every parameter of the finder that must be a
+# whole number, and one outside the range gets the range.
+@pytest.mark.parametrize(
+    ("num_threads", "message"),
+    [
+        (0, "num_threads is 0; it must be a whole number from 1 to 256"),
+        (257, "num_threads is 257; it must be a whole number from 1 to 256"),
+        (True, "num_threads is True; it must be a whole number"),
+        (2.0, "num_threads is 2.0; it must be a whole number"),
+    ],
+    ids=["0", "257", "true", "float"],
+)
+def test_write_str_regions_refuses_threads_before_reading_the_regions(
+    num_threads: object, message: str, tmp_path: Path
+) -> None:
+    # The --regions BED does not exist, which would stop the run if it were read first.
+    fasta = _write_fasta(tmp_path, {"four_a": _FOUR_A})
+    output = tmp_path / "str.bed"
+    with (
+        IndexedFasta(fasta) as reference,
+        pytest.raises(
+            ValueError,
+            match=f"^{re.escape(message)}$",
+        ),
+    ):
+        write_str_regions(
+            reference,
+            output,
+            StrFinderParameters(),
+            tmp_path / "missing.bed",
+            num_threads,  # ty: ignore[invalid-argument-type]  # the wrong types are the test
+        )
+    assert not Path(f"{output}.tmp").exists()
+
+
+@pytest.mark.parametrize("num_threads", [1, 256])
+def test_write_str_regions_takes_1_and_256_threads(num_threads: int, tmp_path: Path) -> None:
+    fasta = _write_fasta(tmp_path, {"four_a": _FOUR_A})
+    output = tmp_path / "str.bed"
+    with IndexedFasta(fasta) as reference:
+        write_str_regions(reference, output, StrFinderParameters(), None, num_threads)
+    assert output.read_text(encoding="utf-8").splitlines() == [
+        *_DEFAULT_HEADER,
+        "four_a\t58\t80\tstr\tCA",
+    ]
+
+
+# ---- Which thread segments which contig -------------------------------------------------
+
+# A tool id of sys.monitoring that nothing else in the tests takes: 0, 1, 2 and 5 are those
+# of a debugger, of coverage, of a profiler and of an optimizer.
+_MONITORING_TOOL = 4
+
+# The long contig of _LONG_CONTIGS and then twelve short ones, so that with two threads the
+# short ones would all be started long before the long one returns, were nothing to hold
+# them back.
+_LONG_THEN_SHORT = {"long": _LONG_CONTIGS["long"]} | {
+    f"short{index}": _FOUR_A for index in range(12)
+}
+
+# A call of segment_contig as sys.monitoring sees it: "start" when it starts or "return"
+# when it hands back its segments, the contig, and the ident of the thread it runs on.
+type _SegmentEvent = tuple[str, str, int]
+
+
+@pytest.fixture
+def segment_contig_events() -> Iterator[list[_SegmentEvent]]:
+    """The calls of segment_contig while the test runs, in the order they were recorded.
+
+    sys.monitoring calls back on each start and return of segment_contig's code, and replaces
+    nothing, so the code that runs is pvc_eval's own. The tool id and the events are freed
+    when the test ends, failed or not.
+    """
+    # list.append from several threads keeps every item on the free-threaded build, and an
+    # event is appended after it happened, so a start recorded before a return happened
+    # before it.
+    events: list[_SegmentEvent] = []
+
+    def record_start(code: CodeType, offset: int) -> None:  # noqa: ARG001 -- the signature sys.monitoring calls
+        # Frame 1 is segment_contig's, which called back.
+        events.append(("start", sys._getframe(1).f_locals["contig"], threading.get_ident()))
+
+    def record_return(code: CodeType, offset: int, value: object) -> None:  # noqa: ARG001 -- the signature sys.monitoring calls
+        events.append(("return", sys._getframe(1).f_locals["contig"], threading.get_ident()))
+
+    monitoring = sys.monitoring
+    monitoring.use_tool_id(_MONITORING_TOOL, "pvc_eval tests")
+    try:
+        monitoring.register_callback(_MONITORING_TOOL, monitoring.events.PY_START, record_start)
+        monitoring.register_callback(_MONITORING_TOOL, monitoring.events.PY_RETURN, record_return)
+        monitoring.set_local_events(
+            _MONITORING_TOOL,
+            segment_contig.__code__,
+            monitoring.events.PY_START | monitoring.events.PY_RETURN,
+        )
+        yield events
+    finally:
+        monitoring.set_local_events(
+            _MONITORING_TOOL, segment_contig.__code__, monitoring.events.NO_EVENTS
+        )
+        monitoring.free_tool_id(_MONITORING_TOOL)
+
+
+def _run_long_then_short(tmp_path: Path, capsys: pytest.CaptureFixture[str], threads: str) -> None:
+    status, stderr, _ = _run_threads(tmp_path, capsys, _LONG_THEN_SHORT, threads)
+    assert (status, stderr) == (0, "")
+
+
+def test_one_thread_segments_every_contig_in_the_calling_thread(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], segment_contig_events: list[_SegmentEvent]
+) -> None:
+    _run_long_then_short(tmp_path, capsys, "1")
+    # A start and a return for each of the 13 contigs.
+    assert len(segment_contig_events) == 26
+    assert {thread for _, _, thread in segment_contig_events} == {threading.get_ident()}
+
+
+def test_two_threads_segment_no_contig_in_the_calling_thread_and_use_at_most_two(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], segment_contig_events: list[_SegmentEvent]
+) -> None:
+    _run_long_then_short(tmp_path, capsys, "2")
+    assert len(segment_contig_events) == 26
+    threads = {thread for _, _, thread in segment_contig_events}
+    assert threading.get_ident() not in threads
+    assert len(threads) <= 2
+
+
+def test_two_threads_start_at_most_five_contigs_before_the_first_returns(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], segment_contig_events: list[_SegmentEvent]
+) -> None:
+    # Executor.map with buffersize=2 * 2 submits the long contig and three short ones, and one
+    # more when the first result is asked for, before it waits on the long one: 1 + 2N. With
+    # no buffersize, the twelve short ones all finish on the second thread while the long one
+    # runs.
+    _run_long_then_short(tmp_path, capsys, "2")
+    long_return = next(
+        index
+        for index, (kind, contig, _) in enumerate(segment_contig_events)
+        if (kind, contig) == ("return", "long")
+    )
+    started = [contig for kind, contig, _ in segment_contig_events[:long_return] if kind == "start"]
+    assert len(started) <= 5, started
 
 
 # ---- --regions --------------------------------------------------------------------------
@@ -658,6 +919,7 @@ def test_help_lists_every_option_with_its_default(capsys: pytest.CaptureFixture[
         "--scan-match-reward": ["2"],
         "--scan-mismatch-penalty": ["7"],
         "--scan-min-copies": ["2"],
+        "--threads": ["4"],
     }
 
 
@@ -685,6 +947,11 @@ def test_help_says_what_the_bed_holds_and_what_its_words_mean(
         " other two types.",
         "--max-str-len N a stretch of repeats longer than N bases is a satellite; at least"
         " --bundle-distance (default 100)",
+        "--threads N how many contigs are segmented at once, each on a thread of its own, from"
+        " 1 to 256. The peak memory grows with N: a contig being segmented holds 4.6 to 5.3 MB"
+        " per Mb of its length, 1.15 GB for GRCh38's chr1. With more than one thread, Ctrl-C"
+        " stops the run once the contigs being segmented have finished, which can take"
+        " minutes (default 4)",
     ]:
         assert sentence in help_text
     assert "by half" not in help_text

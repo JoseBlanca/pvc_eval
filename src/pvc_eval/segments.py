@@ -7,13 +7,15 @@ VcfRecord.span are.
 Public: RegionType, the four types of a segment; GenomeSegment, one segment of a contig;
 StrFinderParameters, the parameters of the finder; segment_contig, the segmented genome of
 one contig; read_str_regions, the STR regions of a --str-regions BED; write_str_regions,
-the BED of the `pvc_eval str-regions` command.
+the BED of the `pvc_eval str-regions` command; DEFAULT_NUM_THREADS and MAX_NUM_THREADS,
+how many contigs it segments at once when not told and the most it takes.
 """
 
 import bisect
 import sys
 from collections import deque
-from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields
 from enum import Enum
 from importlib.metadata import version
@@ -1248,11 +1250,20 @@ def _find_requested_spans(path: Path, reference: IndexedFasta) -> dict[str, list
     return requested
 
 
+# How many contigs write_str_regions segments at once when not told, and the most it takes:
+# the VCF reader's default and limit, DEFAULT_NUM_THREADS and _MAX_NUM_THREADS of
+# pvc_eval.vcf (doc/spec.md, "Threads"), as doc/specs/str_finder.md, "The str-regions
+# command", gives them.
+DEFAULT_NUM_THREADS = 4
+MAX_NUM_THREADS = 256
+
+
 def write_str_regions(
     reference: IndexedFasta,
     output: Path,
     parameters: StrFinderParameters,
     regions: Path | None,
+    num_threads: int,
 ) -> None:
     """Write the BED of `pvc_eval str-regions` (doc/specs/str_finder.md, "The str-regions
     command"): a ## line for pvc_eval's version and one for each parameter, a #chrom line,
@@ -1265,10 +1276,23 @@ def write_str_regions(
     output when complete. A run stopped by an error or by Ctrl-C removes the `.tmp` and leaves
     output as it was; one killed by a signal leaves the `.tmp` behind.
 
-    Raises PvcEvalInputError for a --regions BED that pvc_eval.bed.parse_bed refuses, an
-    empty one among them, and for one with an end past its contig's length; for a byte of the FASTA that is not a letter; and, before any contig is
-    segmented, for an output that is a directory or whose `.tmp` cannot be made.
+    Up to num_threads contigs are segmented at once, each on a thread of its own, or one
+    after another in this thread when num_threads is 1; the BED is the same at any number.
+    With more than one, an error in a contig, or Ctrl-C, stops the run once the contigs being
+    segmented have finished.
+
+    Raises ValueError, before anything is read or written, for a num_threads that is not a
+    whole number from 1 to 256. Raises PvcEvalInputError for a --regions BED that
+    pvc_eval.bed.parse_bed refuses, an empty one among them, and for one with an end past
+    its contig's length; for a byte of the FASTA that is not a letter, the first in the
+    order of the `.fai`; and, before any contig is segmented, for an output that is a
+    directory or whose `.tmp` cannot be made.
     """
+    _check_whole_number("num_threads", num_threads)
+    if not 1 <= num_threads <= MAX_NUM_THREADS:
+        raise ValueError(
+            f"num_threads is {num_threads!r}; it must be a whole number from 1 to {MAX_NUM_THREADS}"
+        )
     if regions is None:
         # Without --regions, each whole contig is the one span requested of it.
         requested = {
@@ -1281,14 +1305,46 @@ def write_str_regions(
     try:
         with bed:
             bed.writelines(_format_str_regions_header(parameters))
-            for contig in [contig for contig in reference.contigs if contig in requested]:
-                segments = segment_contig(reference, contig, parameters)
-                str_regions = _find_requested_str_regions(segments, requested[contig])
-                bed.writelines(_format_str_region(segment) for segment in str_regions)
+            contigs = [contig for contig in reference.contigs if contig in requested]
+
+            def make_rows(contig: str) -> list[str]:
+                return _make_str_region_rows(reference, contig, parameters, requested[contig])
+
+            for rows in _map_in_order(make_rows, contigs, num_threads):
+                bed.writelines(rows)
         temporary.replace(output)
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def _make_str_region_rows(
+    reference: IndexedFasta,
+    contig: str,
+    parameters: StrFinderParameters,
+    requested: Iterable[_Span],
+) -> list[str]:
+    """The rows of the `str-regions` BED for one contig, segmented whole: its STR regions
+    that overlap one of the requested spans, 0-based and half-open, each row with its line
+    end. A thread hands back these rows and not the segments, so that a contig that waits
+    for the ones before it to be written holds its rows only."""
+    segments = segment_contig(reference, contig, parameters)
+    str_regions = _find_requested_str_regions(segments, requested)
+    return [_format_str_region(segment) for segment in str_regions]
+
+
+def _map_in_order[T, R](
+    function: Callable[[T], R], items: Iterable[T], num_threads: int
+) -> Iterator[R]:
+    """function over items, its results in the order of the items: in this thread when
+    num_threads is 1, or else on a pool of num_threads threads, with at most two items each
+    submitted ahead of the result given (doc/specs/str_finder.md, "Threads"). The same as
+    pvc_eval.vcf's, which is private there."""
+    if num_threads == 1:
+        yield from map(function, items)
+        return
+    with ThreadPoolExecutor(max_workers=num_threads) as pool:
+        yield from pool.map(function, items, buffersize=2 * num_threads)
 
 
 def _open_temporary_output(output: Path, temporary: Path) -> TextIO:
