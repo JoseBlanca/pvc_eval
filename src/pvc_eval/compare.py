@@ -15,7 +15,6 @@ PVC_STRATA, the value of CompareConfig.strata for --strata pvc; DEFAULT_FINDER_T
 
 import functools
 import logging
-import sys
 import threading
 import time
 from collections.abc import Callable, Container, Generator, Iterable, Iterator, Sequence
@@ -373,12 +372,14 @@ def _start_threads(
     reader, as the loci side takes them, and the finder (doc/specs/compare.md, "Which thread
     does what").
 
-    reference_path: the FASTA that reference reads, which each thread of the finder opens
-        for itself.
+    reference_path: the FASTA that reference reads, which each reader and each thread of
+        the finder opens for itself.
     contigs_read: the contigs whose records the readers read, or None for every contig.
 
-    When stack exits, the stop is set, and the readers started are waited for
-    (doc/specs/compare.md, "Errors, and stopping early").
+    When stack exits, the stop is set; no thread is waited for (doc/specs/compare.md, "The
+    stop").
+
+    Raises what IndexedFasta raises for the FASTA, before any reader starts.
     """
     stop = threading.Event()
     finder = None
@@ -388,65 +389,56 @@ def _start_threads(
         Queue(maxsize=_BUFFER_BATCHES),
         Queue(maxsize=_BUFFER_BATCHES),
     )
-    readers = [
-        threading.Thread(
-            target=_parse_vcf_into_buffer,
-            args=(
-                functools.partial(
-                    parse_vcf,
-                    path,
-                    reference,
-                    span_limit=config.span_limit,
-                    ploidy=ploidy,
-                    contigs=contigs_read,
-                ),
-                buffer,
-                finder,
-            ),
-            name=f"pvc_eval reader {file_name}",
-            daemon=True,
-        )
-        for path, ploidy, buffer, file_name in zip(
-            paths, (config.ploidy_a, config.ploidy_b), buffers, "AB", strict=True
-        )
-    ]
-    stack.callback(_stop_threads, stop, finder, buffers, readers)
+    stack.callback(_stop_threads, stop, finder, buffers)
     if finder is not None:
         # The reference lacks a contig an index lists: a record on it stops the run when a
         # reader reaches it, so its scan is not planned.
         index_contigs = parse_index_contigs(paths[0]) | parse_index_contigs(paths[1])
         finder.put(contig for contig in reference.contigs if contig in index_contigs)
         finder.start(reference_path)
-    for reader in readers:
-        reader.start()
+    # Each reader reads the reference through a handle of its own, which it closes when it
+    # ends, so that compare() closes its own without waiting for the readers.
+    with ExitStack() as opened:
+        reader_references = [opened.enter_context(IndexedFasta(reference_path)) for _ in paths]
+        opened.pop_all()
+    for path, ploidy, buffer, reader_reference, file_name in zip(
+        paths, (config.ploidy_a, config.ploidy_b), buffers, reader_references, "AB", strict=True
+    ):
+        open_vcf_records = functools.partial(
+            parse_vcf,
+            path,
+            reader_reference,
+            span_limit=config.span_limit,
+            ploidy=ploidy,
+            contigs=contigs_read,
+        )
+        threading.Thread(
+            target=_parse_vcf_into_buffer,
+            args=(open_vcf_records, reader_reference, buffer, finder),
+            name=f"pvc_eval reader {file_name}",
+            daemon=True,
+        ).start()
     return _take_records(buffers[0]), _take_records(buffers[1]), finder
 
 
 def _stop_threads(
-    stop: threading.Event,
-    finder: _Finder | None,
-    buffers: Iterable[_Buffer],
-    readers: Iterable[threading.Thread],
+    stop: threading.Event, finder: _Finder | None, buffers: Iterable[_Buffer]
 ) -> None:
-    """Sets the stop, wakes the finder's threads that wait for a contig, shuts the buffers
-    down, which wakes a reader waiting for room, and waits for the readers started to end. A
-    scan in progress is not waited for."""
+    """Sets the stop, wakes the finder's threads that wait for a contig, and shuts the
+    buffers down, which wakes a reader waiting for room; each reader then ends within one
+    batch of parse_vcf's work. No thread is waited for: a stop run by the garbage collector,
+    in a thread that may hold threading's lock on its list of threads, would wait forever
+    for a thread that ends, which takes that lock (doc/specs/compare.md, "The stop")."""
     stop.set()
     if finder is not None:
         finder.stop()
     for buffer in buffers:
         buffer.shutdown(immediate=True)
-    # A stream that Python closes as it exits cannot wait for a thread; the readers end with
-    # Python, and the reference is no longer read.
-    if sys.is_finalizing():
-        return
-    for reader in readers:
-        if reader.ident is not None:
-            reader.join()
 
 
 def _parse_vcf_into_buffer(
     open_vcf_records: Callable[[], Iterator[VcfRecord]],
+    reference: IndexedFasta,
     buffer: _Buffer,
     finder: _Finder | None,
 ) -> None:
@@ -457,9 +449,11 @@ def _parse_vcf_into_buffer(
     its stream closed.
 
     open_vcf_records: parse_vcf with its arguments, called in this thread.
+    reference: the reader's own handle on the reference, which open_vcf_records reads and
+        this closes when the reading ends.
     """
     # After the stop, nothing more is taken from the buffer.
-    with suppress(ShutDown):
+    with reference, suppress(ShutDown):
         _put_vcf_records(open_vcf_records, buffer, finder)
 
 

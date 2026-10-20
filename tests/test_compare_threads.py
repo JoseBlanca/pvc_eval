@@ -614,8 +614,9 @@ def test_reader_held_by_the_finder_takes_one_buffer_and_two_batches(
     # The buffer full, one batch the loci side took before it waited on the finder for chr1,
     # and one the reader holds while it waits: 158 batches.
     assert num_taken == (_BUFFER_BATCHES + 2) * _BATCH_RECORDS == 10_112
-    # Closed, the stream has waited for its readers.
-    assert _get_new_threads(threads_before, "pvc_eval reader") == []
+    # Closed, the stream does not wait for its readers, which end within one batch of
+    # parse_vcf's work (doc/specs/compare.md, "The stop").
+    assert _join_threads(threads_before, "pvc_eval reader", 5) == []
 
 
 def test_close_after_first_row_ends_readers_and_starts_no_scan(
@@ -637,8 +638,9 @@ def test_close_after_first_row_ends_readers_and_starts_no_scan(
         assert _call_with_timeout(lambda: next(rows)).contig == "chr1"
         _call_with_timeout(rows.close)
         num_calls = len(calls)
-        # Closed, the stream has waited for its readers, before it closed the reference.
-        assert _get_new_threads(threads_before, "pvc_eval reader") == []
+        # Closed, the stream does not wait for its readers, which end within one batch of
+        # parse_vcf's work (doc/specs/compare.md, "The stop").
+        assert _join_threads(threads_before, "pvc_eval reader", 5) == []
     finally:
         release.set()
     assert _join_threads(threads_before, "pvc_eval", 5) == []
@@ -786,5 +788,46 @@ def test_stream_never_closed_ends_python_with_no_error(tmp_path: Path) -> None:
         timeout=_TIMEOUT,
     )
     assert (completed.returncode, completed.stdout) == (0, "chr1\n")
+    assert "Error" not in completed.stderr
+    assert "Exception" not in completed.stderr
+
+
+# A compare() stream with threads, dropped unclosed in a reference cycle and finalized by the
+# garbage collector in a thread that holds threading's _active_limbo_lock, as
+# threading.enumerate() and Thread.start() hold it. threading has no public way to hold that
+# lock, and holding it is what makes a stop that joins the readers wait forever: a reader
+# that ends takes the lock to leave threading's list of threads (doc/specs/compare.md, "The
+# stop"). It runs in a process of its own, so that a hang fails the test at its timeout and
+# leaves the lock of this process free.
+_FINALIZED_SCRIPT = """
+import gc, sys, threading
+from pathlib import Path
+from pvc_eval.compare import CompareConfig, compare
+
+directory = Path(sys.argv[1])
+gc.disable()
+rows = compare(
+    directory / "a.vcf", directory / "b.vcf", directory / "ref.fa", CompareConfig(chain_distance=0)
+)
+print(next(rows).contig)
+cycle = [rows]
+cycle.append(cycle)
+del rows, cycle
+with threading._active_limbo_lock:
+    gc.collect()
+print("collected")
+"""
+
+
+def test_stream_finalized_while_threads_are_listed_does_not_hang(tmp_path: Path) -> None:
+    _write_big_case(tmp_path)
+    completed = subprocess.run(
+        [sys.executable, "-c", _FINALIZED_SCRIPT, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=_TIMEOUT,
+    )
+    assert (completed.returncode, completed.stdout) == (0, "chr1\ncollected\n")
     assert "Error" not in completed.stderr
     assert "Exception" not in completed.stderr
