@@ -6,12 +6,12 @@ format_table_row, one row's fields as text; write_table, which writes the table 
 summary from the rows.
 """
 
-import gzip
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import TextIO
 
+from pvc_eval._text_files import open_temporary_output
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.kind import Kind
 from pvc_eval.outcome import LocusGenotype, Outcome, OutcomeRow
@@ -52,7 +52,6 @@ SUMMARY_COLUMNS: tuple[str, ...] = (
 )
 
 _NONE = "."  # a field that is None, doc/specs/compare.md "The table"
-_GZIP_LEVEL = 6  # doc/specs/compare.md "Writing the files", decided by the owner on 20 October 2026
 # The summary's lines come in the order of doc/spec.md §5.5's table, which Outcome keeps.
 _OUTCOME_ORDER = {outcome: index for index, outcome in enumerate(Outcome)}
 
@@ -122,7 +121,10 @@ def write_table(
     try:
         for option, path in targets:
             temporary = Path(f"{path}.tmp")
-            opened.append((path, temporary, _open_temporary_output(option, path, temporary)))
+            compress = path.name.endswith(".gz")
+            opened.append(
+                (path, temporary, open_temporary_output(path, temporary, option, compress=compress))
+            )
         files = [file for _, _, file in opened]
         _write_rows(rows, files[0], files[1] if len(files) == 2 else None, all_rows=all_rows)
         for file in files:
@@ -148,44 +150,6 @@ def _write_rows(
             table.write(_format_line(format_table_row(row)))
     if summary is not None:
         summary.writelines(_format_summary(counts))
-
-
-def _open_temporary_output(option: str, path: Path, temporary: Path) -> TextIO:
-    """Open the file that is written before it is renamed to path, gzipped when path ends
-    in `.gz`.
-
-    Raises PvcEvalInputError, naming option, when path is a directory or temporary cannot
-    be made, with the messages of `str-regions` for --output.
-    """
-    if path.is_dir():
-        raise PvcEvalInputError(
-            f"{option} {path} is a directory. Give the path of a file to write, and run again."
-        )
-    cannot = f"{option} {path} cannot be written:"
-    try:
-        if path.name.endswith(".gz"):
-            return gzip.open(temporary, "wt", compresslevel=_GZIP_LEVEL, encoding="utf-8")
-        return temporary.open("w", encoding="utf-8")
-    except FileNotFoundError:
-        raise PvcEvalInputError(
-            f"{cannot} its directory, {path.parent}, does not exist. Make it, or give another"
-            f" {option}, and run again."
-        ) from None
-    except NotADirectoryError:
-        raise PvcEvalInputError(
-            f"{cannot} its path goes through a file as if it were a directory. Correct the"
-            " path, and run again."
-        ) from None
-    except PermissionError:
-        raise PvcEvalInputError(
-            f"{cannot} permission denied to write in {path.parent}. Allow writing there, or"
-            f" give another {option}, and run again."
-        ) from None
-    except IsADirectoryError:
-        raise PvcEvalInputError(
-            f"{cannot} {temporary}, where it is written first, is a directory. Move it away,"
-            " and run again."
-        ) from None
 
 
 def _format_line(fields: Iterable[str]) -> str:

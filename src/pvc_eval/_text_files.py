@@ -1,7 +1,8 @@
-"""The lines of a text file, plain, gzipped or bgzipped, for the readers of VCFs and BEDs.
+"""The lines of a text file, plain, gzipped or bgzipped, for the readers of VCFs and BEDs,
+and the temporary file an output is written to before it is renamed.
 
 Public, to pvc_eval's own modules: read_numbered_lines, which yields a file's lines with
-their numbers.
+their numbers; open_temporary_output, which opens the temporary file of an output.
 """
 
 import gzip
@@ -14,6 +15,9 @@ from pvc_eval.errors import PvcEvalInputError
 
 # The first two bytes of a gzip file, and so of a bgzipped one.
 _GZIP_MAGIC = b"\x1f\x8b"
+# The level an output is gzipped at (doc/specs/compare.md, "Writing the files", decided by
+# the owner on 20 October 2026).
+_GZIP_LEVEL = 6
 
 
 def read_numbered_lines(
@@ -72,3 +76,44 @@ def _open_text(path: Path) -> TextIO:
     if is_gzipped:
         return gzip.open(path, "rt", encoding="utf-8-sig")
     return path.open(encoding="utf-8-sig")
+
+
+def open_temporary_output(path: Path, temporary: Path, option: str, *, compress: bool) -> TextIO:
+    """Open temporary, the file an output is written to before it is renamed to path, as
+    UTF-8 text, gzipped when compress is true.
+
+    option: the command-line option that gave path, "--output" or "--summary", for the
+    messages.
+
+    Raises PvcEvalInputError, naming option, when path is a directory or temporary cannot
+    be made.
+    """
+    if path.is_dir():
+        raise PvcEvalInputError(
+            f"{option} {path} is a directory. Give the path of a file to write, and run again."
+        )
+    cannot = f"{option} {path} cannot be written:"
+    try:
+        if compress:
+            return gzip.open(temporary, "wt", compresslevel=_GZIP_LEVEL, encoding="utf-8")
+        return temporary.open("w", encoding="utf-8")
+    except FileNotFoundError:
+        raise PvcEvalInputError(
+            f"{cannot} its directory, {path.parent}, does not exist. Make it, or give another"
+            f" {option}, and run again."
+        ) from None
+    except NotADirectoryError:
+        raise PvcEvalInputError(
+            f"{cannot} its path goes through a file as if it were a directory. Correct the"
+            " path, and run again."
+        ) from None
+    except PermissionError:
+        raise PvcEvalInputError(
+            f"{cannot} permission denied to write in {path.parent}. Allow writing there, or"
+            f" give another {option}, and run again."
+        ) from None
+    except IsADirectoryError:
+        raise PvcEvalInputError(
+            f"{cannot} {temporary}, where it is written first, is a directory. Move it away,"
+            " and run again."
+        ) from None
