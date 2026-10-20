@@ -264,16 +264,16 @@ def respell_with_spanning_deletions(
             reference,
         )
     }
-    rewrites = _find_spanning_deletion_rewrites(record_index, rewritable_places, respelling_input)
+    sample_fields, star_places = _find_spanning_deletion_rewrites(
+        record_index, rewritable_places, respelling_input
+    )
     output_records = []
     for input_record in respelling_input.input_records:
         place = input_record.place
-        if place in rewrites.sample_fields:
+        if place in sample_fields:
             output_records.append(
                 _make_spanned_record(
-                    input_record,
-                    rewrites.sample_fields[place],
-                    has_star=place in rewrites.star_places,
+                    input_record, sample_fields[place], has_star=place in star_places
                 )
             )
         else:
@@ -457,16 +457,37 @@ def _is_edit_touching(edit: _Edit, other: _Edit) -> bool:
     return edit.start <= other.end and other.start <= edit.end
 
 
+@dataclass(frozen=True, slots=True)
+class _PhaseUnit:
+    """A sample's phase unit at a record (§1): the phase set of a phased GT, None for one
+    phased with no PS; or, for an unphased GT, the record's place among the input's record
+    lines, a unit of its own."""
+
+    phase_set: str | None
+    place: int | None
+
+
+def _find_phase_unit(genotype: VcfGenotype, place: int) -> _PhaseUnit:
+    """The phase unit of a sample's VCF genotype at the record at place. A phased GT with no
+    PS is in the one phase set VCF gives those of its sample and contig."""
+    if genotype.phased:
+        return _PhaseUnit(phase_set=genotype.phase_set, place=None)
+    return _PhaseUnit(phase_set=None, place=place)
+
+
 def _is_haplotype_shareable(
-    genotype: VcfGenotype, haplotype: int, other_genotype: VcfGenotype, other_haplotype: int
+    genotype: VcfGenotype,
+    place: int,
+    haplotype: int,
+    other_genotype: VcfGenotype,
+    other_place: int,
+    other_haplotype: int,
 ) -> bool:
-    """§1: two VCF alleles of one sample may be on one haplotype unless both VCF genotypes
-    are phased in one phase set and the alleles are on different haplotypes. A phased GT
-    with no PS is in the one phase set VCF gives those of its sample and contig."""
-    is_one_phase_set = (
-        genotype.phased and other_genotype.phased and genotype.phase_set == other_genotype.phase_set
-    )
-    return not is_one_phase_set or haplotype == other_haplotype
+    """§1: two VCF alleles of one sample, at the records at place and other_place, may be on
+    one haplotype unless both VCF genotypes are in one phase unit, phased in one phase set,
+    and the alleles are on different haplotypes."""
+    is_one_unit = _find_phase_unit(genotype, place) == _find_phase_unit(other_genotype, other_place)
+    return not is_one_unit or haplotype == other_haplotype
 
 
 @dataclass(frozen=True, slots=True)
@@ -585,7 +606,7 @@ def _is_carried_edit_touching(first: _RecordEdits, second: _RecordEdits) -> bool
         for haplotype, edit in _find_carried_edits(genotype, first.edits):
             for other_haplotype, other_edit in _find_carried_edits(other_genotype, second.edits):
                 if _is_edit_touching(edit, other_edit) and _is_haplotype_shareable(
-                    genotype, haplotype, other_genotype, other_haplotype
+                    genotype, first.place, haplotype, other_genotype, second.place, other_haplotype
                 ):
                     return True
     return False
@@ -845,7 +866,14 @@ def _find_blocking_edits(record_edits: _RecordEdits, other: _RecordEdits) -> Ite
         carrying = [haplotype for haplotype, _ in _find_carried_edits(genotype, record_edits.edits)]
         for other_haplotype, other_edit in _find_carried_edits(other_genotype, other.edits):
             if any(
-                _is_haplotype_shareable(genotype, haplotype, other_genotype, other_haplotype)
+                _is_haplotype_shareable(
+                    genotype,
+                    record_edits.place,
+                    haplotype,
+                    other_genotype,
+                    other.place,
+                    other_haplotype,
+                )
                 for haplotype in carrying
             ):
                 yield other_edit
@@ -904,8 +932,8 @@ class _Deletion:
 @dataclass(frozen=True, slots=True)
 class _Star:
     """The haplotypes of a sample's VCF genotype that get a `*`, and the phase its GT is
-    written with: phased, and its phase set, or rephased, the unphased deletion whose new
-    phase set it takes, where phase_set is None."""
+    written with: phased, and the phase set written; and rephased, the unphased deletion
+    phased in its new phase set, phase_set, which the GT joins, or None."""
 
     haplotypes: frozenset[int]
     phased: bool
@@ -913,96 +941,92 @@ class _Star:
     rephased: _RecordEdits | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class _PhaseUnit:
-    """A sample's phase unit at a record: a phase set, None for a GT phased with no PS; or,
-    for an unphased GT, the record's place among the input's record lines."""
-
-    phase_set: str | None
-    place: int | None
-
-
-@dataclass(frozen=True, slots=True)
-class _SpanningDeletionRewrites:
-    """What the `*` re-spelling writes: the records it rewrites, by place, each with the
-    sample fields, `GT:PS` by sample index, that are not the record's as read; and the
-    places of those that get a `*` ALT. A deletion phased in its new phase set is rewritten
-    with no `*`, unless another sample gives it one."""
-
-    sample_fields: dict[int, dict[int, str]]
-    star_places: set[int]
-
-
 def _find_spanning_deletion_rewrites(
     record_index: _RecordIndex, rewritable_places: set[int], respelling_input: _RespellingInput
-) -> _SpanningDeletionRewrites:
-    """The `*` each record of rewritable_places gets for each sample (§5), and the
-    unphased deletions an all-REF record joins, phased in their new phase sets."""
-    rewrites = _SpanningDeletionRewrites(sample_fields={}, star_places=set())
+) -> tuple[dict[int, dict[int, str]], set[int]]:
+    """What the `*` re-spelling writes (§5): the records it rewrites, by place, each with the
+    sample fields, `GT:PS` by sample index, that are not the record's as read; and the places
+    of those that get a `*` ALT. A deletion phased in its new phase set is rewritten with no
+    `*`, unless another sample gives it one."""
+    sample_fields: dict[int, dict[int, str]] = {}
+    star_places: set[int] = set()
     for place in sorted(rewritable_places):
         record_edits = record_index.by_place[place]
         vcf_record = record_edits.vcf_record
         contig_edits = record_index.by_contig[vcf_record.contig]
         star_index = len(vcf_record.alleles)
+        deletions_by_sample = _find_deletions_over(record_edits, contig_edits)
         for sample, genotype in enumerate(vcf_record.genotypes):
             assert isinstance(genotype, VcfGenotype), "a record with an invalid GT is kept"
-            deletions = list(_find_deletions_over(record_edits, sample, contig_edits))
-            star = _find_star(genotype, deletions, rewritable_places)
+            star = _find_star(
+                genotype,
+                place,
+                deletions_by_sample[sample],
+                rewritable_places,
+                respelling_input,
+            )
             if star is None:
                 continue
-            phase_set = star.phase_set
             if star.rephased is not None:
-                phase_set = _make_new_phase_set(respelling_input, star.rephased.place)
                 rephased_genotype = star.rephased.vcf_record.genotypes[sample]
                 assert isinstance(rephased_genotype, VcfGenotype), "it carries the deletion"
                 rephased_field = _format_genotype(
-                    rephased_genotype.alleles, phased=True, phase_set=phase_set
+                    rephased_genotype.alleles, phased=True, phase_set=star.phase_set
                 )
-                _add_sample_field(rewrites, star.rephased.place, sample, rephased_field)
+                _add_sample_field(sample_fields, star.rephased.place, sample, rephased_field)
             alleles = [
                 star_index if haplotype in star.haplotypes else allele
                 for haplotype, allele in enumerate(genotype.alleles)
             ]
-            field = _format_genotype(alleles, phased=star.phased, phase_set=phase_set)
-            _add_sample_field(rewrites, place, sample, field)
-            rewrites.star_places.add(place)
-    return rewrites
+            field = _format_genotype(alleles, phased=star.phased, phase_set=star.phase_set)
+            _add_sample_field(sample_fields, place, sample, field)
+            star_places.add(place)
+    return sample_fields, star_places
 
 
 def _add_sample_field(
-    rewrites: _SpanningDeletionRewrites, place: int, sample: int, field: str
+    sample_fields: dict[int, dict[int, str]], place: int, sample: int, field: str
 ) -> None:
     """A sample's field of a rewritten record. A sample whose record gets a `*` gives REF on
     a haplotype, so it is not the unphased deletion carried that a `*` rephases, and one
     record never gets two fields for one sample, though one deletion may be rephased for
     several records under it, in one field."""
-    sample_fields = rewrites.sample_fields.setdefault(place, {})
-    assert sample_fields.get(sample, field) == field, "one field for each sample"
-    sample_fields[sample] = field
+    record_fields = sample_fields.setdefault(place, {})
+    assert record_fields.get(sample, field) == field, "one field for each sample"
+    record_fields[sample] = field
 
 
 def _find_deletions_over(
-    record_edits: _RecordEdits, sample: int, contig_edits: _ContigEdits
-) -> Iterator[_Deletion]:
-    """The deletions sample carries at other records, edits that replace positions with no
-    bases, of a position of the REF of record_edits as parse_vcf trims it (§5)."""
+    record_edits: _RecordEdits, contig_edits: _ContigEdits
+) -> list[list[_Deletion]]:
+    """For each sample, by index, the deletions it carries at other records, edits that
+    replace positions with no bases, of a position of the REF of record_edits as parse_vcf
+    trims it (§5)."""
     vcf_record = record_edits.vcf_record
+    deletions_by_sample: list[list[_Deletion]] = [[] for _ in vcf_record.genotypes]
     for other in _find_ref_touching_records(contig_edits, (vcf_record.start, vcf_record.end)):
-        genotype = other.vcf_record.genotypes[sample]
-        if other.place == record_edits.place or not isinstance(genotype, VcfGenotype):
+        if other.place == record_edits.place:
             continue
-        for haplotype, edit in _find_carried_edits(genotype, other.edits):
-            is_deletion = bool(edit.deleted) and not edit.inserted
-            if is_deletion and edit.start < vcf_record.end and vcf_record.start < edit.end:
-                yield _Deletion(other, genotype, haplotype)
+        for sample, genotype in enumerate(other.vcf_record.genotypes):
+            if not isinstance(genotype, VcfGenotype):
+                continue
+            for haplotype, edit in _find_carried_edits(genotype, other.edits):
+                is_deletion = bool(edit.deleted) and not edit.inserted
+                if is_deletion and edit.start < vcf_record.end and vcf_record.start < edit.end:
+                    deletions_by_sample[sample].append(_Deletion(other, genotype, haplotype))
+    return deletions_by_sample
 
 
 def _find_star(
-    genotype: VcfGenotype, deletions: Sequence[_Deletion], rewritable_places: set[int]
+    genotype: VcfGenotype,
+    place: int,
+    deletions: Sequence[_Deletion],
+    rewritable_places: set[int],
+    respelling_input: _RespellingInput,
 ) -> _Star | None:
-    """The haplotypes of a sample's VCF genotype at a record that get a `*` (§5): those it
-    gives REF and whose deletions over the record are in a phase that is known. None when
-    there is none.
+    """The haplotypes of a sample's VCF genotype at the record at place that get a `*`
+    (§5): those it gives REF and whose deletions over the record are in a phase that is
+    known. None when there is none.
 
     deletions: the deletions the sample carries over the record's REF.
     rewritable_places: the places of the records that are not kept.
@@ -1014,15 +1038,14 @@ def _find_star(
         # The ploidy is 1, so the deletion is on the record's one haplotype.
         return _Star(frozenset({0}), phased=False, phase_set=None) if alleles[0] == 0 else None
     if all(allele == 0 for allele in alleles):
-        return _find_all_ref_star(deletions, genotype, rewritable_places)
+        return _find_all_ref_star(deletions, genotype, rewritable_places, respelling_input)
     # Both VCF genotypes phased in one phase set, the haplotypes the record gives REF.
+    unit = _find_phase_unit(genotype, place)
     haplotypes = frozenset(
         deletion.haplotype
         for deletion in deletions
         if alleles[deletion.haplotype] == 0
-        and genotype.phased
-        and deletion.genotype.phased
-        and deletion.genotype.phase_set == genotype.phase_set
+        and _find_phase_unit(deletion.genotype, deletion.record_edits.place) == unit
     )
     if not haplotypes:
         return None
@@ -1030,14 +1053,19 @@ def _find_star(
 
 
 def _find_all_ref_star(
-    deletions: Sequence[_Deletion], genotype: VcfGenotype, rewritable_places: set[int]
+    deletions: Sequence[_Deletion],
+    genotype: VcfGenotype,
+    rewritable_places: set[int],
+    respelling_input: _RespellingInput,
 ) -> _Star | None:
     """The `*` of a record that gives REF on every haplotype, which then joins the phase
     unit of the deletions (§5): their phase set when they are phased; its own phase, as
     read, under an unphased homozygous deletion, which every haplotype carries; and the new
     phase set of an unphased heterozygous deletion, which must not be kept. None when the
     deletions come from two or more phase units, which the record cannot join both of."""
-    units = {_find_phase_unit(deletion) for deletion in deletions}
+    units = {
+        _find_phase_unit(deletion.genotype, deletion.record_edits.place) for deletion in deletions
+    }
     if len(units) > 1:
         return None
     haplotypes = frozenset(deletion.haplotype for deletion in deletions)
@@ -1046,15 +1074,11 @@ def _find_all_ref_star(
         return _Star(haplotypes, phased=True, phase_set=deletion.genotype.phase_set)
     if len(set(deletion.genotype.alleles)) == 1:
         return _Star(haplotypes, phased=genotype.phased, phase_set=genotype.phase_set)
-    if deletion.record_edits.place not in rewritable_places:
+    rephased = deletion.record_edits
+    if rephased.place not in rewritable_places:
         return None
-    return _Star(haplotypes, phased=True, phase_set=None, rephased=deletion.record_edits)
-
-
-def _find_phase_unit(deletion: _Deletion) -> _PhaseUnit:
-    if deletion.genotype.phased:
-        return _PhaseUnit(phase_set=deletion.genotype.phase_set, place=None)
-    return _PhaseUnit(phase_set=None, place=deletion.record_edits.place)
+    new_phase_set = _make_new_phase_set(respelling_input, rephased.place)
+    return _Star(haplotypes, phased=True, phase_set=new_phase_set, rephased=rephased)
 
 
 def _make_spanned_record(
