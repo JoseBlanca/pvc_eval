@@ -11,7 +11,6 @@ the BED of the `pvc_eval str-regions` command.
 """
 
 import bisect
-import re
 from collections import deque
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, fields
@@ -79,8 +78,9 @@ _CANONICAL = bytes(
 # step 1 says, while two equal A, C, G or T still XOR to 0.
 _EARLIER_BASES = bytes([1, *range(1, 256)])
 
-# A run of matches: the bytes at which an earlier and a later base XOR to 0.
-_MATCH_RUN = re.compile(rb"\x00+")
+# Step 1 reads the XOR of the bases through this table, which turns a mismatch, any byte but
+# 0, into 0, and a match into 1: a run of matches ends at the next 0 of what it gives.
+_MISMATCHES_AS_ZEROS = bytes([1, *[0] * 255])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -357,14 +357,24 @@ def _make_score_blocks(
         # With the runs, step 1 takes 9.2 million steps on 4 Mb of chr1 instead of 24 million,
         # and str-regions 4.49 s instead of 5.73 s (doc/reports/perf-str-finder.md, P1).
         compared = (int.from_bytes(earlier) ^ int.from_bytes(later)).to_bytes(length)
+        # The runs are found with bytes.find, not with re.finditer: on 3.15t, threads that make
+        # match objects at once slow each other, and find makes none. On 4 Mb of chr1, with
+        # one segment_contig per thread, eight threads took 5.0 to 5.7 s each with finditer and
+        # 2.9 to 3.8 s with find, and one thread 2.3 s and 2.1 s
+        # (doc/reports/perf-str-finder.md, P3).
+        mismatches = compared.translate(_MISMATCHES_AS_ZEROS)
         runs: list[_ScoreRun] = []
         mismatches_from = 0
-        for match_run in _MATCH_RUN.finditer(compared):
-            start, end = match_run.span()
+        start = compared.find(0)
+        while start >= 0:
+            end = mismatches.find(0, start)
+            if end < 0:
+                end = length
             if start > mismatches_from:
                 runs.append((penalty * (start - mismatches_from), start - mismatches_from))
             runs.append((reward * (end - start), end - start))
             mismatches_from = end
+            start = compared.find(0, end)
         if mismatches_from < length:
             runs.append((penalty * (length - mismatches_from), length - mismatches_from))
         yield runs
