@@ -1,10 +1,6 @@
 """The re-spelling program of doc/specs/respell.md: what every re-spelling does (§2) and the
-decomposition (§3), at respell_by_decomposing, with the expected records as literals.
-
-A case is written as the spec writes it, one record a line, `POS REF ALT` and one sample
-field per sample, on chr1, and the output's records are read back the same way: a record
-written as read keeps its input's sample fields, `0/1`, and a rewritten one has `GT:PS`,
-`0|1:1`.
+decomposition (§3), at respell_by_decomposing, with the expected records as literals in the
+notation of the cases, which tests.respell_cases describes.
 """
 
 import gzip
@@ -14,78 +10,35 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
-from tests.conftest import CONTIG, CaseFiles
+from tests.conftest import CONTIG, FILEFORMAT_LINE, CaseFiles, make_chrom_line, write_case_vcf
 from tests.respell import _compress_bgzf, _find_reach, respell_by_decomposing
+from tests.respell_cases import (
+    DECOMPOSITION_CASES,
+    RespellingCase,
+    read_case_lines,
+    read_header,
+    read_vcf_lines,
+)
 
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
 from pvc_eval.vcf import VcfGenotype, parse_vcf
 
-_FILEFORMAT = "##fileformat=VCFv4.3"
 _PS_INTEGER = '##FORMAT=<ID=PS,Number=1,Type=Integer,Description="Phase set">'
 # The 28 bytes that end a BGZF file, an empty block (the SAM/BAM format specification, §4.1.2).
 _BGZF_EOF = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
-
-
-def _make_chrom_line(num_samples: int) -> str:
-    columns = ["#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO"]
-    if num_samples:
-        columns += ["FORMAT", *(f"S{index}" for index in range(num_samples))]
-    return "\t".join(columns)
-
-
-def _format_case_line(case_line: str, *, has_chrom: bool) -> str:
-    """A VCF line from a case's `[CHROM] POS REF ALT sample...`; FORMAT is GT:PS when a
-    sample field has a PS, and GT otherwise."""
-    fields = case_line.split()
-    chrom = fields.pop(0) if has_chrom else CONTIG
-    pos, ref, alt, *sample_fields = fields
-    columns = [chrom, pos, ".", ref, alt, ".", ".", "."]
-    if sample_fields:
-        has_ps = any(":" in sample_field for sample_field in sample_fields)
-        columns += ["GT:PS" if has_ps else "GT", *sample_fields]
-    return "\t".join(columns)
 
 
 def _write_vcf(
     path: Path,
     case_lines: Sequence[str],
     *,
-    header_lines: Sequence[str] = (_FILEFORMAT,),
+    header_lines: Sequence[str] = (FILEFORMAT_LINE,),
     has_chrom: bool = False,
 ) -> Path:
-    num_samples = len(case_lines[0].split()) - (4 if has_chrom else 3)
-    lines = [
-        *header_lines,
-        _make_chrom_line(num_samples),
-        *(_format_case_line(line, has_chrom=has_chrom) for line in case_lines),
-    ]
-    path.write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
-    return path
-
-
-def _read_lines(path: Path) -> list[str]:
-    with path.open("rb") as raw:
-        is_gzipped = raw.read(2) == b"\x1f\x8b"
-    text = gzip.decompress(path.read_bytes()).decode() if is_gzipped else path.read_text()
-    return text.splitlines()
-
-
-def _read_case_lines(path: Path, *, has_chrom: bool = False) -> list[str]:
-    """The output's records in the notation of the cases."""
-    case_lines = []
-    for line in _read_lines(path):
-        if line.startswith("#"):
-            continue
-        chrom, pos, _, ref, alt, *columns = line.split("\t")
-        sample_fields = columns[4:]
-        case_line = " ".join([pos, ref, alt, *sample_fields])
-        case_lines.append(f"{chrom} {case_line}" if has_chrom else case_line)
-    return case_lines
-
-
-def _read_header(path: Path) -> list[str]:
-    return [line for line in _read_lines(path) if line.startswith("#")]
+    return write_case_vcf(
+        path, case_lines, header_lines=header_lines, has_chrom=has_chrom, fills_ps=False
+    )
 
 
 def _decompose(
@@ -102,91 +55,17 @@ def _decompose(
     vcf = _write_vcf(directory / "a.vcf", case_lines)
     output = directory / "b.vcf"
     respell_by_decomposing(vcf, reference, output, ploidy=ploidy)
-    return _read_case_lines(output)
+    return read_case_lines(output)
 
 
-# doc/specs/respell.md §3: D1 to D12, each with its reference from position 1, its input,
-# its output and its ploidy.
-@pytest.mark.parametrize(
-    ("bases", "case_lines", "expected", "ploidy"),
-    [
-        pytest.param(
-            "GACGTA",
-            ["2 ACGT TCGAA 0/1"],
-            ["2 A T 0|1:1", "5 T A 0|1:1", "5 T TA 0|1:1"],
-            2,
-            id="D1-aligned-from-the-left",
-        ),
-        pytest.param(
-            "GACGT",
-            ["2 ACG TCA,TCG 1/2"],
-            ["2 A T 1|1:1", "4 G A 1|0:1"],
-            2,
-            id="D2-a-piece-two-alts-share-is-one-record",
-        ),
-        pytest.param(
-            "GACGTA",
-            ["2 AC GT 1|0:7", "5 T G 0|1:7"],
-            ["2 A G 1|0:7", "3 C T 1|0:7", "5 T G 0|1:7"],
-            2,
-            id="D3-pieces-stay-in-their-phase-set",
-        ),
-        pytest.param(
-            "GACGTA",
-            ["2 AC GT 0/1", "4 G A 0/1"],
-            ["2 AC GT 0/1", "4 G A 0/1"],
-            2,
-            id="D4-next-to-and-unphased-kept",
-        ),
-        pytest.param(
-            "GACGTA",
-            ["2 AC GT 1|0:5", "4 G A 0|1:5"],
-            ["2 A G 1|0:5", "3 C T 1|0:5", "4 G A 0|1:5"],
-            2,
-            id="D5-phased-on-different-haplotypes-decomposed",
-        ),
-        pytest.param(
-            "GACGTA",
-            ["2 AC GT 1|0:5", "4 G A 0|1:6"],
-            ["2 AC GT 1|0:5", "4 G A 0|1:6"],
-            2,
-            id="D6-two-phase-sets-kept",
-        ),
-        pytest.param(
-            "GACGTA",
-            ["2 AC GT 0/1 0/0", "4 G A 0/0 1/1"],
-            ["2 A G 0|1:1 0|0:1", "3 C T 0|1:1 0|0:1", "4 G A 0|0:2 1|1:2"],
-            2,
-            id="D7-touching-only-across-samples",
-        ),
-        pytest.param(
-            "GACT", ["2 AC GT ./1"], ["2 A G .|1:1", "3 C T .|1:1"], 2, id="D8-missing-carried"
-        ),
-        pytest.param("GACT", ["2 AC GT 1"], ["2 A G 1:.", "3 C T 1:."], 1, id="D9-ploidy-1"),
-        pytest.param(
-            "ACGT", ["1 AC C 0/1"], ["1 AC C 0|1:1"], 2, id="D10-deletion-of-the-first-base"
-        ),
-        pytest.param(
-            "ACGT", ["1 A CA 0/1"], ["1 A CA 0|1:1"], 2, id="D11-insertion-before-the-first-base"
-        ),
-        pytest.param(
-            "TAAC",
-            ["3 AC G,AA 0/1", "3 A G,AA 1/2"],
-            ["3 AC G,AA 0/1", "3 A G,AA 1/2"],
-            2,
-            id="D12-insertion-inside-a-replaced-stretch-kept",
-        ),
-    ],
-)
+@pytest.mark.parametrize("case", [pytest.param(case, id=case.name) for case in DECOMPOSITION_CASES])
 def test_decomposition_gives_the_case_of_the_spec(
-    case_files: CaseFiles,
-    tmp_path: Path,
-    bases: str,
-    case_lines: Sequence[str],
-    expected: Sequence[str],
-    ploidy: int,
+    case_files: CaseFiles, tmp_path: Path, case: RespellingCase
 ) -> None:
-    assert _decompose(case_files, tmp_path, bases, case_lines, ploidy=ploidy) == expected
+    output_lines = _decompose(
+        case_files, tmp_path, case.bases, case.input_lines, ploidy=case.ploidy
+    )
+    assert output_lines == list(case.output_lines)
 
 
 # The cases of the tests of reconciliation that the D cases do not repeat.
@@ -365,7 +244,7 @@ def test_a_record_at_the_last_base_of_its_contig_is_decomposed(
     reference = case_files.write_contigs({CONTIG: "ACGT"})
     vcf = _write_vcf(tmp_path / "a.vcf", ["3 GT G 0/1"])
     respell_by_decomposing(vcf, reference, tmp_path / "b.vcf")
-    assert _read_case_lines(tmp_path / "b.vcf") == ["3 GT G 0|1:1"]
+    assert read_case_lines(tmp_path / "b.vcf") == ["3 GT G 0|1:1"]
 
 
 def test_a_ref_that_differs_from_the_reference_stops_before_any_output(
@@ -413,7 +292,7 @@ def test_an_output_named_as_the_input_in_other_case_raises_where_case_is_ignored
     output = tmp_path / "A.VCF"
     if not output.exists():
         respell_by_decomposing(vcf, reference, output)
-        assert _read_case_lines(output) == ["2 A T 0|1:1"]
+        assert read_case_lines(output) == ["2 A T 0|1:1"]
         return
     with pytest.raises(ValueError, match="is the input"):
         respell_by_decomposing(vcf, reference, output)
@@ -428,7 +307,7 @@ def test_records_are_sorted_by_the_contigs_of_the_input(
     reference = case_files.write_contigs({"chr1": "AAAAAAAA", "chr2": "CCGTCCCC"})
     vcf = _write_vcf(tmp_path / "a.vcf", ["chr1 3 A G 0/1", "chr2 2 CGT C 0/1"], has_chrom=True)
     respell_by_decomposing(vcf, reference, tmp_path / "b.vcf")
-    assert _read_case_lines(tmp_path / "b.vcf", has_chrom=True) == [
+    assert read_case_lines(tmp_path / "b.vcf", has_chrom=True) == [
         "chr1 3 A G 0|1:1",
         "chr2 2 CGT C 0|1:2",
     ]
@@ -465,26 +344,26 @@ def test_a_new_phase_set_is_one_no_record_of_the_input_uses(
     [
         pytest.param(
             ["2 A T 0/1", "5 T G 0/1"],
-            [_FILEFORMAT, "##contig=<ID=chr1>"],
-            [_FILEFORMAT, "##contig=<ID=chr1>", _PS_INTEGER],
+            [FILEFORMAT_LINE, "##contig=<ID=chr1>"],
+            [FILEFORMAT_LINE, "##contig=<ID=chr1>", _PS_INTEGER],
             id="added-once",
         ),
         pytest.param(
             ["2 A T 0/1", "5 T G 0/1"],
-            [_FILEFORMAT, _PS_INTEGER, "##contig=<ID=chr1>"],
-            [_FILEFORMAT, _PS_INTEGER, "##contig=<ID=chr1>"],
+            [FILEFORMAT_LINE, _PS_INTEGER, "##contig=<ID=chr1>"],
+            [FILEFORMAT_LINE, _PS_INTEGER, "##contig=<ID=chr1>"],
             id="not-added-when-present",
         ),
         pytest.param(
             ["2 AC GT 0/1", "4 G A 0/1"],
-            [_FILEFORMAT],
-            [_FILEFORMAT],
+            [FILEFORMAT_LINE],
+            [FILEFORMAT_LINE],
             id="not-added-when-nothing-is-rewritten",
         ),
         pytest.param(
             ["2 A T 0|1:chr1_5", "5 T G 0/1"],
-            [_FILEFORMAT],
-            [_FILEFORMAT],
+            [FILEFORMAT_LINE],
+            [FILEFORMAT_LINE],
             id="not-added-when-a-ps-is-no-number",
         ),
     ],
@@ -499,7 +378,7 @@ def test_the_header_gains_a_ps_line_where_a_rewritten_record_needs_one(
     reference = case_files.write_reference(1, "GACGTA")
     vcf = _write_vcf(tmp_path / "a.vcf", case_lines, header_lines=header_lines)
     respell_by_decomposing(vcf, reference, tmp_path / "b.vcf")
-    assert _read_header(tmp_path / "b.vcf") == [*expected_header, _make_chrom_line(1)]
+    assert read_header(tmp_path / "b.vcf") == [*expected_header, make_chrom_line(1)]
 
 
 def test_kept_records_are_written_byte_for_byte_and_rewritten_ones_with_their_columns(
@@ -533,7 +412,7 @@ def test_a_file_with_no_samples_is_written_with_no_format_column(
     reference = case_files.write_reference(1, "GACGTA")
     vcf = _write_vcf(tmp_path / "a.vcf", ["2 AC GT"])
     respell_by_decomposing(vcf, reference, tmp_path / "b.vcf")
-    assert _read_lines(tmp_path / "b.vcf")[-2:] == [
+    assert read_vcf_lines(tmp_path / "b.vcf")[-2:] == [
         "chr1\t2\t.\tA\tG\t.\t.\t.",
         "chr1\t3\t.\tC\tT\t.\t.\t.",
     ]
@@ -627,7 +506,7 @@ def test_the_reach_has_no_limit_where_the_span_is_cut(case_files: CaseFiles) -> 
 
 def _write_snps(directory: Path, reference: IndexedFasta, num_snps: int) -> Path:
     bases = reference.get_bases(CONTIG, 0, 10 * num_snps)
-    lines = [_FILEFORMAT, _make_chrom_line(1)]
+    lines = [FILEFORMAT_LINE, make_chrom_line(1)]
     for index in range(num_snps):
         pos = 10 * index + 5
         ref = bases[pos - 1]
@@ -650,5 +529,5 @@ def test_decomposing_20000_snps_takes_under_10_seconds(
     started = time.perf_counter()
     respell_by_decomposing(vcf, reference, tmp_path / "b.vcf")
     elapsed = time.perf_counter() - started
-    assert len(_read_case_lines(tmp_path / "b.vcf")) == num_snps
+    assert len(read_case_lines(tmp_path / "b.vcf")) == num_snps
     assert elapsed < 10, f"{elapsed:.1f} s"
