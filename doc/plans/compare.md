@@ -78,7 +78,10 @@ exist; milestone 5 gives the values from 1 up their threads, and its tests compa
 - The errors: a VCF out of order on contig 3; a FASTA byte that is not a letter on a contig of
   more than 65,536 bases, more than 65,536 bases from any record, raised by the finder; a
   `--strata pvc` with an untyped `--str-regions` region; each with the same type and message as
-  the nine steps, after the same rows. A `ValueError` for each setting out of range and for a
+  the nine steps. The rows before the first and the third are the nine steps'; before the finder's
+  error, they are literal rows, since a list of contigs known before the reading can read a
+  contig's segments one locus earlier or later (the spec's "The stages, joined", changed after the
+  review of this milestone). A `ValueError` for each setting out of range and for a
   `finder_threads` under 0.
 - The INFO line when a contig's loci are done, with its counts, matched by pattern.
 - `uv run pytest tests/test_compare.py -q` runs at least 15 tests and all pass; the five checks

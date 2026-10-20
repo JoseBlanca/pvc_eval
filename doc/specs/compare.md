@@ -48,7 +48,8 @@ would be:
    whole, when given;
 4. read each file with `parse_vcf(path, reference, span_limit=..., ploidy=...)`;
 5. take the segments: from `read_str_regions` when `--str-regions` is given, and otherwise from
-   `segment_contig` over the contigs whose loci need them (see "Which contigs are scanned");
+   `segment_contig` over the contigs whose loci need them, each decided when `build_loci` reaches
+   it, by the iterator of "How the segments reach `build_loci`";
 6. `build_loci(records_a, records_b, segments, reference.contigs, chain_distance=...)`;
 7. `select_loci(loci, regions)`;
 8. `reconcile_loci(loci, reference, sample_pairs, ploidy_a=..., ploidy_b=..., phasing_cap=...)`;
@@ -63,7 +64,12 @@ stream reaches it, as in the stages. The stage functions are not changed: the th
 `compare()`.
 
 **Its rows are the rows of the stages run one after another, whatever its threads.** The same rows,
-in the same order. The same first error, with the same message, after the same rows. This is
+in the same order. The same first error, with the same message, after the same rows. The stages
+run one after another are `compare()` with `finder_threads=0`: the nine steps in the caller's
+thread, with step 5 decided by that iterator. A chain of `segment_contig` over a list of contigs
+known before the reading gives the same rows, but before an error of the finder it can give one
+locus more or fewer, since it reads a contig's segments at another record (found by the review
+of milestone 1, 20 October 2026). This is
 what the threads below must keep, and the first check of "How it is verified".
 
 ### Which thread does what
@@ -201,7 +207,7 @@ reader raises, a VCF out of order at line 2204 say, goes into its buffer after t
 before it. The loci side raises it when it takes it, the same exception object with its message
 and traceback. An exception the finder raises for a contig, a byte of the FASTA that is not a
 letter, is raised when the iterator above asks for that contig's segments. The rows before it are
-the rows the stages run alone give before the same error. An error in a contig that turns out not
+those `compare()` gives with `finder_threads=0` before the same error. An error in a contig that turns out not
 to be needed is never raised, as it is not without threads.
 
 Warnings are logged from the thread that finds them, through the module's logger, as the stages
@@ -419,7 +425,9 @@ not a number at all is argparse's error, with its usage line and status 2, as in
   --regions; 4 min 12 s since the start." The clause about `--regions` is there only when it is
   given. It counts loci, not rows, since `compare()` does not know which rows the command writes.
   It comes when the first locus of a later contig is built, or when the rows end, since only then
-  does `build_loci` give a contig's last locus; so it can come after the next contig's scan.
+  does `build_loci` give a contig's last locus; so it can come after the next contig's scan. A
+  contig with records and no locus, whose records all have no ALT, gets no line: nothing was
+  compared there.
 
 These are logged by `compare()` at INFO through its logger. The command line sends INFO and above
 to stderr, the message alone on each line. A Python user sees them only by setting up logging.
