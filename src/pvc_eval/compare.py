@@ -41,8 +41,6 @@ PVC_STRATA = sentinel("PVC_STRATA")
 
 DEFAULT_FINDER_THREADS = 2  # doc/specs/compare.md, "Which thread does what"
 
-_PLOIDIES = (1, 2)  # doc/specs/reconciliation.md §2: reconciliation handles these alone
-
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CompareConfig:
@@ -59,7 +57,7 @@ class CompareConfig:
     chain_distance: the most positions between a record and a locus for it to chain to
         the locus, 0 or more.
 
-    compare() checks the numbers when its stream starts.
+    The stages check the numbers before compare() gives its first row.
     """
 
     regions: Path | None = None
@@ -98,12 +96,12 @@ def compare(
     start." when the loci of a contig are done, the clause about --regions only with
     config.regions.
 
-    Raises, when the stream starts, ValueError for a setting of config out of range,
-    naming its field, and for a finder_threads that is not a whole number of 0 or more;
-    and PvcEvalInputError for the faults of the input the stages raise it for, when the
-    stream reaches them.
+    Raises, when the stream starts, ValueError for a finder_threads that is not a whole
+    number of 0 or more, and, before the first row, the ValueError a stage raises for a
+    setting of config out of range, naming its field; and PvcEvalInputError for the faults
+    of the input the stages raise it for, when the stream reaches them.
     """
-    _check_settings(config, finder_threads)
+    _check_finder_threads(finder_threads)
     start_time = time.monotonic()
     with IndexedFasta(reference) as indexed_fasta, ExitStack() as stack:
         contigs = indexed_fasta.contigs
@@ -140,23 +138,7 @@ def compare(
             )
 
 
-def _check_settings(config: CompareConfig, finder_threads: int) -> None:
-    for name, ploidy in (("ploidy_a", config.ploidy_a), ("ploidy_b", config.ploidy_b)):
-        if not (_is_whole(ploidy) and ploidy in _PLOIDIES):
-            raise ValueError(f"{name} must be 1 or 2, not {ploidy!r}")
-    if not (_is_whole(config.phasing_cap) and config.phasing_cap >= 1):
-        raise ValueError(
-            f"phasing_cap must be a whole number of 1 or more, not {config.phasing_cap!r}"
-        )
-    span_limit = config.span_limit
-    if span_limit is not None and not (_is_whole(span_limit) and span_limit >= 1):
-        raise ValueError(
-            f"span_limit must be a whole number of 1 or more, or None, not {span_limit!r}"
-        )
-    if not (_is_whole(config.chain_distance) and config.chain_distance >= 0):
-        raise ValueError(
-            f"chain_distance must be a whole number of 0 or more, not {config.chain_distance!r}"
-        )
+def _check_finder_threads(finder_threads: int) -> None:
     if not (_is_whole(finder_threads) and finder_threads >= 0):
         raise ValueError(
             f"finder_threads must be a whole number of 0 or more, not {finder_threads!r}"
