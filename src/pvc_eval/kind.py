@@ -5,13 +5,13 @@ locus.
 """
 
 from collections.abc import Iterator
-from enum import Enum
+from enum import StrEnum
 
 from pvc_eval.locus import Locus
 from pvc_eval.vcf import trim_alt
 
 
-class Kind(Enum):
+class Kind(StrEnum):
     """The kind of a locus, read from its VCF records and its STR regions (doc/spec.md §5.6)."""
 
     SNP = "SNP"

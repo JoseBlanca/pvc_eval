@@ -17,17 +17,17 @@ from collections import deque
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields
-from enum import Enum
+from enum import Enum, StrEnum
 from importlib.metadata import version
 from pathlib import Path
-from typing import TextIO
 
+from pvc_eval._text_files import open_temporary_output
 from pvc_eval.bed import parse_bed
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
 
 
-class RegionType(Enum):
+class RegionType(StrEnum):
     """The type of a segment of the segmented genome (doc/spec.md §5.1)."""
 
     GENERIC = "generic"
@@ -1301,7 +1301,7 @@ def write_str_regions(
     else:
         requested = _find_requested_spans(regions, reference)
     temporary = Path(f"{output}.tmp")
-    bed = _open_temporary_output(output, temporary)
+    bed = open_temporary_output(output, temporary, "--output", compress=False)
     try:
         with bed:
             bed.writelines(_format_str_regions_header(parameters))
@@ -1345,41 +1345,6 @@ def _map_in_order[T, R](
         return
     with ThreadPoolExecutor(max_workers=num_threads) as pool:
         yield from pool.map(function, items, buffersize=2 * num_threads)
-
-
-def _open_temporary_output(output: Path, temporary: Path) -> TextIO:
-    """Open the file the BED is written to before it is renamed to output.
-
-    Raises PvcEvalInputError, naming --output, when output is a directory or temporary
-    cannot be made.
-    """
-    if output.is_dir():
-        raise PvcEvalInputError(
-            f"--output {output} is a directory. Give the path of a file to write, and run again."
-        )
-    cannot = f"--output {output} cannot be written:"
-    try:
-        return temporary.open("w", encoding="utf-8")
-    except FileNotFoundError:
-        raise PvcEvalInputError(
-            f"{cannot} its directory, {output.parent}, does not exist. Make it, or give another"
-            " --output, and run again."
-        ) from None
-    except NotADirectoryError:
-        raise PvcEvalInputError(
-            f"{cannot} its path goes through a file as if it were a directory. Correct the"
-            " path, and run again."
-        ) from None
-    except PermissionError:
-        raise PvcEvalInputError(
-            f"{cannot} permission denied to write in {output.parent}. Allow writing there, or"
-            " give another --output, and run again."
-        ) from None
-    except IsADirectoryError:
-        raise PvcEvalInputError(
-            f"{cannot} {temporary}, where it is written first, is a directory. Move it away,"
-            " and run again."
-        ) from None
 
 
 def _format_str_regions_header(parameters: StrFinderParameters) -> list[str]:

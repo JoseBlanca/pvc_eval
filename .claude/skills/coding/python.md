@@ -245,7 +245,12 @@ that pays for it.
   | open | open a file and return it, to be read or written |
   | batch | group the items of a stream into lists of a fixed length, the last perhaps shorter |
   | map | apply a function to each item of a stream, giving the results in the order of the items |
+  | note | pass the items of a stream on unchanged, adding a fact about each to a value the caller holds |
   | log | send a message to the logger, for the user |
+  | put | hand an item to another thread through a buffer or a line they share |
+  | take | receive an item another thread put, waiting while there is none |
+  | start | start threads that run until they end or are stopped |
+  | stop | set the stop of a run's threads, or wake those that wait, so that they end |
   | reconcile | build a locus's locus alleles and its samples' sample results (`doc/specs/reconciliation.md` §4) |
   | evaluate | give the outcome of a sample pair (`doc/specs/reconciliation.md` §5) |
 

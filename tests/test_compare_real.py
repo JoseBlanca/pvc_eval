@@ -1,0 +1,300 @@
+"""The check of doc/spec.md §7.3 over real data, as doc/specs/compare.md, "A file against
+itself over real data", gives it: GIAB's HG002 v4.2.1 benchmark VCF for GRCh38 compared
+with itself by compare(), over chr20 whole. Every row of it is same genotype, so the check
+of each row is also tested here on rows built in the test, and on a small file compared
+with itself that gives missing in both, invalid in both and too complex.
+
+The test over chr20 is marked slow. It needs two paths from the environment, and is skipped, with a message that names each
+variable that is unset or whose file is missing (doc/specs/compare.md, "Decided by the
+owner", point 6):
+
+- PVC_EVAL_GRCH38, the GRCh38 analysis set without alts, with its .fai beside it;
+- PVC_EVAL_HG002_VCF, the benchmark VCF, bgzipped, with its .tbi beside it.
+
+File A and file B are one file, so every sample result of B is the one of A, and a row
+can only be same genotype, reference in both, missing in both, invalid in both or too
+complex. The last three are the ones where the file itself has, for the sample at the
+locus, a missing haplotype, an invalid sample or a sample over the phasing cap; the test
+checks that from what the row holds.
+"""
+
+import dataclasses
+import os
+from pathlib import Path
+
+import pytest
+from tests.compare_case import write_compare_case
+
+from pvc_eval.compare import CompareConfig, compare
+from pvc_eval.fasta import IndexedFasta
+from pvc_eval.kind import Kind
+from pvc_eval.outcome import InvalidReason, Outcome, OutcomeRow
+from pvc_eval.vcf import MISSING
+
+_CONTIG = "chr20"
+# How many rows the test shows when it fails, so that a broken stage does not print
+# tens of thousands of them.
+_ROWS_SHOWN = 20
+# The fields of OutcomeRow that come in pairs, one for each file, without their _a and _b.
+_SAMPLE_FIELDS = ("genotype", "possible", "quality", "gq", "records", "invalid_reason")
+
+
+def _get_path_from_environment(variable: str, what: str, beside: str) -> tuple[Path | None, str]:
+    """The path a variable names, and "" when it and the file beside it exist; otherwise
+    None and why it cannot be used."""
+    value = os.environ.get(variable)
+    if not value:
+        return None, f"{variable} is not set; it names {what}"
+    path = Path(value)
+    if not path.is_file():
+        return None, f"{variable} names {path}, which does not exist; it names {what}"
+    if not Path(f"{path}{beside}").is_file():
+        return None, f"{variable} names {path}, which has no {path.name}{beside} beside it"
+    return path, ""
+
+
+def _find_why_broken(row: OutcomeRow) -> str:
+    """Why a row breaks the property of a file against itself, or "" when it does not.
+
+    Every row: its two samples have the same value in each field of _SAMPLE_FIELDS, since
+    they are one sample result of one file's records. Then, by outcome:
+    - same genotype and reference in both: nothing more;
+    - missing in both: the genotype shown has a MISSING haplotype;
+    - invalid in both: the invalid reason is not None;
+    - too complex: the count of possible genotypes is None, a sample over the phasing cap.
+    Any other outcome, those "in A" or "in B" alone, only in A or B, same alleles, other
+    genotype, and different, cannot come from one file.
+    """
+    for field in _SAMPLE_FIELDS:
+        if getattr(row, f"{field}_a") != getattr(row, f"{field}_b"):
+            return f"the two samples have different {field}_a and {field}_b"
+    match row.outcome:
+        case Outcome.SAME_GENOTYPE | Outcome.REFERENCE_IN_BOTH:
+            return ""
+        case Outcome.MISSING_IN_BOTH:
+            if row.genotype_a is None or MISSING not in row.genotype_a:
+                return "missing in both, but the genotype has no missing haplotype"
+            return ""
+        case Outcome.INVALID_IN_BOTH:
+            if row.invalid_reason_a is None:
+                return "invalid in both, but the sample has no invalid reason"
+            return ""
+        case Outcome.TOO_COMPLEX:
+            if row.possible_a is not None:
+                return "too complex, but the sample is not over the phasing cap"
+            return ""
+        case _:
+            return f"the outcome {row.outcome} cannot come from a file against itself"
+
+
+# A row that holds: same genotype, its two sides equal in every field.
+_SAME_GENOTYPE_ROW = OutcomeRow(
+    contig="chr4",
+    start=29,
+    end=30,
+    kind=Kind.SNP,
+    stratum=None,
+    str_regions=(),
+    sample_a="HG002",
+    sample_b="HG002",
+    outcome=Outcome.SAME_GENOTYPE,
+    alleles=("G", "A"),
+    genotype_a=(0, 1),
+    genotype_b=(0, 1),
+    possible_a=1,
+    possible_b=1,
+    quality_a=50.0,
+    quality_b=50.0,
+    gq_a=40,
+    gq_b=40,
+    records_a=1,
+    records_b=1,
+    invalid_reason_a=None,
+    invalid_reason_b=None,
+)
+_INVALID = {
+    "outcome": Outcome.INVALID_IN_BOTH,
+    "genotype_a": None,
+    "genotype_b": None,
+    "possible_a": 0,
+    "possible_b": 0,
+    "invalid_reason_a": InvalidReason.MALFORMED_GT,
+    "invalid_reason_b": InvalidReason.MALFORMED_GT,
+}
+_TOO_COMPLEX = {
+    "outcome": Outcome.TOO_COMPLEX,
+    "genotype_a": None,
+    "genotype_b": None,
+    "possible_a": None,
+    "possible_b": None,
+}
+
+
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        ({}, ""),
+        ({"genotype_b": (1, 1)}, "the two samples have different genotype_a and genotype_b"),
+        (
+            {"outcome": Outcome.REFERENCE_IN_BOTH, "genotype_a": (0, 0), "genotype_b": (0, 0)},
+            "",
+        ),
+        (
+            {
+                "outcome": Outcome.REFERENCE_IN_BOTH,
+                "genotype_a": (0, 0),
+                "genotype_b": (0, 0),
+                "gq_b": 41,
+            },
+            "the two samples have different gq_a and gq_b",
+        ),
+        ({"quality_b": 49.0}, "the two samples have different quality_a and quality_b"),
+        ({"records_b": 2}, "the two samples have different records_a and records_b"),
+        ({"possible_b": 2}, "the two samples have different possible_a and possible_b"),
+        (
+            {
+                "outcome": Outcome.MISSING_IN_BOTH,
+                "genotype_a": (0, MISSING),
+                "genotype_b": (0, MISSING),
+            },
+            "",
+        ),
+        (
+            {"outcome": Outcome.MISSING_IN_BOTH},
+            "missing in both, but the genotype has no missing haplotype",
+        ),
+        (_INVALID, ""),
+        (
+            {**_INVALID, "invalid_reason_b": InvalidReason.CONTRADICTING_RECORDS},
+            "the two samples have different invalid_reason_a and invalid_reason_b",
+        ),
+        (
+            {**_INVALID, "invalid_reason_a": None, "invalid_reason_b": None},
+            "invalid in both, but the sample has no invalid reason",
+        ),
+        (_TOO_COMPLEX, ""),
+        (
+            {**_TOO_COMPLEX, "possible_a": 1, "possible_b": 1},
+            "too complex, but the sample is not over the phasing cap",
+        ),
+        (
+            {**_INVALID, "outcome": Outcome.INVALID_IN_A},
+            "the outcome invalid in A cannot come from a file against itself",
+        ),
+        (
+            {
+                "outcome": Outcome.MISSING_IN_B,
+                "genotype_a": (0, MISSING),
+                "genotype_b": (0, MISSING),
+            },
+            "the outcome missing in B cannot come from a file against itself",
+        ),
+        (
+            {"outcome": Outcome.SAME_ALLELES},
+            "the outcome same alleles, other genotype cannot come from a file against itself",
+        ),
+    ],
+    ids=[
+        "same-genotype-holds",
+        "same-genotype-other-genotype-breaks",
+        "reference-in-both-holds",
+        "reference-in-both-other-gq-breaks",
+        "other-quality-breaks",
+        "other-records-breaks",
+        "other-possible-breaks",
+        "missing-in-both-holds",
+        "missing-in-both-with-no-missing-haplotype-breaks",
+        "invalid-in-both-holds",
+        "invalid-in-both-other-reason-breaks",
+        "invalid-in-both-with-no-reason-breaks",
+        "too-complex-holds",
+        "too-complex-with-possible-genotypes-breaks",
+        "invalid-in-a-breaks",
+        "missing-in-b-breaks",
+        "same-alleles-breaks",
+    ],
+)
+def test_row_check_finds_rows_one_file_cannot_give(changes: dict[str, object], reason: str) -> None:
+    row = dataclasses.replace(_SAME_GENOTYPE_ROW, **changes)
+
+    assert _find_why_broken(row) == reason
+
+
+# chr4 of tests/compare_case.py, which has no STR region: 14 heterozygous SNPs, unphased,
+# at 1-based 30 to 43, one locus of 14 blocks, over the phasing cap of 4096 possible
+# genotypes (doc/spec.md §5.4); a GT whose index 2 the record lacks, malformed, at 120;
+# and `./.` at 150. HG003 is 0/0 or 0/1 in each, so that its rows are not of those three.
+_LINES_AGAINST_ITSELF = (
+    "chr4 30 G A 50 0/1:40 0/0:40",
+    "chr4 31 C A 50 0/1:40 0/0:40",
+    "chr4 32 C A 50 0/1:40 0/0:40",
+    "chr4 33 T A 50 0/1:40 0/0:40",
+    "chr4 34 T A 50 0/1:40 0/0:40",
+    "chr4 35 A C 50 0/1:40 0/0:40",
+    "chr4 36 G A 50 0/1:40 0/0:40",
+    "chr4 37 C A 50 0/1:40 0/0:40",
+    "chr4 38 A C 50 0/1:40 0/0:40",
+    "chr4 39 G A 50 0/1:40 0/0:40",
+    "chr4 40 A C 50 0/1:40 0/0:40",
+    "chr4 41 T A 50 0/1:40 0/0:40",
+    "chr4 42 A C 50 0/1:40 0/0:40",
+    "chr4 43 A C 50 0/1:40 0/0:40",
+    "chr4 120 T C 50 0/2:40 0/1:40",
+    "chr4 150 C A 50 ./.:40 0/0:40",
+)
+
+
+def test_small_file_against_itself_gives_missing_invalid_and_too_complex_in_both(
+    tmp_path: Path,
+) -> None:
+    case = write_compare_case(tmp_path, lines_a=_LINES_AGAINST_ITSELF)
+
+    rows = list(compare(case.a, case.a, case.reference))
+
+    assert [(row.start, row.end, row.sample_a, row.outcome) for row in rows] == [
+        (29, 43, "HG002", Outcome.TOO_COMPLEX),
+        (29, 43, "HG003", Outcome.REFERENCE_IN_BOTH),
+        (119, 120, "HG002", Outcome.INVALID_IN_BOTH),
+        (119, 120, "HG003", Outcome.SAME_GENOTYPE),
+        (149, 150, "HG002", Outcome.MISSING_IN_BOTH),
+        (149, 150, "HG003", Outcome.REFERENCE_IN_BOTH),
+    ]
+    assert [_find_why_broken(row) for row in rows] == [""] * 6
+
+
+@pytest.mark.slow
+def test_hg002_against_itself_over_chr20_gives_only_outcomes_of_one_file(
+    tmp_path: Path,
+) -> None:
+    reference, reference_problem = _get_path_from_environment(
+        "PVC_EVAL_GRCH38", "the GRCh38 FASTA, with its .fai beside it", ".fai"
+    )
+    vcf, vcf_problem = _get_path_from_environment(
+        "PVC_EVAL_HG002_VCF",
+        "GIAB's HG002 v4.2.1 benchmark VCF for GRCh38, bgzipped, with its .tbi beside it",
+        ".tbi",
+    )
+    if reference is None or vcf is None:
+        pytest.skip(". ".join(problem for problem in (reference_problem, vcf_problem) if problem))
+    with IndexedFasta(reference) as indexed_fasta:
+        contig_length = indexed_fasta.get_length(_CONTIG)
+    regions = tmp_path / "chr20.bed"
+    regions.write_text(f"{_CONTIG}\t0\t{contig_length}\n", encoding="utf-8")
+
+    rows = compare(vcf, vcf, reference, CompareConfig(regions=regions))
+    row_count = 0
+    contigs = set()
+    broken = []
+    for row in rows:
+        row_count += 1
+        contigs.add(row.contig)
+        reason = _find_why_broken(row)
+        if reason:
+            broken.append(f"{reason}: {row}")
+
+    # The rows of HG002 v4.2.1 against itself over chr20, counted by the command
+    # `pvc_eval compare` at 0c43267 and by this test at 5bafe18, on 20 October 2026: a
+    # stage that drops or adds loci changes the count.
+    assert row_count == 81_257
+    assert contigs == {_CONTIG}
+    assert not broken, f"{len(broken)} rows break the property:\n" + "\n".join(broken[:_ROWS_SHOWN])

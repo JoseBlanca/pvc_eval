@@ -1,10 +1,13 @@
-"""The lines of a text file, plain, gzipped or bgzipped, for the readers of VCFs and BEDs.
+"""The lines of a text file, plain, gzipped or bgzipped, for the readers of VCFs and BEDs,
+and the temporary file an output is written to before it is renamed.
 
 Public, to pvc_eval's own modules: read_numbered_lines, which yields a file's lines with
-their numbers.
+their numbers; open_temporary_output, which opens the temporary file of an output.
 """
 
+import errno
 import gzip
+import io
 import zlib
 from collections.abc import Generator
 from pathlib import Path
@@ -14,6 +17,9 @@ from pvc_eval.errors import PvcEvalInputError
 
 # The first two bytes of a gzip file, and so of a bgzipped one.
 _GZIP_MAGIC = b"\x1f\x8b"
+# The level an output is gzipped at (doc/specs/compare.md, "Writing the files", decided by
+# the owner on 20 October 2026).
+_GZIP_LEVEL = 6
 
 
 def read_numbered_lines(
@@ -72,3 +78,78 @@ def _open_text(path: Path) -> TextIO:
     if is_gzipped:
         return gzip.open(path, "rt", encoding="utf-8-sig")
     return path.open(encoding="utf-8-sig")
+
+
+def open_temporary_output(path: Path, temporary: Path, option: str, *, compress: bool) -> TextIO:
+    """Open temporary, the file an output is written to before it is renamed to path, as
+    UTF-8 text, gzipped when compress is true.
+
+    option: the command-line option that gave path, "--output" or "--summary", for the
+    messages.
+
+    Lines end in "\n" on every system. A gzipped file's header holds no file name and a
+    time of 0, so `gunzip -N` does not restore the `.tmp` name (doc/specs/compare.md,
+    "Writing the files").
+
+    Raises PvcEvalInputError, naming option, when path is a directory or temporary cannot
+    be made, with the system's words for a fault other than a missing directory, a path
+    through a file, a permission denied, or a temporary that is a directory.
+    """
+    if path.is_dir():
+        raise PvcEvalInputError(
+            f"{option} {path} is a directory. Give the path of a file to write, and run again."
+        )
+    cannot = f"{option} {path} cannot be written:"
+    try:
+        if compress:
+            return _open_gzipped_output(temporary)
+        return temporary.open("w", encoding="utf-8", newline="\n")
+    except FileNotFoundError as err:
+        raise PvcEvalInputError(
+            f"{cannot} its directory, {path.parent}, does not exist. Make it, or give another"
+            f" {option}, and run again."
+        ) from err
+    except NotADirectoryError as err:
+        raise PvcEvalInputError(
+            f"{cannot} its path goes through a file as if it were a directory. Correct the"
+            " path, and run again."
+        ) from err
+    except PermissionError as err:
+        raise PvcEvalInputError(
+            f"{cannot} permission denied to write in {path.parent}. Allow writing there, or"
+            f" give another {option}, and run again."
+        ) from err
+    except IsADirectoryError as err:
+        raise PvcEvalInputError(
+            f"{cannot} {temporary}, where it is written first, is a directory. Move it away,"
+            " and run again."
+        ) from err
+    except OSError as err:
+        raise make_write_error(option, path, err) from err
+
+
+def make_write_error(option: str, path: Path, err: OSError) -> PvcEvalInputError:
+    """The error for a fault of the system while an output is opened, written or renamed,
+    a full disk, a read-only file system or a name too long, naming option and giving the
+    system's words (doc/specs/compare.md, "Writing the files")."""
+    advice = "Free some space, or give another" if err.errno == errno.ENOSPC else "Give another"
+    return PvcEvalInputError(
+        f"{option} {path} could not be written: {err.strerror}. {advice} {option}, and run again."
+    )
+
+
+def _open_gzipped_output(temporary: Path) -> TextIO:
+    """Open temporary to be written as gzipped UTF-8 text, with no name and no time in the
+    gzip header."""
+    raw = temporary.open("wb", buffering=0)
+    try:
+        compressed = gzip.GzipFile(
+            filename="", mode="wb", compresslevel=_GZIP_LEVEL, fileobj=raw, mtime=0
+        )
+    except BaseException:
+        raw.close()
+        raise
+    # GzipFile closes, when it is closed, the file it holds as myfileobj, which it sets only
+    # for a file it opened itself; given this one, it would leave it open.
+    compressed.myfileobj = raw
+    return io.TextIOWrapper(compressed, encoding="utf-8", newline="\n")
