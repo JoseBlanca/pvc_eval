@@ -60,6 +60,8 @@ type SeededRespell = Callable[..., None]
 
 _PS_INTEGER = '##FORMAT=<ID=PS,Number=1,Type=Integer,Description="Phase set">'
 _GT_STRING = '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">'
+_GT_ID_NOT_FIRST = '##FORMAT=<Number=1,Type=String,ID=GT,Description="Genotype">'
+_PS_ID_NOT_FIRST = '##FORMAT=<Number=1,Type=Integer,ID=PS,Description="Phase set">'
 # The 28 bytes that end a BGZF file, an empty block (the SAM/BAM format specification, §4.1.2).
 _BGZF_EOF = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
 
@@ -517,6 +519,13 @@ def test_a_new_phase_set_is_one_no_record_of_the_input_uses(
             [FILEFORMAT_LINE, _GT_STRING, _PS_INTEGER, "##contig=<ID=chr1>"],
             [FILEFORMAT_LINE, _GT_STRING, _PS_INTEGER, "##contig=<ID=chr1>"],
             id="not-added-when-present",
+        ),
+        # The ID of a FORMAT line need not be its first key.
+        pytest.param(
+            ["2 A T 0/1", "5 T G 0/1"],
+            [FILEFORMAT_LINE, _GT_ID_NOT_FIRST, _PS_ID_NOT_FIRST],
+            [FILEFORMAT_LINE, _GT_ID_NOT_FIRST, _PS_ID_NOT_FIRST],
+            id="not-added-when-present-with-the-id-after-another-key",
         ),
         # §2.3: a rewritten record writes GT, so a header with no GT line gains one.
         pytest.param(

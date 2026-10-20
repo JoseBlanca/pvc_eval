@@ -17,6 +17,7 @@ import bisect
 import gzip
 import itertools
 import random
+import re
 import struct
 import sys
 import zlib
@@ -48,9 +49,10 @@ _ALT_COLUMN = 4
 _QUAL_COLUMN = 5
 _FORMAT_COLUMN = 8
 _NUM_FIXED_COLUMNS = 9
-_GT_LINE_START = "##FORMAT=<ID=GT,"
+# A FORMAT line of GT or of PS, its ID wherever it stands among the line's keys.
+_GT_LINE_PATTERN = re.compile(r"##FORMAT=<(?:.*,)?ID=GT[,>]")
 _GT_LINE = '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">'
-_PS_LINE_START = "##FORMAT=<ID=PS,"
+_PS_LINE_PATTERN = re.compile(r"##FORMAT=<(?:.*,)?ID=PS[,>]")
 _PS_LINE = '##FORMAT=<ID=PS,Number=1,Type=Integer,Description="Phase set">'
 # The largest PS bcftools 1.24 keeps in an Integer; it sets 2,147,483,648 to missing (§2.3).
 _MAX_INTEGER_PHASE_SET = 2**31 - 1
@@ -1504,14 +1506,14 @@ def _make_header(
     rewritten_fields = [record.line.split("\t") for record in rewritten_records]
     added_lines = []
     has_samples = any(len(fields) > _NUM_FIXED_COLUMNS for fields in rewritten_fields)
-    if has_samples and not any(line.startswith(_GT_LINE_START) for line in header_lines):
+    if has_samples and not any(map(_GT_LINE_PATTERN.match, header_lines)):
         added_lines.append(_GT_LINE)
     written_phase_sets = (
         phase_set for fields in rewritten_fields for phase_set in _find_phase_sets(fields)
     )
     if (
         rewritten_records
-        and not any(line.startswith(_PS_LINE_START) for line in header_lines)
+        and not any(map(_PS_LINE_PATTERN.match, header_lines))
         and respelling_input.are_phase_sets_integer
         and all(map(_is_integer_phase_set, written_phase_sets))
     ):
