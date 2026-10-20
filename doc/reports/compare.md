@@ -1,7 +1,64 @@
 # Report: compare
 
-*Under way, 20 October 2026. The work of `doc/plans/compare.md`, which builds
-`doc/specs/compare.md`, on the branch `compare`; nothing is merged into `main` or pushed.*
+*Done, 20 October 2026. The work of `doc/plans/compare.md`, which builds `doc/specs/compare.md`,
+on the branch `compare`; the last commit of code is 302f5c9, and `main` is merged in at 84aacd9.
+Nothing is merged into `main` or pushed.*
+
+## For the owner
+
+**pvc_eval compares two VCF files end to end.** `pvc_eval compare` and the Python function
+`compare()` take two VCFs, the reference and the options of `doc/spec.md` §3, and write the table of
+§6 and the wide summary you chose. GIAB's HG002 v4.2.1 against itself over chr20 of GRCh38 gives
+81,257 rows, all *same genotype*, in 39 s at a peak of 400 MB (Apple M5 Pro, CPython 3.15t), which
+is the check of `doc/spec.md` §7.3 on real data, now a test.
+
+What exists now that did not:
+
+- `compare()` and `CompareConfig` (`src/pvc_eval/compare.py`): the stages joined, each VCF read in a
+  thread of its own and the STR finder on two threads, scanning only the contigs that have records
+  and that `--regions` names, planned from the `.tbi` or `.csi` when there is one;
+- the table and the summary (`src/pvc_eval/table.py`), written through `.tmp` files, gzipped for a
+  `.gz` path;
+- `pvc_eval compare`, with the messages and exit statuses you agreed to;
+- the reader of the contigs an index lists (`src/pvc_eval/_vcf_index.py`), with the standard library;
+- the test of HG002 against itself (`tests/test_compare_real.py`), skipped without
+  `PVC_EVAL_GRCH38` and `PVC_EVAL_HG002_VCF`.
+
+The checks on 84aacd9: `uv sync --locked` clean, ruff and ty pass, `pytest -q` "1306 passed, 5
+skipped" (914 passed when the work started), three runs in a row.
+
+**What is asked of you.**
+
+1. **The merge of `compare` into `main`.** `main` was merged into the branch at 84aacd9, after
+   `str-regions` on threads, so the merge has no conflict as of now.
+2. **Whether `--regions` should also limit the reading.** On HG002, chr20's rows were done at 38 s
+   of the 39 s: pvc_eval reads every record of the 22 chromosomes and builds their loci, to raise
+   any error the file holds, and skips them. Reading only the contigs `--regions` names, through
+   the VCF's index, would bring a chr20 benchmark of a whole-genome VCF to a few seconds, and an
+   error on another chromosome would then go unseen. It needs a reader of BGZF blocks by offset,
+   about 100 lines of standard library. Recommended: yes, as a spec of its own, since it changes
+   what the run checks. Nothing waits on it.
+
+**What the spec gained during the work**, each in a commit of its own, none changing a row:
+
+- The rows before an error of the STR finder are those of `compare()` with no thread, which can
+  differ by one locus from a chain of `segment_contig` over contigs known in advance (0ad2d19).
+- `compare()` no longer repeats the stages' checks of the settings; the command still checks them
+  first (eef6533).
+- The summary is renamed before the table; any error of the system while writing is a message, not
+  a traceback; `--output` and `--summary` that are one file under another spelling are refused
+  (b5ac64a).
+- The warning for an index that cannot be read says how to make it again (1927bcb).
+- `compare()` is annotated as returning a `Generator` (cbcc6e6).
+
+**Left open, none of them changing a row:**
+
+- In one of 15 full runs of the suite, a reviewer saw one test fail without keeping its name; the
+  session's 23 runs since have had no failure.
+- `pvc_eval str-regions` still ends with a traceback on a full disk; since milestone 3 its Ctrl-C
+  ends with "Stopped; nothing was written." and status 130, like `compare`'s.
+- Two tests that could be stronger: that the command puts its logger's level back, and that an
+  error of a scan not needed is never raised when the loci side passes its contig.
 
 ## Before the first milestone
 
@@ -142,3 +199,104 @@ microseconds, prints "nothing was written" after the summary was replaced. The s
 window, and the message is not worth a third state. **Left open, a nit:** no test checks that the
 command puts the level of pvc_eval's logger back after a run; the second look found that removing
 it still passes.
+
+## Milestone 5: the threads
+
+Built in 7419f7e, cbcc6e6 and 0c43267, and fixed in 5cc7549 to e97e5ec. With `finder_threads` of 1
+or more, each VCF is read in a thread of its own into a `queue.Queue` of at most 156 batches of 64
+records, and the STR finder runs on a pool of daemon threads, a few contigs ahead of the loci, each
+thread with its own handle on the FASTA. On e97e5ec `tests/test_compare_threads.py` runs 113
+tests, the plan asked for at least 12, and passed in each of ten runs in a row.
+
+- **Stress, by the correctness reviewer**, on 480 random cases of 50 to 400 contigs, with
+  indexes, `--regions`, errors in the FASTA and in the VCFs, 1 to 8 finder threads, run to the
+  end and closed at a random row: 7,592 threaded runs before the fixes and 7,592 after, plus
+  2,368 and 1,592 with random delays. No hang, no row or first error different from
+  `finder_threads=0`, no exception reaching `threading.excepthook`, no reader alive after a close.
+  Memory grew with the number of contigs only by the records in flight, not by anything `compare`
+  holds.
+- **Fixed, a blocker, confirmed by a second look:** three rules had code and no test (planning
+  from the indexes; the limit of contigs ahead; a contig the loci side passes leaving the line),
+  nor had the finder threads being daemon threads. Each now has a test, and each break fails one.
+- Also fixed: a lost wakeup in the reader's buffer that no test could catch (the buffer is now
+  `queue.Queue`, whose `shutdown` wakes a blocked reader, 50 lines of locking gone); Ctrl-C while
+  the indexes are read became a `RuntimeError`; a stream never closed in a script printed an error
+  as Python exited; tests that turned one hang into hours; two paths no input reached, removed.
+- From milestone 3's review: `compare()` returns a `Generator`, which the command closes, and a
+  test shows the command runs it with two finder threads (spec changed in cbcc6e6).
+- **Not taken:** two casts of `parse_vcf`'s result in `compare.py`, which would go only if
+  `pvc_eval.vcf` annotated `parse_vcf` as a generator; that module is not this plan's to change.
+- **Left open:** no test catches an error of a scan raised when the loci side passes that contig
+  rather than never; and in one of 15 full runs of the suite at e97e5ec the second-look reviewer
+  saw one test fail, without keeping its name. The session ran the suite 20 times in a row at
+  302f5c9 and 3 times at 84aacd9 with no failure.
+
+## Milestone 6: a file against itself over real data
+
+Built in 5bafe18 and fixed in 60abdf3 to 302f5c9. `tests/test_compare_real.py` compares GIAB's
+HG002 v4.2.1 benchmark VCF with itself over chr20 of GRCh38, through `PVC_EVAL_GRCH38` and
+`PVC_EVAL_HG002_VCF`, and is skipped with a message naming each that is missing. It asserts
+81,257 rows, each of the five outcomes doc/spec.md §7.3 allows, and the two sides of each row
+equal field by field; fast tests check the same rule on literal rows and on a small file with a
+`./.`, a malformed GT and 14 unphased heterozygous records, which give *missing in both*, *invalid
+in both* and *too complex*. With the variables it gives "19 passed" in 39.1 s.
+
+- **It can fail:** file B with one GT of HG002 changed (chr20:88108, 0/1 to 1/1) breaks exactly one
+  row, *same alleles, other genotype*; a `./.` there gives *missing in B*; the record removed gives
+  *only in A*.
+- Fixed after review: the rule on the three outcomes above never ran on HG002, which has none of
+  them; losing rows did not fail the test; three of the six paired fields were not compared.
+
+## The check of the whole plan
+
+On 84aacd9, the session ran the command on HG002 against itself, with `--regions` naming chr20 and
+`--summary`, the table gzipped:
+
+```
+uv run pvc_eval compare --reference GRCh38.fna --a HG002.vcf.gz --b HG002.vcf.gz \
+    --regions chr20.bed --output self.tsv.gz --summary self_summary.tsv
+```
+
+It exited with 0 in 39.1 s, at a peak of 400 MB resident (`/usr/bin/time -l`, Apple M5 Pro,
+CPython 3.15.0t with the GIL off, 20 October 2026), at 302f5c9 before the last merge of `main`.
+The finder scanned chr20 alone. The summary:
+
+```
+outcome         stratum  SNP    indel  STR    complex  total
+same genotype   .        65112  3663   12171  311      81257
+```
+
+`main` was merged into the branch twice: at d89ba74, which brought the faster STR finder with no
+conflict, and at 84aacd9, which brought `str-regions` on threads, with conflicts in the imports of
+`cli.py` and in `segments.py`, where the branch's shared opener of an output replaces `main`'s copy.
+After it, ruff, ty and "1306 passed, 5 skipped" three runs in a row.
+
+## For whoever next revises the skills
+
+The owner can stop reading here.
+
+- **Two subagents in one worktree work, if each commits by path.** Milestones 2 and 4, and 3 and
+  5, and 5's fixes and 6, ran side by side. Their checks, run in the middle, saw the other's
+  uncommitted files: two subagents reported a failure that was the other's work in progress. The
+  coding skill could say that a subagent sharing a tree runs its checks on a copy of its commit.
+- **"A rule with code and no test" was the finding of every milestone.** In five of six
+  milestones a reviewer broke a rule the spec gives and every test passed: `--regions` cut inside
+  a contig, the options that reach `compare()`, the index's magic, the limit of contigs ahead. The
+  implementers tested what they built rather than each sentence of the spec. A line in the
+  implementer's prompt, "for each rule of the spec's section, name the test that fails without
+  it", might catch these before the review.
+- **The spec's review missed what the code review found.** The rows before an error of the
+  finder, which the spec promised equal to a chain of `segment_contig`, differ by a locus; three
+  code reviewers found it with cases. A spec that promises equality between two runs is worth a
+  reviewer who builds both.
+- **Tokens, as the `Agent` tool reported them** (implementation including its fixes; the reviews,
+  second looks included):
+
+  | milestone | implementation | reviews |
+  |---|---|---|
+  | 1 | 227 k | 357 k |
+  | 2 | 166 k | 237 k |
+  | 3 | 166 k | 206 k, a first reader of `--help` included |
+  | 4 | 107 k | 161 k |
+  | 5 | 259 k | 434 k |
+  | 6 | 96 k | 43 k |

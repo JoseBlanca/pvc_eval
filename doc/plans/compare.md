@@ -1,6 +1,6 @@
 # Plan: compare
 
-*Status: approved by the owner on 20 October 2026, who asked for it to be written and run; under way. It
+*Status: approved by the owner on 20 October 2026, who asked for it to be written and run; done on 20 October 2026. It
 builds `doc/specs/compare.md`, approved by the owner on 20 October 2026, on the branch `compare`
 in `.claude/worktrees/compare`; the owner's handoff named the branch `compare`, so it is not
 `plan/compare`. The work report is `doc/reports/compare.md`.*
@@ -172,7 +172,7 @@ lacks; and "The index reader" of "How it is verified".
 a 28-byte header, which the spec's reviewer and the spec's writer checked only on bcftools 1.24's
 files.
 
-- [ ] 5. The threads
+- [x] 5. The threads
 
 **What it gives.** The default run: each VCF read in a thread of its own, the STR finder on a pool
 of `finder_threads` threads, planned from the indexes, a few contigs ahead of the loci.
@@ -211,7 +211,7 @@ buffers, the pool's limit and the loci side; the tests of this milestone are whe
 show, which is why each has a timeout and the file is run ten times. The other risk is a row that
 differs only with threads: the rows-equal tests guard it.
 
-- [ ] 6. A file against itself over real data
+- [x] 6. A file against itself over real data
 
 **What it gives.** The check of `doc/spec.md` §7.3 over chr20 of GIAB's HG002, and the time and
 peak memory of a real run, for the report.
