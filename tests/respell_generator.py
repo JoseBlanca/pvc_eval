@@ -37,10 +37,10 @@ _CONTIG_NAMES = ("chr1", "chr2")
 _MIN_CONTIG_BASES = 12
 _MAX_CONTIG_BASES = 60
 _PADDING_BASES = 4  # the most N on each side of a contig that is padded
-# §9.2: at least one file in five has a pair of windows a block joins. With every GT
-# phased and heterozygous in one phase set in three files of four, one run of 300 files
-# on 20 October 2026 gave 31% (91 to 95 of 300 over three runs); in one file of two, 18%
-# to 25%, too near the fifth the property asserts.
+# §9.2: at least one file in five has a pair of windows a block joins. Three samples of four
+# have every GT phased and heterozygous in phase set 1; the others are drawn as §9.2 says,
+# unphased GTs among them, often in the same file. On 20 October 2026, twelve runs of 300
+# files gave 61 to 121 files with a pair; the property's run, which is fixed, gives 106.
 _ONE_PHASE_SET_DRAWS = 4
 
 
@@ -176,12 +176,15 @@ def write_generated_vcf(
 @st.composite
 def make_generated_vcf(draw: st.DrawFn) -> GeneratedVcf:
     """A file of §9.2: one contig, or two in one file of five; 1 to 3 samples, of ploidy 2
-    in four files of five and 1 otherwise; on each contig 1 to 6 records; and in three files
-    of four every GT phased in phase set 1, so that windows are joined by a block."""
+    in four files of five and 1 otherwise; on each contig 1 to 6 records; and for three
+    samples of four every GT phased in phase set 1, so that windows are joined by a
+    block."""
     num_contigs = 2 if draw(st.integers(0, 4)) == 4 else 1
     num_samples = draw(st.integers(1, 3))
     ploidy = 2 if draw(st.integers(0, 4)) < 4 else 1
-    is_one_phase_set = draw(st.integers(0, _ONE_PHASE_SET_DRAWS - 1)) > 0
+    are_one_phase_set = [
+        draw(st.integers(0, _ONE_PHASE_SET_DRAWS - 1)) > 0 for _ in range(num_samples)
+    ]
     contigs = [draw(_make_contig(name)) for name in _CONTIG_NAMES[:num_contigs]]
     lines = []
     for contig in contigs:
@@ -189,7 +192,7 @@ def make_generated_vcf(draw: st.DrawFn) -> GeneratedVcf:
             num_alts = 0 if record.alts == (".",) else len(record.alts)
             sample_fields = [
                 draw(_make_sample_field(num_alts, ploidy, is_one_phase_set=is_one_phase_set))
-                for _ in range(num_samples)
+                for is_one_phase_set in are_one_phase_set
             ]
             fields = [contig.name, str(record.start + 1), record.ref, ",".join(record.alts)]
             lines.append(" ".join([*fields, *sample_fields]))
@@ -396,9 +399,9 @@ def _make_sample_field(
         return alleles[0]
     if is_one_phase_set:
         if alleles[0] == alleles[1]:
-            others = [
-                allele for allele in [".", *map(str, range(num_alts + 1))] if allele != alleles[0]
-            ]
+            # Another index, so that `.` is drawn no more often; `.` at a record with no ALT.
+            indices = [str(index) for index in range(num_alts + 1)]
+            others = [allele for allele in indices if allele != alleles[0]] or ["."]
             alleles[1] = draw(st.sampled_from(others))
         return f"{'|'.join(alleles)}:1"
     if not draw(st.booleans()):

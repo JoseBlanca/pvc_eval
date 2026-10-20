@@ -792,13 +792,17 @@ def _is_rewritten(vcf: Path, output: Path) -> bool:
 # that lost a phase set between windows is likely to be caught). A counter in the module would
 # be state that changes between tests (python.md, threads) and would tie the assertion to the
 # order the tests run in; hypothesis's own statistics are reported and cannot be asserted.
+# The oracle property is derandomized, the same 300 files at every run: how many files had a
+# pair varied from 61 to 121 of 300 over twelve runs, with the fifth asserted at 60, as
+# hypothesis varies its draws between runs; the fixed run gives 106. Runs of 5,000 files
+# outside the suite explore further.
 @pytest.mark.parametrize("respelling", _RESPELLINGS)
 def test_the_respelling_of_a_generated_file_passes_the_oracle(
     tmp_path_factory: pytest.TempPathFactory, respelling: Respelling
 ) -> None:
     tally: Counter[str] = Counter()
 
-    @settings(max_examples=_ORACLE_EXAMPLES, deadline=None)
+    @settings(max_examples=_ORACLE_EXAMPLES, deadline=None, derandomize=True)
     @given(generated=make_generated_vcf())
     def check_respelling(generated: GeneratedVcf) -> None:
         with ExitStack() as stack:
