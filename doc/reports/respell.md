@@ -1,7 +1,75 @@
 # Work report: the re-spelling program
 
-*Under way, 20 October 2026. The plan is `doc/plans/respell.md`, built from
-`doc/specs/respell.md`, on the branch `respell`. Nothing is merged into `main` or pushed.*
+*Done, 21 October 2026. The plan is `doc/plans/respell.md`, built from `doc/specs/respell.md`,
+on the branch `respell`; the last commit of code is 630d173. Nothing is merged into `main` or
+pushed.*
+
+## For the owner
+
+The re-spelling program of `doc/spec.md` §7.4 is built, and pvc_eval passes the check it exists
+for. A VCF file compared with each of its four re-spellings gives, at every locus and for every
+sample, the same result as the file against itself:
+
+- on GIAB's HG002 v4.2.1 benchmark VCF, chr20, against each re-spelling: all 81,257 rows *same
+  genotype*, for all four (8 min 30 s together on the owner's Mac, 21 October 2026);
+- on 5,000 random small files with repeats for each re-spelling, run outside the suite at 630d173:
+  no failure of the oracle, none of the §7.4 check, and no window over the cap.
+
+What exists now, all under `tests/`, nothing in `src/`:
+
+- `tests/respell.py`: four functions, each writing a VCF again in other words. Each record is
+  decomposed into one-base and one-indel records; indels are shifted right within their repeats;
+  `*` is added under deletions where the phase is known; and neighbouring records are merged
+  into complex ones. Each keeps as they are the records whose edits touch another record's on a
+  haplotype they may share, as you decided on 19 October 2026.
+- `tests/haplotype_oracle.py`: an oracle that rebuilds each sample's haplotypes from two files
+  without pvc_eval's reconciliation, loci or evaluation, and compares them window by window and
+  over the pairs of windows a phase set joins.
+- `tests/respell_check.py`: the check of §7.4 through `parse_vcf`, `build_loci`,
+  `reconcile_loci` and `make_outcome_rows`.
+- A generator of small files with repeats, and the properties over it: the oracle, bcftools and
+  §7.4 for each re-spelling. The suite went from 914 to 1,385 passing tests and takes 96 s.
+
+**What is asked of you: the merge into `main`.** `main` has moved since this branch began. It now
+holds `compare()` and the STR finder's speed-up. A trial merge has no textual conflict and passes
+pytest (1,777 passed, 9 skipped), but `ty check` finds one call that no longer fits:
+`write_str_regions` on `main` takes a required `num_threads`, and the GIAB test of this branch
+calls it without one. The test is skipped unless the GIAB variables are set, so pytest does not
+see it.
+
+- **I merge `main` into `respell` first, add the argument, run the five checks and the GIAB
+  tests, and hand the branch back to you for its merge into `main` (recommended).** One small
+  commit on this branch, and `main` receives a branch that passes as it stands.
+- **You merge `respell` into `main` as it is**, and the call is fixed on `main` afterwards. `main`
+  then has a failing `ty check` until the fix.
+
+With `compare()` on `main`, the plan's one deferred change can now be made: the check of §7.4
+taking its rows from `compare()` and the reference as a path. It changes no result, and is a
+plan of one milestone once you want it.
+
+Five things you may want to know, each in the milestone that found it:
+
+- The `*` re-spelling writes no `*` on HG002 chr20, which has no phased genotype and no `0/0`
+  record; it is checked on generated files only. A phased or a multi-sample VCF would check it
+  on real data (milestone 5).
+- In pvc_eval itself, outside this plan, `parse_vcf` computes a record's span by sliding on the
+  VCF's own letters, while reconciliation builds each haplotype from the reference's bases.
+  Where a REF matches the reference only by an IUPAC code, `A` over `M`, the two can disagree
+  (milestone 4).
+- Also outside this plan: `parse_vcf` accepts `.` as one ALT among others (`G A,.`) and reads it
+  as an allele (milestone 5); and a gzip file with one byte changed is reported as having no
+  `#CHROM` line, not as damaged (milestone 1).
+- The spec changed during the work in a dozen places. Each change is a commit of its own, made
+  before the code, and none changes what pvc_eval gives. The largest: a new phase set is the n-th
+  whole number the input does not use; the shift and the merge work only over plain bases; and a
+  merge that would make a heterozygous sample homozygous is not made, since it would remove a
+  block and turn a sample over the phasing cap in file A into one under it in file B
+  (milestones 4 to 6).
+- How sure this is: every case of the spec is a test with its output as a literal; in every
+  milestone, reviewers broke the code on purpose, and each break they made now fails a test;
+  four defects that changed a haplotype or a block were found by review and fixed, each with the
+  case that showed it; over the six milestones the reviewers ran more than 100,000 generated
+  files through pvc_eval's reconciliation besides the suite's.
 
 The checks on the commit the work starts from, 9dbec00: `uv sync --locked` clean, `ruff format
 --check`, `ruff check` and `ty check` pass, `uv run pytest -q` gives "914 passed, 4 skipped"; the
@@ -204,3 +272,87 @@ per record, not once per sample.
 
 For the owner, outside this plan: `parse_vcf` accepts `.` as one ALT among others (`G A,.`) and
 reads it as an allele.
+
+## Milestone 6: merge
+
+Done in f4450ac and fixed in 02c1c51 to 630d173. `respell_by_merging` joins runs of neighbouring
+records into one complex record, where the spec's §6 allows it, with as many ALTs as the samples
+need.
+
+- `uv run pytest tests/test_respell.py tests/test_respell_check.py` passes: M1 to M12 and the run
+  all REF with their outputs as literals; the cases of each condition of §6; the merged phase,
+  QUAL and order; the join probability, each of four outputs within 400 to 600 of 2,000 seeds;
+  a sample at the phasing cap through the §7.4 check; the oracle, bcftools and §7.4 properties.
+- **GIAB HG002 v4.2.1, chr20, against its merge: it passes.** Without a seed 594 records are
+  merged into 290, with seed 20261020 293 into 145; all 81,257 rows *same genotype*; 130 s, of
+  which the merge takes 6.5 s.
+- On 1,000 fixed generated files each re-spelling rewrites a record in at least 110 (decomposition
+  736, shift 142, `*` 110, merge 156); the generated files now leave the seed out one time in
+  three, so the properties check the longest runs and the largest shifts too.
+- The five checks pass on 630d173; the whole suite gives "1385 passed, 8 skipped".
+
+Changed in the spec (e18d686, 623f6c3, 51effc9): a run is merged only over plain bases; symbolic
+records do not stop it; a run that would give a sample with a heterozygous genotype equal merged
+alleles is not merged; and the rewritten share is counted on 1,000 fixed files, where 300 left the
+shift and the `*` 1 and 2 files above their bound.
+
+The review found one blocker: phased records whose edits spell one sequence on both haplotypes,
+as one deletion of a repeat written at two placements, merged into a homozygous record and
+removed a block. At the phasing cap the §7.4 check then failed where pvc_eval is right: file A
+*too complex*, file B 4,096 genotypes. The oracle could not see it, since the haplotypes are the
+same. Fixed, confirmed by the reviewer's second look over 12,000 more re-spellings. Fixed
+besides: a merged REF over a reference letter that is no IUPAC code, which `parse_vcf` rejected;
+four plausible wrong rules no test could fail on; a merge whose time grew with the cube of a
+chain of records it could not join, 43 s for 800 records, now 1.2 s; a duplicate header line
+when the input puts `ID=` after another key; and four repetitions in the code. Not taken: runs
+formed leftward too, which only records written untrimmed show.
+
+## The check of the whole plan
+
+On 630d173, 21 October 2026: the four GIAB tests, with `PVC_EVAL_HG002_VCF` and
+`PVC_EVAL_GRCH38` set, "4 passed" in 510 s. Outside the suite, 5,000 random generated files for
+each re-spelling, each with the generator's seed:
+
+| re-spelling | rewritten | failures | same genotype | invalid in both | missing in both | reference in both |
+|---|---|---|---|---|---|---|
+| decomposition | 3,575 | 0 | 4,159 | 3,261 | 2,637 | 2,509 |
+| shift | 601 | 0 | 4,267 | 3,119 | 2,763 | 2,322 |
+| `*` | 593 | 0 | 4,129 | 3,121 | 2,548 | 2,245 |
+| merge | 702 | 0 | 3,830 | 3,166 | 2,472 | 2,536 |
+
+No row was *too complex*: the generated files are too small to reach the cap, which only the hand
+cases reach.
+
+## For whoever next revises the skills
+
+The owner can stop here.
+
+- **A reviewer's worktree is needed until its second look.** In milestone 2 the session removed
+  the spec and tests reviewers' worktrees as soon as they reported, and neither could be resumed
+  for its second look; fresh reviewers had to be briefed instead. The coding skill could say to
+  keep each reviewer's worktree until the milestone is ticked.
+- **A deliberate break can hang.** In milestone 4 one of the tests reviewer's breaks made a slide
+  loop forever, and its run held the review for 47 minutes until the session stopped it.
+  `review.md` could ask every break to run with a time limit, as the session asked from
+  milestone 5 on.
+- **Generated shares around a bound are a lottery.** Asserting "one file in ten" on random runs
+  of 300 failed about one run in ten; on 300 fixed files the margins fell to 1 or 2 when the
+  generator changed. Counting on 1,000 fixed files held. A rule for the planning skill: a share
+  asserted over generated files is counted on fixed files, with a margin measured over many runs.
+- **The oracle needed its own review as much as the code.** It accepted a wrong `*` beside a `.`
+  and passed silently over windows over its cap, and its first generator gave pairs of windows to
+  one file in fourteen. An oracle is code under test.
+- **Merging `main` back** was not in the plan; a trial merge, made in a worktree of its own at
+  the end, found an argument added on `main` that the branch's slow test lacked. A plan that runs
+  beside other branches could end with that step.
+- **Tokens per milestone**, from the `Agent` tool's results. The implementer's count includes its
+  fixes, and each reviewer's its second look.
+
+| milestone | implementation and fixes | review (5 categories) |
+|---|---|---|
+| 1, decomposition | 250,000 | 489,000 |
+| 2, oracle and generator | 349,000 | 582,000, with two fresh second looks |
+| 3, check of §7.4 | 213,000 | 312,000 |
+| 4, shift | 321,000 | 543,000 |
+| 5, spanning deletions | 268,000 | 486,000 |
+| 6, merge | 373,000, with the final check | 523,000 |
