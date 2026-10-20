@@ -7,6 +7,7 @@ import inspect
 import logging
 import re
 import subprocess
+import sys
 import sysconfig
 from collections.abc import Generator, Sequence
 from pathlib import Path
@@ -313,6 +314,37 @@ def test_ctrl_c_while_the_options_are_parsed_stops_with_130(
     case = write_compare_case(tmp_path)
     status, _, stderr = _run(_make_argv(case, tmp_path / "loci.tsv"), capsys)
     assert (status, stderr) == (130, "Stopped; nothing was written.\n")
+
+
+# A defect of pvc_eval, which the command does not catch: run in a process of its own, so
+# that Python's own handler prints the traceback and sets the status.
+_DEFECT_SCRIPT = """
+import sys
+from pvc_eval import cli
+
+def compare(*args, **kwargs):
+    raise RuntimeError("a defect of pvc_eval")
+    yield
+
+cli.compare = compare
+cli.main(sys.argv[1:])
+"""
+
+
+def test_a_defect_rises_with_its_traceback(tmp_path: Path) -> None:
+    case = write_compare_case(tmp_path)
+    output = tmp_path / "loci.tsv"
+    completed = subprocess.run(
+        [sys.executable, "-c", _DEFECT_SCRIPT, *_make_argv(case, output)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 1
+    assert completed.stderr.startswith("Traceback (most recent call last):")
+    assert completed.stderr.endswith("RuntimeError: a defect of pvc_eval\n")
+    assert not output.exists()
+    assert not Path(f"{output}.tmp").exists()
 
 
 def test_rows_are_closed_when_the_output_is_refused(
