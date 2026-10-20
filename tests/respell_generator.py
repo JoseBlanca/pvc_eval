@@ -35,8 +35,18 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from tests.conftest import CONTIG, CaseFiles, write_case_vcf
 from tests.haplotype_oracle import ORACLE_CAP, HaplotypeComparison, check_same_haplotypes
-from tests.respell import respell_by_decomposing, respell_by_shifting
-from tests.respell_cases import DECOMPOSITION_CASES, SHIFT_CASES, RespellingCase, read_vcf_lines
+from tests.respell import (
+    respell_by_decomposing,
+    respell_by_shifting,
+    respell_with_spanning_deletions,
+)
+from tests.respell_cases import (
+    DECOMPOSITION_CASES,
+    SHIFT_CASES,
+    SPANNING_DELETION_CASES,
+    RespellingCase,
+    read_vcf_lines,
+)
 
 from pvc_eval.fasta import IndexedFasta
 
@@ -147,9 +157,21 @@ def _respell_by_shifting(
     respell_by_shifting(vcf, reference, output, seed=seed, ploidy=ploidy)
 
 
+def _respell_with_spanning_deletions(
+    vcf: Path, reference: IndexedFasta, output: Path, ploidy: int, seed: int | None
+) -> None:
+    del seed  # the `*` re-spelling chooses nothing (§5)
+    respell_with_spanning_deletions(vcf, reference, output, ploidy=ploidy)
+
+
 RESPELLINGS = (
     Respelling(name="decomposition", cases=DECOMPOSITION_CASES, respell=_respell_by_decomposing),
     Respelling(name="shift", cases=SHIFT_CASES, respell=_respell_by_shifting),
+    Respelling(
+        name="spanning deletions",
+        cases=SPANNING_DELETION_CASES,
+        respell=_respell_with_spanning_deletions,
+    ),
 )
 # Each re-spelling, and each case of each with its re-spelling, for pytest.mark.parametrize.
 RESPELLING_PARAMS = [pytest.param(respelling, id=respelling.name) for respelling in RESPELLINGS]

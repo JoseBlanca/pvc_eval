@@ -1,6 +1,6 @@
 """The re-spelling program of doc/specs/respell.md: what every re-spelling does (§2), the
-decomposition (§3), at respell_by_decomposing, and the shift (§4), at respell_by_shifting,
-with the expected records as literals in the notation of the cases, which
+decomposition (§3), at respell_by_decomposing, the shift (§4), at respell_by_shifting, and
+the spanning deletions (§5), at respell_with_spanning_deletions, with the expected records as literals in the notation of the cases, which
 tests.respell_cases describes; each case's output against its input through the oracle of §8
 and through bcftools; and the properties of §9.2 over the files of tests.respell_generator.
 """
@@ -21,7 +21,13 @@ import pytest
 from hypothesis import given, settings
 from tests.conftest import CONTIG, FILEFORMAT_LINE, CaseFiles, make_chrom_line, write_case_vcf
 from tests.haplotype_oracle import check_same_haplotypes
-from tests.respell import _find_reach, make_bgzf, respell_by_decomposing, respell_by_shifting
+from tests.respell import (
+    _find_reach,
+    make_bgzf,
+    respell_by_decomposing,
+    respell_by_shifting,
+    respell_with_spanning_deletions,
+)
 from tests.respell_cases import (
     RespellingCase,
     read_case_lines,
@@ -65,9 +71,9 @@ def _write_vcf(
     )
 
 
-_DECOMPOSITION, _SHIFT = (
+_DECOMPOSITION, _SHIFT, _SPANNING_DELETIONS = (
     next(respelling for respelling in RESPELLINGS if respelling.name == name)
-    for name in ("decomposition", "shift")
+    for name in ("decomposition", "shift", "spanning deletions")
 )
 
 
@@ -1019,6 +1025,228 @@ def test_seeds_write_every_placement_from_one_to_the_largest_shift(
     }
 
 
+# --- The spanning deletions (§5) ---
+
+
+# §2.2 for the `*` re-spelling, on reference GCAAAATNCAGTC: each record every re-spelling
+# keeps, written as read beside a record at 11 that the deletion at 9 gives a `*`.
+_STAR_NEIGHBOURS = ["9 CAGT C 0|1:5", "11 G A 0/0"]
+_STAR_NEIGHBOURS_WRITTEN = ["9 CAGT C 0|1:5", "11 G A,* 0|2:5"]
+
+
+@pytest.mark.parametrize(
+    "case_lines",
+    [
+        pytest.param(["2 C . ./."], id="no-alt"),
+        pytest.param(["2 C G,* 0/2"], id="a-star-alt"),
+        # The deletion of the A at 3 slides to 6, so its reach, 2-6, lies next to the `*`
+        # record's REF at 7.
+        pytest.param(["2 CA C 0/1", "7 T G,* 0/2"], id="reach-touches-a-star-ref"),
+        pytest.param(["2 C <DEL> 0/1"], id="symbolic"),
+        pytest.param(["2 CA C 0/5"], id="malformed-gt"),
+        pytest.param(["2 CA C 1"], id="other-ploidy"),
+        pytest.param(["2 CA C 0/1", "3 A G 0/1"], id="touched"),
+    ],
+)
+def test_a_record_the_star_respelling_keeps_is_written_as_read(
+    case_files: CaseFiles, tmp_path: Path, case_lines: Sequence[str]
+) -> None:
+    lines = [*case_lines, *_STAR_NEIGHBOURS]
+    assert _respell(case_files, tmp_path, _SPANNING_DELETIONS, "GCAAAATNCAGTC", lines) == [
+        *case_lines,
+        *_STAR_NEIGHBOURS_WRITTEN,
+    ]
+
+
+# §2.2 for the records under a deletion, each of which would get a `*` but for its row, on
+# the reference of §5: CAGTC at 9-13, with G at 8 and N before it.
+@pytest.mark.parametrize(
+    "case_lines",
+    [
+        # The REF of the record at 10 lies next to that of the `*` record at 9.
+        pytest.param(["8 GCAGT G 0|1:5", "9 C A,* 0/2", "10 A G 0|0:5"], id="next-to-a-star-ref"),
+        pytest.param(["8 GCAGT G 0|1:5", "11 G A 0/5"], id="malformed-gt"),
+        pytest.param(["8 GCAGT G 0|1:5", "11 G A 0"], id="other-ploidy"),
+        # The SNP at 11, on the haplotype without the deletion, lies next to the SNP at 12,
+        # which may share it.
+        pytest.param(["8 GCAGT G 0|1:5", "11 G A 1|0:5", "12 T C 0/1"], id="touched"),
+    ],
+)
+def test_a_record_under_a_deletion_that_is_kept_gets_no_star(
+    case_files: CaseFiles, tmp_path: Path, case_lines: Sequence[str]
+) -> None:
+    assert (
+        _respell(case_files, tmp_path, _SPANNING_DELETIONS, "NNNNNNNGCAGTC", case_lines)
+        == case_lines
+    )
+
+
+# §5, which records get a `*`, on the reference of §5: CAGTC at 9-13, with N before it.
+@pytest.mark.parametrize(
+    ("case_lines", "ploidy", "expected"),
+    [
+        # The first condition: an edit that replaces positions with no bases.
+        pytest.param(
+            ["9 CAGT CC 0|1:5", "11 G A 0|0:5"],
+            2,
+            ["9 CAGT CC 0|1:5", "11 G A 0|0:5"],
+            id="a-replacement-over-the-record-gives-no-star",
+        ),
+        # CAGT -> CT is the deletion of AG at 10-11, once T is trimmed at the right.
+        pytest.param(
+            ["9 CAGT CT 0|1:5", "11 G A 0|0:5"],
+            2,
+            ["9 CAGT CT 0|1:5", "11 G A,* 0|2:5"],
+            id="a-deletion-trimmed-at-the-right",
+        ),
+        # The deletion of 10 lies next to the REF at 11, and deletes none of it.
+        pytest.param(
+            ["9 CA C 0|1:5", "11 G A 0|0:5"],
+            2,
+            ["9 CA C 0|1:5", "11 G A 0|0:5"],
+            id="a-deletion-next-to-the-ref-gives-no-star",
+        ),
+        # The second condition: a `.` is left as it is, and REF on one haplotype is not REF
+        # on every one.
+        pytest.param(
+            ["9 CAGT C 1/1", "11 G A 0/."],
+            2,
+            ["9 CAGT C 1/1", "11 G A 0/."],
+            id="unphased-with-a-missing-allele-gives-no-star",
+        ),
+        # The third condition, the phase.
+        pytest.param(
+            ["9 CAGT C 0|1:5", "11 G A 0|0:7"],
+            2,
+            ["9 CAGT C 0|1:5", "11 G A,* 0|2:5"],
+            id="all-ref-leaves-its-phase-set-for-the-deletions",
+        ),
+        pytest.param(
+            ["9 CAGT C 0|1", "11 G A 0/0"],
+            2,
+            ["9 CAGT C 0|1", "11 G A,* 0|2:."],
+            id="all-ref-joins-a-deletion-phased-with-no-ps",
+        ),
+        pytest.param(
+            ["9 CAGT C 1/1", "11 G A 0|0:7"],
+            2,
+            ["9 CAGT C 1/1", "11 G A,* 2|2:7"],
+            id="under-a-homozygous-deletion-the-phase-is-as-read",
+        ),
+        pytest.param(
+            ["9 CAGT C 1/.", "11 G A 0/0"],
+            2,
+            ["9 CAGT C 1|.:1", "11 G A,* 2|0:1"],
+            id="a-deletion-with-a-missing-allele-is-heterozygous",
+        ),
+        pytest.param(
+            ["9 CAGT C 0/1", "10 A G 0/0", "11 G A 0/0"],
+            2,
+            ["9 CAGT C 0|1:1", "10 A G,* 0|2:1", "11 G A,* 0|2:1"],
+            id="two-records-under-one-deletion-share-its-new-phase-set",
+        ),
+        pytest.param(
+            ["9 CAGT C 0|1:5", "11 G A 1|0:6"],
+            2,
+            ["9 CAGT C 0|1:5", "11 G A 1|0:6"],
+            id="two-phase-sets-kept",
+        ),
+        pytest.param(
+            ["9 CAGT C 0|1:5", "11 G A 1/0"],
+            2,
+            ["9 CAGT C 0|1:5", "11 G A 1/0"],
+            id="phased-and-unphased-kept",
+        ),
+        pytest.param(
+            ["9 CAGT C 1|0:5", "11 G A 0|0:5"],
+            2,
+            ["9 CAGT C 1|0:5", "11 G A,* 2|0:5"],
+            id="the-star-on-the-haplotype-of-the-deletion",
+        ),
+        # The deletions over 11 come from phase sets 5 and 6, two phase units: the record at
+        # 11 cannot join both.
+        pytest.param(
+            ["9 CAGT C 0|1:5", "10 AG A 1|0:6", "11 G A 0/0"],
+            2,
+            ["9 CAGT C 0|1:5", "10 AG A 1|0:6", "11 G A 0/0"],
+            id="deletions-of-two-phase-units-give-no-star",
+        ),
+        # An unphased heterozygous deletion that is kept, here for the SNP next to it on a
+        # haplotype they may share, cannot be given a new phase set.
+        pytest.param(
+            ["9 CAGT C 0/1", "11 G A 0/0", "13 C T 0/1"],
+            2,
+            ["9 CAGT C 0/1", "11 G A 0/0", "13 C T 0/1"],
+            id="a-kept-unphased-deletion-gives-no-star",
+        ),
+        # A phased deletion that is kept still gives one: it is not rewritten.
+        pytest.param(
+            ["9 CAGT C 0|1:5", "11 G A 0/0", "13 C T 0|1:5"],
+            2,
+            ["9 CAGT C 0|1:5", "11 G A,* 0|2:5", "13 C T 0|1:5"],
+            id="a-kept-phased-deletion-gives-a-star",
+        ),
+        pytest.param(
+            ["9 CAGT C 1 0", "11 G A 0 1"],
+            1,
+            ["9 CAGT C 1 0", "11 G A,* 2:. 1:."],
+            id="ploidy-1-of-two-samples",
+        ),
+    ],
+)
+def test_a_record_gets_a_star_where_its_haplotype_carries_a_deletion_in_known_phase(
+    case_files: CaseFiles,
+    tmp_path: Path,
+    case_lines: Sequence[str],
+    ploidy: int,
+    expected: Sequence[str],
+) -> None:
+    assert (
+        _respell(
+            case_files, tmp_path, _SPANNING_DELETIONS, "NNNNNNNNCAGTC", case_lines, ploidy=ploidy
+        )
+        == expected
+    )
+
+
+def test_a_record_given_a_star_is_written_with_its_qual_and_its_gt_and_ps(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    reference = case_files.write_reference(1, "NNNNNNNNCAGTC")
+    vcf = tmp_path / "a.vcf"
+    vcf.write_text(
+        f"{FILEFORMAT_LINE}\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS0\n"
+        "chr1\t9\trs1\tCAGT\tC\t50\tPASS\tDP=10\tGT:GQ\t0/1:30\n"
+        "chr1\t11\trs2\tg\ta\t40\tPASS\tDP=12\tGT:GQ\t0/0:20\n",
+        encoding="utf-8",
+    )
+    respell_with_spanning_deletions(vcf, reference, tmp_path / "b.vcf")
+    assert read_vcf_lines(tmp_path / "b.vcf") == [
+        FILEFORMAT_LINE,
+        _GT_STRING,
+        _PS_INTEGER,
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS0",
+        "chr1\t9\t.\tCAGT\tC\t50\t.\t.\tGT:PS\t0|1:1",
+        "chr1\t11\t.\tG\tA,*\t40\t.\t.\tGT:PS\t0|2:1",
+    ]
+
+
+def test_a_star_is_given_only_by_a_deletion_of_its_own_contig(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    bases = "NNNNNNNNCAGTC"
+    reference = case_files.write_contigs({"chr1": bases, "chr2": bases})
+    vcf = _write_vcf(
+        tmp_path / "a.vcf", ["chr1 9 CAGT C 0|1:5", "chr2 11 G A 0|0:5"], has_chrom=True
+    )
+    respell_with_spanning_deletions(vcf, reference, tmp_path / "b.vcf")
+    assert read_case_lines(tmp_path / "b.vcf", has_chrom=True) == [
+        "chr1 9 CAGT C 0|1:5",
+        "chr2 11 G A 0|0:5",
+    ]
+
+
 # --- The oracle and bcftools (§2.3, §8, §9) ---
 
 _BCFTOOLS = shutil.which("bcftools")
@@ -1111,8 +1339,9 @@ def test_the_gts_of_a_generated_record_with_no_alt_are_of_0_and_dot(
 # re-spelling that kept everything fails. As for the pairs below, the count is of fixed
 # files: the files with a shifted record ranged from 22 to 77 over 30 random runs of 300 on
 # 20 October 2026, around the 30 asserted, since hypothesis draws the files of one run
-# alike, and the fixed run gives 40 for the shift and 238 for the decomposition; the
-# properties stay random.
+# alike, and the fixed run gives 40 for the shift, 238 for the decomposition and 47 for the
+# spanning deletions; the properties stay random. Over 2,000 random files the spanning
+# deletions wrote a `*` in 180, 9%.
 @pytest.mark.parametrize("respelling", RESPELLING_PARAMS)
 def test_a_tenth_of_the_generated_files_have_a_record_each_respelling_rewrites(
     tmp_path_factory: pytest.TempPathFactory, respelling: Respelling

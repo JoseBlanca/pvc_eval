@@ -8,7 +8,8 @@ with its header, its order, its new phase sets and, for a gzipped input, BGZF.
 Positions are 0-based and half-open, as everywhere inside pvc_eval, but for POS, which is
 1-based where a name says so.
 
-Public: respell_by_decomposing (§3), respell_by_shifting (§4); make_bgzf, the BGZF writer,
+Public: respell_by_decomposing (§3), respell_by_shifting (§4),
+respell_with_spanning_deletions (§5); make_bgzf, the BGZF writer,
 which the tests use to write a bgzipped input.
 """
 
@@ -43,6 +44,7 @@ _PLAIN_BASES = frozenset("ACGT")
 _CHROM_COLUMN = 0
 _POS_COLUMN = 1
 _REF_COLUMN = 3
+_ALT_COLUMN = 4
 _QUAL_COLUMN = 5
 _FORMAT_COLUMN = 8
 _NUM_FIXED_COLUMNS = 9
@@ -227,6 +229,56 @@ def respell_by_shifting(
             output_records.append(_make_kept_record(input_record))
             continue
         output_records.append(_make_shifted_record(input_record, start, alleles))
+    _write_output(output, respelling_input, output_records)
+
+
+def respell_with_spanning_deletions(
+    vcf: Path, reference: IndexedFasta, output: Path, *, ploidy: int = DEFAULT_PLOIDY
+) -> None:
+    """Respell vcf by adding a `*` ALT, as GATK writes it, to each record that is not kept
+    where a haplotype it gives REF carries, at another record, a deletion of a position of
+    its REF, in a phase the file makes known; written to output (doc/specs/respell.md §5).
+    The record joins the deletion's phase unit where it is all REF, and an unphased
+    heterozygous deletion is then phased in a new phase set of its own.
+
+    vcf: a VCF file, plain or gzipped, read with parse_vcf over reference with ploidy.
+    output: the file written, bgzipped when vcf is gzipped.
+
+    Raises what parse_vcf raises, before output is written, and ValueError when output is
+    vcf itself.
+    """
+    _check_output(vcf, output)
+    respelling_input = _parse_input(vcf, reference, ploidy)
+    record_index = _make_record_index(respelling_input.input_records)
+    rewritable_places = {
+        place
+        for place, record_edits in record_index.by_place.items()
+        if not _is_kept_whatever_is_written(
+            record_edits.vcf_record, place, record_index.touched_places
+        )
+        and not _is_near_spanning_deletion(
+            record_edits.vcf_record.contig,
+            [(record_edits.vcf_record.start, record_edits.vcf_record.alleles)],
+            record_index.spanning_deletions,
+            reference,
+        )
+    }
+    rewrites = _find_spanning_deletion_rewrites(
+        record_index, rewritable_places, respelling_input.max_phase_set
+    )
+    output_records = []
+    for input_record in respelling_input.input_records:
+        place = input_record.place
+        if place in rewrites.sample_fields:
+            output_records.append(
+                _make_spanned_record(
+                    input_record,
+                    rewrites.sample_fields[place],
+                    has_star=place in rewrites.star_places,
+                )
+            )
+        else:
+            output_records.append(_make_kept_record(input_record))
     _write_output(output, respelling_input, output_records)
 
 
@@ -797,14 +849,210 @@ def _make_shifted_record(
     sample_fields = []
     for genotype in vcf_record.genotypes:
         assert isinstance(genotype, VcfGenotype), "a record with an invalid GT is kept"
-        alleles_written = ["." if allele is MISSING else str(allele) for allele in genotype.alleles]
-        is_phased = genotype.phased and len(alleles_written) > 1
         sample_fields.append(
-            _format_sample(alleles_written, phased=is_phased, phase_set=genotype.phase_set)
+            _format_genotype(genotype.alleles, phased=genotype.phased, phase_set=genotype.phase_set)
         )
     ref, alt = alleles
     return _make_rewritten_record(
         input_record, start + 1, ref, [alt], input_record.fields[_QUAL_COLUMN], sample_fields
+    )
+
+
+# --- Spanning deletions (§5) ---
+
+
+@dataclass(frozen=True, slots=True)
+class _Deletion:
+    """A deletion a sample carries over a record's REF: the record that makes it, the
+    sample's VCF genotype there and the haplotype that carries it."""
+
+    record_edits: _RecordEdits
+    genotype: VcfGenotype
+    haplotype: int
+
+
+@dataclass(frozen=True, slots=True)
+class _Star:
+    """The haplotypes of a sample's VCF genotype that get a `*`, and the phase its GT is
+    written with: phased, and its phase set, or rephased, the unphased deletion whose new
+    phase set it takes, where phase_set is None."""
+
+    haplotypes: frozenset[int]
+    phased: bool
+    phase_set: str | None
+    rephased: _RecordEdits | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _PhaseUnit:
+    """A sample's phase unit at a record: a phase set, None for a GT phased with no PS; or,
+    for an unphased GT, the record's place among the input's record lines."""
+
+    phase_set: str | None
+    place: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _SpanningDeletionRewrites:
+    """What the `*` re-spelling writes: the records it rewrites, by place, each with the
+    sample fields, `GT:PS` by sample index, that are not the record's as read; and the
+    places of those that get a `*` ALT. A deletion phased in its new phase set is rewritten
+    with no `*`, unless another sample gives it one."""
+
+    sample_fields: dict[int, dict[int, str]]
+    star_places: set[int]
+
+
+def _find_spanning_deletion_rewrites(
+    record_index: _RecordIndex, rewritable_places: set[int], max_phase_set: int
+) -> _SpanningDeletionRewrites:
+    """The `*` each record of rewritable_places gets for each sample (§5), and the
+    unphased deletions an all-REF record joins, phased in their new phase sets, M + n."""
+    rewrites = _SpanningDeletionRewrites(sample_fields={}, star_places=set())
+    for place in sorted(rewritable_places):
+        record_edits = record_index.by_place[place]
+        vcf_record = record_edits.vcf_record
+        contig_edits = record_index.by_contig[vcf_record.contig]
+        star_index = len(vcf_record.alleles)
+        for sample, genotype in enumerate(vcf_record.genotypes):
+            assert isinstance(genotype, VcfGenotype), "a record with an invalid GT is kept"
+            deletions = list(_find_deletions_over(record_edits, sample, contig_edits))
+            star = _find_star(genotype, deletions, rewritable_places)
+            if star is None:
+                continue
+            phase_set = star.phase_set
+            if star.rephased is not None:
+                phase_set = str(max_phase_set + star.rephased.place)
+                rephased_genotype = star.rephased.vcf_record.genotypes[sample]
+                assert isinstance(rephased_genotype, VcfGenotype), "it carries the deletion"
+                rephased_field = _format_genotype(
+                    rephased_genotype.alleles, phased=True, phase_set=phase_set
+                )
+                _add_sample_field(rewrites, star.rephased.place, sample, rephased_field)
+            alleles = [
+                star_index if haplotype in star.haplotypes else allele
+                for haplotype, allele in enumerate(genotype.alleles)
+            ]
+            field = _format_genotype(alleles, phased=star.phased, phase_set=phase_set)
+            _add_sample_field(rewrites, place, sample, field)
+            rewrites.star_places.add(place)
+    return rewrites
+
+
+def _add_sample_field(
+    rewrites: _SpanningDeletionRewrites, place: int, sample: int, field: str
+) -> None:
+    """A sample's field of a rewritten record. A sample whose record gets a `*` gives REF on
+    a haplotype, so it is not the unphased deletion carried that a `*` rephases, and one
+    record never gets two fields for one sample, though one deletion may be rephased for
+    several records under it, in one field."""
+    sample_fields = rewrites.sample_fields.setdefault(place, {})
+    assert sample_fields.get(sample, field) == field, "one field for each sample"
+    sample_fields[sample] = field
+
+
+def _find_deletions_over(
+    record_edits: _RecordEdits, sample: int, contig_edits: _ContigEdits
+) -> Iterator[_Deletion]:
+    """The deletions sample carries at other records, edits that replace positions with no
+    bases, of a position of the REF of record_edits as parse_vcf trims it (§5)."""
+    vcf_record = record_edits.vcf_record
+    for other in _find_ref_touching_records(contig_edits, (vcf_record.start, vcf_record.end)):
+        genotype = other.vcf_record.genotypes[sample]
+        if other.place == record_edits.place or not isinstance(genotype, VcfGenotype):
+            continue
+        for haplotype, edit in _find_carried_edits(genotype, other.edits):
+            is_deletion = bool(edit.deleted) and not edit.inserted
+            if is_deletion and edit.start < vcf_record.end and vcf_record.start < edit.end:
+                yield _Deletion(other, genotype, haplotype)
+
+
+def _find_star(
+    genotype: VcfGenotype, deletions: Sequence[_Deletion], rewritable_places: set[int]
+) -> _Star | None:
+    """The haplotypes of a sample's VCF genotype at a record that get a `*` (§5): those it
+    gives REF and whose deletions over the record are in a phase that is known. None when
+    there is none.
+
+    deletions: the deletions the sample carries over the record's REF.
+    rewritable_places: the places of the records that are not kept.
+    """
+    alleles = genotype.alleles
+    if not deletions:
+        return None
+    if len(alleles) == 1:
+        # The ploidy is 1, so the deletion is on the record's one haplotype.
+        return _Star(frozenset({0}), phased=False, phase_set=None) if alleles[0] == 0 else None
+    if all(allele == 0 for allele in alleles):
+        return _find_all_ref_star(deletions, genotype, rewritable_places)
+    # Both VCF genotypes phased in one phase set, the haplotypes the record gives REF.
+    haplotypes = frozenset(
+        deletion.haplotype
+        for deletion in deletions
+        if alleles[deletion.haplotype] == 0
+        and genotype.phased
+        and deletion.genotype.phased
+        and deletion.genotype.phase_set == genotype.phase_set
+    )
+    if not haplotypes:
+        return None
+    return _Star(haplotypes, phased=True, phase_set=genotype.phase_set)
+
+
+def _find_all_ref_star(
+    deletions: Sequence[_Deletion], genotype: VcfGenotype, rewritable_places: set[int]
+) -> _Star | None:
+    """The `*` of a record that gives REF on every haplotype, which then joins the phase
+    unit of the deletions (§5): their phase set when they are phased; its own phase, as
+    read, under an unphased homozygous deletion, which every haplotype carries; and the new
+    phase set of an unphased heterozygous deletion, which must not be kept. None when the
+    deletions come from two or more phase units, which the record cannot join both of."""
+    units = {_find_phase_unit(deletion) for deletion in deletions}
+    if len(units) > 1:
+        return None
+    haplotypes = frozenset(deletion.haplotype for deletion in deletions)
+    deletion = deletions[0]
+    if deletion.genotype.phased:
+        return _Star(haplotypes, phased=True, phase_set=deletion.genotype.phase_set)
+    if len(set(deletion.genotype.alleles)) == 1:
+        return _Star(haplotypes, phased=genotype.phased, phase_set=genotype.phase_set)
+    if deletion.record_edits.place not in rewritable_places:
+        return None
+    return _Star(haplotypes, phased=True, phase_set=None, rephased=deletion.record_edits)
+
+
+def _find_phase_unit(deletion: _Deletion) -> _PhaseUnit:
+    if deletion.genotype.phased:
+        return _PhaseUnit(phase_set=deletion.genotype.phase_set, place=None)
+    return _PhaseUnit(phase_set=None, place=deletion.record_edits.place)
+
+
+def _make_spanned_record(
+    input_record: _InputRecord, sample_fields: Mapping[int, str], *, has_star: bool
+) -> _OutputRecord:
+    """A record of the `*` re-spelling, with the input's POS, REF and ALTs, a `*` after them
+    when has_star, and each sample's GT and PS as read but those of sample_fields."""
+    vcf_record = input_record.vcf_record
+    assert vcf_record is not None, "a record with a symbolic allele is kept"
+    fields = []
+    for sample, genotype in enumerate(vcf_record.genotypes):
+        assert isinstance(genotype, VcfGenotype), "a record with an invalid GT is kept"
+        field = sample_fields.get(sample)
+        if field is None:
+            field = _format_genotype(
+                genotype.alleles, phased=genotype.phased, phase_set=genotype.phase_set
+            )
+        fields.append(field)
+    alts = input_record.fields[_ALT_COLUMN].upper().split(",")
+    if has_star:
+        alts.append(_SPANNING_DELETION)
+    return _make_rewritten_record(
+        input_record,
+        input_record.pos_1based,
+        input_record.fields[_REF_COLUMN].upper(),
+        alts,
+        input_record.fields[_QUAL_COLUMN],
+        fields,
     )
 
 
@@ -825,6 +1073,15 @@ def _format_sample(alleles: Sequence[str], *, phased: bool, phase_set: str | Non
     phase set of a phased GT, `.` when it has none or the GT is unphased."""
     gt = ("|" if phased else "/").join(alleles)
     return f"{gt}:{phase_set if phased and phase_set is not None else '.'}"
+
+
+def _format_genotype(
+    alleles: Sequence[int | MISSING], *, phased: bool, phase_set: str | None
+) -> str:
+    """A sample's `GT:PS` from its alleles' indices, `.` for MISSING; a GT of one allele has
+    no phase."""
+    alleles_written = ["." if allele is MISSING else str(allele) for allele in alleles]
+    return _format_sample(alleles_written, phased=phased and len(alleles) > 1, phase_set=phase_set)
 
 
 def _make_rewritten_record(

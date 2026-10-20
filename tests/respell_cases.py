@@ -1,6 +1,6 @@
 """The cases of doc/specs/respell.md in its notation, for the tests of the re-spelling
 program and of what checks it: RespellingCase, the D cases of §3 as DECOMPOSITION_CASES,
-the S cases of §4 as SHIFT_CASES, and the readers of a VCF file in the notation,
+the S cases of §4 as SHIFT_CASES, the T cases of §5 as SPANNING_DELETION_CASES, and the readers of a VCF file in the notation,
 read_case_lines, read_header and read_vcf_lines. A case's input is written with
 write_case_vcf of tests.conftest, with fills_ps=False.
 
@@ -163,6 +163,70 @@ SHIFT_CASES = (
         bases="GCAAAAT",
         input_lines=("2 CA C,CAA 1/2",),
         output_lines=("2 CA C,CAA 1/2",),
+    ),
+)
+
+# §5: the reference of doc/spec.md §5.4, CAGTC at 9-13 with N before it, so that `9 CAGT C`
+# deletes 10-12 and slides nowhere.
+_SPANNING_DELETION_BASES = "NNNNNNNNCAGTC"
+
+SPANNING_DELETION_CASES = (
+    RespellingCase(
+        name="T1-phased-in-one-phase-set",
+        bases=_SPANNING_DELETION_BASES,
+        input_lines=("9 CAGT C 0|1:5", "11 G A 1|0:5"),
+        output_lines=("9 CAGT C 0|1:5", "11 G A,* 1|2:5"),
+    ),
+    RespellingCase(
+        name="T2-homozygous-deletion-over-a-record-of-another-sample",
+        bases=_SPANNING_DELETION_BASES,
+        input_lines=("9 CAGT C 1/1 0/0", "11 G A 0/0 0/1"),
+        output_lines=("9 CAGT C 1/1 0/0", "11 G A,* 2/2:. 0/1:."),
+    ),
+    RespellingCase(
+        name="T3-all-ref-shares-the-new-phase-set-of-the-deletion",
+        bases=_SPANNING_DELETION_BASES,
+        input_lines=("9 CAGT C 0/1 0/0", "11 G A 0/0 0/1"),
+        output_lines=("9 CAGT C 0|1:1 0/0:.", "11 G A,* 0|2:1 0/1:."),
+    ),
+    RespellingCase(
+        name="T4-all-ref-joins-the-phase-set-of-the-deletion",
+        bases=_SPANNING_DELETION_BASES,
+        input_lines=("9 CAGT C 0|1:5", "11 G A 0/0"),
+        output_lines=("9 CAGT C 0|1:5", "11 G A,* 0|2:5"),
+    ),
+    RespellingCase(
+        name="T5-ploidy-1",
+        bases=_SPANNING_DELETION_BASES,
+        input_lines=("9 CAGT C 1", "11 G A 0"),
+        output_lines=("9 CAGT C 1", "11 G A,* 2:."),
+        ploidy=1,
+    ),
+    RespellingCase(
+        name="T6-missing-under-the-deletion-kept",
+        bases=_SPANNING_DELETION_BASES,
+        input_lines=("9 CAGT C 1|0:5", "11 G A .|1:5"),
+        output_lines=("9 CAGT C 1|0:5", "11 G A .|1:5"),
+    ),
+    RespellingCase(
+        name="T7-unphased-snp-under-the-deletion-kept",
+        bases=_SPANNING_DELETION_BASES,
+        input_lines=("9 CAGT C 0/1", "11 G A 0/1"),
+        output_lines=("9 CAGT C 0/1", "11 G A 0/1"),
+    ),
+    RespellingCase(
+        name="T8-a-star-already-there-kept",
+        bases=_SPANNING_DELETION_BASES,
+        input_lines=("9 CAGT C 0/1", "11 G A,* 1/2"),
+        output_lines=("9 CAGT C 0/1", "11 G A,* 1/2"),
+    ),
+    # §5, the first condition: R's REF as parse_vcf trims it. `12 TC TA` is `13 C A`, which a
+    # deletion of 12 alone does not delete, so its haplotype gets no `*`.
+    RespellingCase(
+        name="trimmed-ref-past-the-deletion-kept",
+        bases=_SPANNING_DELETION_BASES,
+        input_lines=("11 GT G 0|1:5", "12 TC TA 1|0:5"),
+        output_lines=("11 GT G 0|1:5", "12 TC TA 1|0:5"),
     ),
 )
 
