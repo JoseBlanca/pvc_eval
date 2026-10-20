@@ -323,8 +323,8 @@ These follow `doc/spec.md` §4, which refuses overlapping regions. `str-regions`
 overlapping regions. A user's BED of repeats that overlap can be merged first with `bedtools merge`,
 which keeps three columns.
 
-**`write_str_regions(reference, output, parameters, regions)`** does what the `str-regions` command
-does, below: it segments the contigs, keeps the STR regions that the requested regions overlap, or all
+**`write_str_regions(reference, output, parameters, regions, num_threads)`** does what the
+`str-regions` command does, below: it segments the contigs, keeps the STR regions that the requested regions overlap, or all
 of them when `regions` is `None` (no `--regions`), and writes the BED. The command calls it, and it is public because the
 filter of STR regions by requested regions is private to `pvc_eval.segments` (added on 19 October
 2026, during the build).
@@ -338,6 +338,7 @@ pvc_eval str-regions --reference ref.fa --output str.bed [--regions regions.bed]
                      [--min-purity X] [--min-score N] [--bundle-distance N]
                      [--contig-end-flank N] [--max-str-len N] [--max-str-bundle-len N]
                      [--scan-match-reward N] [--scan-mismatch-penalty N] [--scan-min-copies N]
+                     [--threads N]
 ```
 
 Each option sets the field of `StrFinderParameters` with the same meaning, with the same default.
@@ -353,6 +354,20 @@ the regions name, each still whole, so a region list changes what is written and
 segment is. It writes the STR regions, not the generic ones. With `--regions`,
 it writes only those that overlap a region by at least one base, each whole, as pvc's `emit_into`
 does.
+
+**Threads** (added on 20 October 2026, by the owner's order, after the performance review,
+`doc/reports/perf-str-finder.md`). `--threads N` segments up to N contigs at once, each on a
+thread of its own; N is a whole number from 1 to 256, 4 when not given, the same default and
+limit as the VCF reader's. With 1 there is no pool: the contigs are segmented one after another
+in the calling thread. The BED is the same at any N, byte for byte: the rows are written in the
+order of the `.fai`, a contig's once the contigs before it are written. A thread hands back the
+rows of its contig, not its segments, so a finished contig that waits for its turn holds its rows
+only, and at most about N contigs are segmented ahead of the one being written. Each contig being
+segmented holds 4.6 to 5.3 MB per Mb of its length at its peak (chr1 of GRCh38: 1.15 GB), so the
+peak memory grows with N; the command's `--help` says so. An error of the input in any contig
+stops the run with its message, as with one thread, and the `.tmp` is removed; so does Ctrl-C,
+after the contigs being segmented at that moment have finished, which on a human chromosome can
+take a minute or more.
 
 The BED:
 
@@ -443,7 +458,12 @@ periods 2 to 6, copy floors (10, 5, 4, 3, 3, 3), bundle distance 50, `max_str_le
 - `--regions`: a region that cuts an STR region still writes it whole, and a contig the regions do
   not name is not segmented;
 - each error above, with its message;
-- each refusal of `read_str_regions`.
+- each refusal of `read_str_regions`;
+- `--threads`: a FASTA of more contigs than threads, with STR regions in each and contigs of
+  different lengths so that they finish out of order, gives the same BED with 1 thread and with
+  3; `--threads 0`, `257` and a word are refused, naming the option; an error of the input in a
+  contig that is not the first, under several threads, stops the run with its message and leaves
+  no `.tmp`.
 
 **The whole-port check.** pvc_eval's STR regions and `pvc dev type-regions`'s are identical on the
 same sequences: same contig, start, end and type, and the same motif for each STR segment. During
@@ -526,9 +546,9 @@ list. The owner had them amended to follow the code on 19 October 2026.
 
 ## Not in this spec
 
-- **Threads in `str-regions`** (segmenting contigs at once) and any faster form of step 1. These
-  come from the `performance` skill's measurement. `segment_contig` is already safe to call from
-  several threads.
+- **Threads inside one contig**, and any faster form of the finder beyond
+  `doc/reports/perf-str-finder.md`. `str-regions` segments contigs on threads (above); one contig
+  is segmented by one thread.
 - **How `compare` uses the segments** without `--str-regions`, and which contigs it segments. That
   is `doc/spec.md` §4 and the loci's spec.
 - **pvc's counts** of the bases each test turned down. pvc_eval reports segments, not counts.
