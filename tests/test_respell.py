@@ -1456,9 +1456,9 @@ def test_the_gts_of_a_generated_record_with_no_alt_are_of_0_and_dot(
 # re-spelling that kept everything fails. As for the pairs below, the count is of fixed
 # files: the files with a shifted record ranged from 22 to 77 over 30 random runs of 300 on
 # 20 October 2026, around the 30 asserted, since hypothesis draws the files of one run
-# alike, and the fixed run gives 40 for the shift, 238 for the decomposition and 47 for the
-# spanning deletions; the properties stay random. Over 2,000 random files the spanning
-# deletions wrote a `*` in 180, 9%.
+# alike, and the fixed run gives 72 for the shift, 213 for the decomposition and 51 for the
+# spanning deletions; the properties stay random. The generator draws deletions over other
+# records so that the spanning deletions write a `*` in more than one random file in ten.
 @pytest.mark.parametrize("respelling", RESPELLING_PARAMS)
 def test_a_tenth_of_the_generated_files_have_a_record_each_respelling_rewrites(
     tmp_path_factory: pytest.TempPathFactory, respelling: Respelling
@@ -1482,7 +1482,7 @@ def test_a_tenth_of_the_generated_files_have_a_record_each_respelling_rewrites(
 # re-spelling that loses or invents a phase set between windows is likely to be caught. The
 # count is of the generator alone, a file against itself, on fixed files: over random runs
 # of 300 it ranged from 57 to 102 files on 20 October 2026, around the 60 asserted, as
-# hypothesis varies its draws between runs, and the fixed run gives 73; the oracle property
+# hypothesis varies its draws between runs, and the fixed run gives 71; the oracle property
 # stays random.
 def test_a_fifth_of_the_generated_files_have_a_pair_of_windows_a_block_joins(
     tmp_path_factory: pytest.TempPathFactory,

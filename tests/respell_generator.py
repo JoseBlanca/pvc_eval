@@ -79,6 +79,14 @@ class _RecordKind(Enum):
     DELETION_OVER = "deletion over another record"
 
 
+# The kinds a record of one ALT is drawn from, evenly: a deletion over another record three
+# times in seven, so that the `*` re-spelling writes a `*` in more than one file in ten
+# (§9.2). Drawn as often as the other kinds, it wrote one in 9.9% of 2,000 random files on 20
+# October 2026, and three times as often in 17.1%, with the shift's files going from 17.0%
+# to 15.2% and the files with a pair of windows a block joins from 28.1% to 26.2%.
+_RECORD_KIND_DRAWS = (*_RecordKind, _RecordKind.DELETION_OVER, _RecordKind.DELETION_OVER)
+
+
 @dataclass(frozen=True, slots=True)
 class PlantedRepeat:
     """A repeat the generator planted: copies of unit from start to end, 0-based, half-open."""
@@ -404,10 +412,10 @@ def _make_no_alt_record(draw: st.DrawFn, contig: _Contig) -> _Record:
 
 @st.composite
 def _make_one_alt_record(draw: st.DrawFn, contig: _Contig, records: Sequence[_Record]) -> _Record:
-    """A record of one ALT, of a kind drawn evenly. The indel of a planted repeat on a contig
+    """A record of one ALT, of a kind drawn from _RECORD_KIND_DRAWS. The indel of a planted repeat on a contig
     with none, and the deletion over another record where no record is drawn before it or
     the one drawn is at the first base of the contig's bases, are a SNP instead."""
-    kind = draw(st.sampled_from(_RecordKind))
+    kind = draw(st.sampled_from(_RECORD_KIND_DRAWS))
     if kind is _RecordKind.REPEAT_INDEL and contig.repeats:
         return draw(_make_repeat_indel(contig))
     if kind is _RecordKind.DELETION_OVER and records:
