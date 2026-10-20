@@ -34,9 +34,10 @@ skipped" (914 passed when the work started), three runs in a row.
 2. **Whether `--regions` should also limit the reading.** On HG002, chr20's rows were done at 38 s
    of the 39 s: pvc_eval reads every record of the 22 chromosomes and builds their loci, to raise
    any error the file holds, and skips them. Reading only the contigs `--regions` names, through
-   the VCF's index, would bring a chr20 benchmark of a whole-genome VCF to a few seconds, and an
-   error on another chromosome would then go unseen. It needs a reader of BGZF blocks by offset,
-   about 100 lines of standard library. Recommended: yes, as a spec of its own, since it changes
+   the VCF's index, would bring a chr20 benchmark of a whole-genome VCF to about the 22 s of the
+   STR finder's scan of chr20, or a few seconds with `--str-regions`, and an error on another
+   chromosome would then go unseen. It needs a reader of a VCF's BGZF blocks from the offsets
+   its index gives, in the standard library; about 100 lines, an estimate, not tried. Recommended: yes, as a spec of its own, since it changes
    what the run checks. Nothing waits on it.
 
 **What the spec gained during the work**, each in a commit of its own, none changing a row:
