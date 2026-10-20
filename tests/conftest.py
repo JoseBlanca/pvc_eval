@@ -63,6 +63,13 @@ class CaseFiles:
         """The records parse_vcf reads from lines `POS REF ALT GT...`, one GT per sample,
         each written `GT` or `GT:PS`, on CONTIG; with has_chrom, the lines are
         `CHROM POS REF ALT GT...`."""
+        path = self.write_vcf(lines, num_samples=num_samples, has_chrom=has_chrom)
+        return tuple(parse_vcf(path, reference, span_limit=span_limit, ploidy=ploidy))
+
+    def write_vcf(
+        self, lines: Sequence[str], *, num_samples: int = 1, has_chrom: bool = False
+    ) -> Path:
+        """A VCF file of lines `POS REF ALT GT...`, as write_and_parse_records reads them."""
         samples = "\t".join(f"S{index}" for index in range(num_samples))
         text = "##fileformat=VCFv4.3\n"
         text += f"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{samples}\n"
@@ -74,7 +81,7 @@ class CaseFiles:
             text += f"{chrom}\t{pos}\t.\t{ref}\t{alt}\t.\t.\t.\tGT:PS\t{'\t'.join(sample_fields)}\n"
         path = self._make_path("vcf")
         path.write_text(text, encoding="utf-8")
-        return tuple(parse_vcf(path, reference, span_limit=span_limit, ploidy=ploidy))
+        return path
 
     def _make_path(self, suffix: str) -> Path:
         self._num_files += 1
