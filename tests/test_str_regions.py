@@ -289,21 +289,30 @@ def test_threads_that_are_not_a_number_get_a_usage_error(
     assert "argument --threads: invalid int value: 'four'" in stderr
 
 
-def test_an_error_in_a_later_contig_under_threads_stops_the_run_with_its_message(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+# A contig whose byte that is not a letter is its last, after 30,000 that are: IndexedFasta
+# looks for it one byte at a time, so with several threads the short faulty contig after it
+# fails first. Raising the error that comes first in time gave short_bad's message in 200
+# runs out of 200 at 10,000 bases and at 30,000, and long_bad's in 1 out of 200 at 3,000.
+_LONG_BAD = "A" * 30_000 + "-"
+
+
+@pytest.mark.parametrize("threads", ["1", "3"])
+def test_an_error_in_a_later_contig_stops_the_run_with_the_first_faulty_contigs_message(
+    threads: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Two contigs with a byte that is not a letter, both after the long one: the run stops
-    # with the first one's message, as with one thread, whichever finishes first.
-    contigs = {"long": _LONG_CONTIGS["long"], "chr2": "AC-GT", "four_a": _FOUR_A, "chr4": "-"}
-    output = tmp_path / "str_3.bed"
+    # Two contigs with a byte that is not a letter, after one without: the run stops with the
+    # message of the first in the .fai, as with one thread, though with three the second
+    # fails first.
+    contigs = {"four_a": _FOUR_A, "long_bad": _LONG_BAD, "short_bad": "AC-GT"}
+    output = tmp_path / f"str_{threads}.bed"
     output.write_text("earlier\n", encoding="utf-8")
-    status, stderr, output = _run_threads(tmp_path, capsys, contigs, "3")
+    status, stderr, output = _run_threads(tmp_path, capsys, contigs, threads)
     fasta = tmp_path / "ref.fa"
     assert (status, stderr) == (
         1,
-        f"{fasta}: chr2:3 is not a letter where its .fai, line 2, puts a base. Make the .fai"
-        f" again with `samtools faidx {fasta}`, check that the FASTA holds only letters"
-        " between its header lines, and run again.\n",
+        f"{fasta}: long_bad:30001 is not a letter where its .fai, line 2, puts a base. Make"
+        f" the .fai again with `samtools faidx {fasta}`, check that the FASTA holds only"
+        " letters between its header lines, and run again.\n",
     )
     assert output.read_text(encoding="utf-8") == "earlier\n"
     assert not Path(f"{output}.tmp").exists()
