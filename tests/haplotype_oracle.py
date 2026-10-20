@@ -11,7 +11,8 @@ each pair of windows that a block joins, the possible genotypes over both togeth
 Positions are 0-based and half-open, but in the messages, which give windows 1-based and
 inclusive as a VCF does.
 
-Public: check_same_haplotypes, HaplotypeComparison, ORACLE_CAP.
+Public: check_same_haplotypes, HaplotypeComparison, ORACLE_CAP; check_same_samples, which the
+check of §7.4 uses too.
 """
 
 import bisect
@@ -111,6 +112,19 @@ class _Window:
     bases: str
 
 
+def check_same_samples(vcf_a: Path, vcf_b: Path) -> tuple[str, ...]:
+    """The samples two VCF files name, in order; ValueError when the headers name different
+    ones."""
+    samples = parse_vcf_samples(vcf_a)
+    samples_b = parse_vcf_samples(vcf_b)
+    if samples_b != samples:
+        raise ValueError(
+            f"{vcf_a} has the samples {', '.join(samples)}"
+            f" and {vcf_b} the samples {', '.join(samples_b)}"
+        )
+    return samples
+
+
 def check_same_haplotypes(
     vcf_a: Path, vcf_b: Path, reference: IndexedFasta, *, ploidy: int = DEFAULT_PLOIDY
 ) -> HaplotypeComparison:
@@ -124,13 +138,7 @@ def check_same_haplotypes(
     1-based and inclusive, the sample and what each file gives there; and ValueError when the
     two headers name different samples.
     """
-    samples = parse_vcf_samples(vcf_a)
-    samples_b = parse_vcf_samples(vcf_b)
-    if samples_b != samples:
-        raise ValueError(
-            f"{vcf_a} has the samples {', '.join(samples)}"
-            f" and {vcf_b} the samples {', '.join(samples_b)}"
-        )
+    samples = check_same_samples(vcf_a, vcf_b)
     records_a = _read_records_by_contig(vcf_a, reference, ploidy)
     records_b = _read_records_by_contig(vcf_b, reference, ploidy)
     num_windows = num_linked_pairs = num_over_cap = 0

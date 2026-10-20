@@ -14,6 +14,8 @@ import itertools
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
+from tests.haplotype_oracle import check_same_samples
+
 from pvc_eval.evaluate import make_outcome_rows
 from pvc_eval.fasta import IndexedFasta
 from pvc_eval.kind import locus_kind
@@ -22,7 +24,7 @@ from pvc_eval.outcome import InvalidReason, LocusGenotype, Outcome, OutcomeRow
 from pvc_eval.reconcile import TOO_COMPLEX, ReconciledLocus, SampleResult, reconcile_loci
 from pvc_eval.samples import SamplePair
 from pvc_eval.segments import GenomeSegment, read_str_regions, segment_contig
-from pvc_eval.vcf import DEFAULT_PLOIDY, MISSING, parse_vcf, parse_vcf_samples
+from pvc_eval.vcf import DEFAULT_PLOIDY, MISSING, parse_vcf
 
 _MAX_LISTED = 10  # the genotypes a message lists of each file, so that it stays readable
 
@@ -106,13 +108,7 @@ def _make_checked_rows(
 def _make_sample_pairs(vcf_a: Path, vcf_b: Path) -> tuple[SamplePair, ...]:
     """Each sample paired with itself; ValueError when the headers name different samples,
     or none."""
-    samples = parse_vcf_samples(vcf_a)
-    samples_b = parse_vcf_samples(vcf_b)
-    if samples_b != samples:
-        raise ValueError(
-            f"{vcf_a} has the samples {', '.join(samples)}"
-            f" and {vcf_b} the samples {', '.join(samples_b)}"
-        )
+    samples = check_same_samples(vcf_a, vcf_b)
     if not samples:
         raise ValueError(f"{vcf_a} names no sample, so the check would compare nothing")
     return tuple(
