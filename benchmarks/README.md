@@ -208,3 +208,98 @@ above. Its peak RSS was the same.
 
 Python with `pvc_eval.vcf` imported and nothing read takes 27.4 MB of RSS. tracemalloc
 traced a peak of 3.6 MiB on the small input at the default limit.
+
+## The STR finder: segment_contig and str-regions
+
+The workload is `pvc_eval str-regions` at its default parameters, which runs
+`segment_contig` (`src/pvc_eval/segments.py`) over every contig of a FASTA and writes the
+STR regions as a BED (`doc/specs/str_finder.md`). The finder's cost per contig is not
+linear in the contig's length (absorption, step 7, compares features with satellites), so
+the inputs are contiguous stretches of one chromosome, each written as a FASTA of one
+contig.
+
+### The inputs
+
+`make_str_slices.py` writes stretches of a reference as the contigs of a new FASTA, with
+its `.fai`. The reference is GRCh38, the analysis set without alts, which pvc's
+repository keeps:
+
+    REF=/Users/jose/devel/pop_var_caller/benchmarks/giab/ref_genome_GRCh38/GCA_000001405.15_GRCh38_no_alt_plus_hs38d1_analysis_set.fna
+    uv run python benchmarks/make_str_slices.py $REF benchmarks/data/chr1_10mb_4mb.fa chr1:10000000-14000000
+
+START and END are 0-based and half-open. The inputs, all from chr1:10,000,000 so that each
+holds the shorter ones:
+
+| input | stretch | made with |
+|---|---|---|
+| 1 Mb | chr1:10,000,000-11,000,000 | `benchmarks/data/chr1_10mb_1mb.fa chr1:10000000-11000000` |
+| 4 Mb | chr1:10,000,000-14,000,000 | `benchmarks/data/chr1_10mb_4mb.fa chr1:10000000-14000000` |
+| 16 Mb | chr1:10,000,000-26,000,000 | `benchmarks/data/chr1_10mb_16mb.fa chr1:10000000-26000000` |
+| 64 Mb | chr1:10,000,000-74,000,000 | `benchmarks/data/chr1_10mb_64mb.fa chr1:10000000-74000000` |
+| chr1 | all of it, 248,956,422 bases | `benchmarks/data/chr1.fa chr1:0-248956422` |
+
+The 4 Mb input runs in about a second and is for profiles and quick experiments; the 16 Mb
+one is the second size every experiment is timed on; the 64 Mb one shows absorption, whose
+share grows with the contig. The 64 Mb stretch has the features and satellites per Mb of
+non-N sequence of chr1 as a whole (7,415 and 6.9 against 7,655 and 6.4, counted on pvc's
+typing of chr1 at pvc_eval's copy floors), so it forecasts chr1.
+
+### The output to compare
+
+Two outputs, and an experiment must give both unchanged:
+
+- the BED, kept from the baseline in `benchmarks/data/base/` and compared with `cmp`;
+- a sha256 of every segment `segment_contig` gives, generic regions included, which the
+  BED leaves out: `uv run --no-sync python benchmarks/digest_str_finder.py FASTA`.
+
+| input | BED sha256, first 16 | segments and their sha256 |
+|---|---|---|
+| 4 Mb | f09730714d563fae | 45471 5a25b862d92e4870e630ee36f3aa6ebe7b29b1fc7b5571d9ade7675f09793f60 |
+| 16 Mb | da81d122c1a7fbdd | 176155 008fc60674f0436839cb55969bbd13d0525107c4c88cae199a394aceb65a35e5 |
+| 64 Mb | 1aec49c7ffdc87a2 | 748227 aa2061319c7b87f6e6e9c76871c857e6bd12f761e15f79d602b958fa95205a54 |
+
+The whole of chr1 is checked against pvc instead: `pvc dev type-regions --min-copies
+5,5,4,4,4,3`, at pvc_eval's floors, built at bbcc9f4 as `tests/test_whole_port.py` says,
+gives the same 1,417,043 STR regions, row for row.
+
+### Measuring
+
+The cores of this machine change speed during a run (two levels 5% apart within one
+hyperfine call on the 4 Mb input), so a candidate is timed against its baseline in
+alternating pairs, from two worktrees, and judged by the median of the ratios:
+
+    bash benchmarks/paired.sh BASE_WORKTREE CANDIDATE_WORKTREE benchmarks/data/chr1_10mb_4mb.fa 10
+
+where `paired.sh` runs `uv run --no-sync --project <worktree> pvc_eval str-regions` from
+each worktree in turn under `/usr/bin/time -l` and prints both sides' means, the median
+ratio and the median peak RSS. It writes the two outputs of the last pair to
+`.profiles/paired/` and compares them. The same code against itself gave a median ratio of 1.0017 over 10
+pairs on 4 Mb and 0.9954 over 5 pairs on 16 Mb, so a gain is claimed beyond 3% on 4 Mb and
+2% on 16 Mb.
+
+The evidence:
+
+- `stages_str_finder.py FASTA`: the time of each step of the finder on each contig, with the
+  counts that drive it (candidates, features, satellites, absorption calls).
+- `peak_str_regions.py --reference FASTA --output BED`: tracemalloc's peak and the lines that
+  held it. One frame; with ten, the 16 Mb input ran for more than 13 minutes.
+- `run_str_regions.py`: the command as a script, for cProfile and for the Tachyon captures,
+  since pvc_eval has no `__main__`.
+
+Tachyon's tables count samples, and the sampler drops about half of its attempts while
+step 1 runs and almost none during step 7, so a share read from the count of samples
+overstates step 7 1.6 to 1.7 times. Read the shares of the steps from `stages_str_finder.py`.
+
+### The numbers of each review
+
+The first review is `doc/reports/perf-str-finder.md`, 20 October 2026, on an Apple M5 Pro
+with CPython 3.15.0 free-threaded:
+
+| input | baseline, fcd71eb | after the review, c31b3b0 |
+|---|---|---|
+| 4 Mb | 5.669 s, 57.1 MB | 1.234 s, 53.3 MB |
+| 16 Mb | 23.836 s, 128.7 MB | 4.964 s, 122.8 MB |
+| 64 Mb | 104.905 s, 393.5 MB | 20.230 s, 334.3 MB |
+| chr1 | forecast 10 to 12 minutes, 1.4 GB | 76.9 s, 1,154.9 MB |
+
+measured in alternating pairs (10, 5 and 2) between 17:18 and 17:26, and chr1 once at 17:27.

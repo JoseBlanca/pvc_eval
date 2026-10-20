@@ -16,6 +16,7 @@ from hypothesis import strategies as st
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
 from pvc_eval.segments import (
+    _CANONICAL,
     GenomeSegment,
     RegionType,
     StrFinderParameters,
@@ -36,9 +37,11 @@ from pvc_eval.segments import (
     _is_in_cluster,
     _make_bundle_member,
     _make_clusters,
+    _make_comparisons,
     _make_grown_satellites,
     _make_repeat_runs,
     _make_runs,
+    _make_satellites_absorbing,
     _Rejection,
     _Segment,
     _StrSegment,
@@ -181,11 +184,22 @@ def _find_like_pvc(bases: str, min_period: int, max_period: int) -> list[_Candid
 
 
 def _find_rt_subsequences(scores: list[int], block_length: int) -> list[tuple[int, int, int]]:
-    """pvc's rt_segments (tandem_repeat.rs 1208), the scores fed in blocks of block_length."""
-    blocks = [scores[i : i + block_length] for i in range(0, len(scores), block_length)]
+    """pvc's rt_segments (tandem_repeat.rs 1208), the scores fed in blocks of block_length.
+    The scores take two values, the match reward and minus the mismatch penalty, given as
+    comparisons, 0 for a match; a scan_min_copies of 1 keeps every subsequence."""
+    reward = max((score for score in scores if score > 0), default=1)
+    penalty = -min((score for score in scores if score < 0), default=-1)
+    assert set(scores) <= {reward, -penalty}, scores
+    parameters = StrFinderParameters(
+        match_reward=reward, mismatch_penalty=penalty, scan_min_copies=1
+    )
+    comparisons = [
+        bytes(0 if score > 0 else 1 for score in scores[i : i + block_length])
+        for i in range(0, len(scores), block_length)
+    ]
     subsequences = [
         subsequence
-        for found, _ in _find_maximal_scoring_subsequences(iter(blocks))
+        for found, _ in _find_maximal_scoring_subsequences(iter(comparisons), 1, parameters)
         for subsequence in found
     ]
     return sorted(subsequences)
@@ -282,11 +296,13 @@ _CRAFTED_SCORES = [
     [2, 2, 2, 2],
     [2, -7, 2],  # two singletons: the interruption is too costly to bridge
     [2, -3, 2],  # one merged subsequence: the dip is bridged
-    [5, -10, 8],  # dip below the left L: two subsequences
-    [5, -3, 8],  # dip stays above: one subsequence
+    # pvc's [5, -10, 8], [5, -3, 8] and [1, 1, 1, -2, 1, 1, 1, -10, 5, 5], each score of 5
+    # or 8 as that many scores of 1, and pvc's -10 as five scores of -2 in the third.
+    [1] * 5 + [-10] + [1] * 8,  # dip below the left L: two subsequences
+    [1] * 5 + [-3] + [1] * 8,  # dip stays above: one subsequence
     [2, 2, -7, 2, 2],
     [-7, 2, 2, -7, 2, -7, 2, 2, -7],
-    [1, 1, 1, -2, 1, 1, 1, -10, 5, 5],
+    [1, 1, 1, -2, 1, 1, 1] + [-2] * 5 + [1] * 10,
 ]
 
 
@@ -312,6 +328,30 @@ def test_ruzzo_tompa_matches_brute_force_on_pseudo_random() -> None:
         expected = _find_brute_subsequences(scores)
         assert _find_rt_subsequences(scores, block_length=max(length, 1)) == expected, scores
         assert _find_rt_subsequences(scores, block_length=7) == expected, scores
+
+
+# Compared by hand: score k compares the base at k + period with the base at k, a match True.
+_COMPARISON_CASES = [
+    # A=A, then N against A, N against N twice, A against N, then A=A.
+    ("n_never_matches_n", "AANNNAA", 1, 100, [[True, False, False, False, False, True]]),
+    # Blocks of 4 bases end after base 3 and base 7: the scores 0 to 2, then 3 to 6.
+    ("a_block_end_cuts_a_run_of_matches", "AAAAAAAA", 1, 4, [[True] * 3, [True] * 4]),
+    # c=C, a=A, C=c, then T against a.
+    ("lower_case_matches_upper_case", "CAcaCT", 2, 100, [[True, True, True, False]]),
+]
+
+
+@pytest.mark.parametrize(
+    ("bases", "period", "block_bases", "expected"),
+    [case[1:] for case in _COMPARISON_CASES],
+    ids=[case[0] for case in _COMPARISON_CASES],
+)
+def test_the_comparisons_are_zero_for_a_match_and_cut_at_the_blocks(
+    bases: str, period: int, block_bases: int, expected: list[list[bool]]
+) -> None:
+    canonical = bases.encode("ascii").translate(_CANONICAL)
+    got = _make_comparisons(canonical, period, block_bases)
+    assert [[compared == 0 for compared in block] for block in got] == expected
 
 
 def test_finds_a_clean_perfect_tract() -> None:
@@ -619,6 +659,97 @@ def test_the_candidates_come_by_period_then_start() -> None:
     keys = [(candidate.period, candidate.start) for candidate in got]
     assert keys == sorted(keys)
     assert {candidate.period for candidate in got} == {1, 2, 3, 4, 5, 6}
+
+
+def _find_rt_by_score(scores: list[int]) -> list[tuple[int, int, int]]:
+    """The maximal scoring subsequences of scores, one score at a time, as Ruzzo and Tompa's
+    paper gives the algorithm: (start, end, score), `[start, end)` the indices of the scores."""
+    found: list[tuple[int, int, int, int]] = []  # start, end, total before, total after
+    total = 0
+    for index, score in enumerate(scores):
+        before, total = total, total + score
+        if score <= 0:
+            continue
+        start = index
+        while True:
+            lower = [j for j, (_, _, other_before, _) in enumerate(found) if other_before < before]
+            if not lower or found[lower[-1]][3] >= total:
+                break
+            start, _, before, _ = found[lower[-1]]
+            del found[lower[-1] :]
+        found.append((start, index + 1, before, total))
+    return [(start, end, after - before) for start, end, before, after in found]
+
+
+def _find_candidates_by_score(
+    bases: str, parameters: StrFinderParameters
+) -> list[tuple[int, int, int, int]]:
+    """Step 1 and step 3 of doc/specs/str_finder.md one score at a time: the candidates as
+    (start, end, period, score), by period and then start."""
+    letters = [base.upper() if base in "ACGTacgt" else None for base in bases]
+    reward, penalty = parameters.match_reward, parameters.mismatch_penalty
+    kept: list[tuple[int, int, int, int]] = []
+    for period in range(parameters.scan_min_period, parameters.scan_max_period + 1):
+        if period >= len(bases):
+            continue
+        scores = [
+            reward if letters[j] is not None and letters[j] == letters[j - period] else -penalty
+            for j in range(period, len(bases))
+        ]
+        for start, end, score in _find_rt_by_score(scores):
+            motif = "".join(letter or "N" for letter in letters[start : start + period])
+            primitive = all(
+                motif != motif[:shorter] * (period // shorter)
+                for shorter in range(1, period)
+                if period % shorter == 0
+            )
+            if (end + period - start) // period >= parameters.scan_min_copies and primitive:
+                kept.append((start, end + period, period, score))
+    survivors: list[tuple[int, int, int, int]] = []
+    for start, end, period, score in kept:
+        if not any(
+            other_period < period
+            and period % other_period == 0
+            and 2 * (min(end, other_end) - max(start, other_start)) >= end - start
+            for other_start, other_end, other_period, _ in survivors
+        ):
+            survivors.append((start, end, period, score))
+    floors = parameters.copy_floors
+    return [c for c in survivors if (c[1] - c[0]) // c[2] >= floors[c[2] - 1]]
+
+
+@settings(max_examples=500, deadline=None)
+@given(
+    bases=st.text(alphabet="ACGTNacgt", max_size=200)
+    | st.text(alphabet="ACGT", max_size=200)
+    | st.text(alphabet="AC", max_size=200),
+    periods=st.tuples(st.integers(1, 6), st.integers(1, 6)).map(sorted),
+    reward=st.integers(1, 10),
+    penalty=st.integers(1, 20),
+    scan_min_copies=st.integers(1, 8),
+    floors=st.tuples(*[st.integers(min_value=0, max_value=6)] * 6),
+    block_bases=st.integers(min_value=1, max_value=40),
+)
+def test_step_one_gives_the_candidates_of_one_score_at_a_time(
+    bases: str,
+    periods: list[int],
+    reward: int,
+    penalty: int,
+    scan_min_copies: int,
+    floors: tuple[int, int, int, int, int, int],
+    block_bases: int,
+) -> None:
+    parameters = StrFinderParameters(
+        scan_min_period=periods[0],
+        scan_max_period=periods[1],
+        match_reward=reward,
+        mismatch_penalty=penalty,
+        scan_min_copies=scan_min_copies,
+        copy_floors=floors,
+    )
+    got = _find_candidates(bases, parameters, block_bases=block_bases)
+    found = [(c.start, c.end, c.period, c.score) for c in got]
+    assert found == _find_candidates_by_score(bases, parameters)
 
 
 @pytest.mark.slow
@@ -1415,7 +1546,7 @@ def _check_partition(segments: Sequence[_Segment], length: int) -> None:
 
 def _partition(bases: str, parameters: StrFinderParameters) -> list[_Segment]:
     """pvc's partition_resident followed by assert_partitions."""
-    segments = _find_segments(bases, parameters)
+    segments = list(_find_segments(bases, parameters))
     _check_partition(segments, len(bases))
     return segments
 
@@ -1589,7 +1720,7 @@ def test_a_tract_at_position_one_is_generic_and_the_partition_still_starts_at_on
 
 
 def test_an_empty_contig_has_no_regions() -> None:
-    assert _find_segments("", _PVC_DEFAULT_CONFIG) == []
+    assert list(_find_segments("", _PVC_DEFAULT_CONFIG)) == []
 
 
 def _make_contig_with_at_repeats(offsets: Iterable[int], length: int) -> str:
@@ -1983,6 +2114,95 @@ def test_absorption_merges_satellites_that_a_feature_reaches_on_both_sides() -> 
     )
     assert satellites == [(0, 300)]
     assert members == []
+
+
+_FOUR_SATELLITES = [(0, 50), (100, 200), (300, 400), (500, 600)]
+_TWO_CLOSE_SATELLITES = [(0, 50), (100, 200), (230, 330), (500, 600)]
+
+
+@pytest.mark.parametrize(
+    ("satellites", "member", "expected"),
+    [
+        (_FOUR_SATELLITES, (276, 286), [(0, 50), (100, 200), (276, 400), (500, 600)]),
+        (_FOUR_SATELLITES, (275, 285), _FOUR_SATELLITES),
+        (_FOUR_SATELLITES, (414, 424), [(0, 50), (100, 200), (300, 424), (500, 600)]),
+        (_FOUR_SATELLITES, (415, 425), _FOUR_SATELLITES),
+        (_FOUR_SATELLITES[1:], (76, 86), [(76, 200), (300, 400), (500, 600)]),
+        (_FOUR_SATELLITES[1:], (75, 85), _FOUR_SATELLITES[1:]),
+        (_FOUR_SATELLITES, (614, 620), [(0, 50), (100, 200), (300, 400), (500, 620)]),
+        (_FOUR_SATELLITES, (615, 620), _FOUR_SATELLITES),
+        (_TWO_CLOSE_SATELLITES, (214, 216), [(0, 50), (100, 330), (500, 600)]),
+        (_TWO_CLOSE_SATELLITES, (215, 216), [(0, 50), (100, 200), (215, 330), (500, 600)]),
+        (_TWO_CLOSE_SATELLITES, (214, 215), [(0, 50), (100, 215), (230, 330), (500, 600)]),
+    ],
+    ids=[
+        "before-inner-14",
+        "before-inner-15",
+        "after-inner-14",
+        "after-inner-15",
+        "before-first-14",
+        "before-first-15",
+        "after-last-14",
+        "after-last-15",
+        "between-14-and-14-reaches-both",
+        "between-15-and-14-reaches-right",
+        "between-14-and-15-reaches-left",
+    ],
+)
+def test_among_several_satellites_a_feature_grows_only_those_at_fewer_than_the_bundle_distance(
+    satellites: list[tuple[int, int]], member: tuple[int, int], expected: list[tuple[int, int]]
+) -> None:
+    # The bundle distance is 15: a gap of 14 bases between the member and a satellite is
+    # absorbed, one of 15 is not. doc/specs/str_finder.md step 7, worked by hand.
+    candidate = _make_candidate(*member, 2, 1)
+    grown, members, _ = _make_grown_satellites(satellites, [candidate], [], 15)
+    assert grown == expected
+    assert members == ([] if expected != satellites else [candidate])
+
+
+@st.composite
+def _make_satellites_and_span(
+    draw: st.DrawFn,
+) -> tuple[list[tuple[int, int]], tuple[int, int], int]:
+    """Satellites sorted, disjoint and not abutting, a span, and a bundle distance."""
+    satellites = []
+    position = draw(st.integers(min_value=0, max_value=30))
+    for _ in range(draw(st.integers(min_value=0, max_value=8))):
+        length = draw(st.integers(min_value=1, max_value=30))
+        satellites.append((position, position + length))
+        position += length + draw(st.integers(min_value=1, max_value=30))
+    start = draw(st.integers(min_value=0, max_value=position + 30))
+    span = (start, start + draw(st.integers(min_value=1, max_value=30)))
+    return satellites, span, draw(st.integers(min_value=0, max_value=20))
+
+
+@settings(max_examples=2000, deadline=None)
+@given(case=_make_satellites_and_span())
+def test_the_satellites_a_span_reaches_are_those_a_scan_of_every_satellite_finds(
+    case: tuple[list[tuple[int, int]], tuple[int, int], int],
+) -> None:
+    # The oracle is step 7's rule written as a scan of every satellite, then the merge of
+    # those that overlap or abut, which a bundle distance of 0 can leave.
+    satellites, (start, end), distance = case
+    reached = [
+        (satellite_start, satellite_end)
+        for satellite_start, satellite_end in satellites
+        if start - satellite_end < distance and satellite_start - end < distance
+    ]
+    got = _make_satellites_absorbing(satellites, (start, end), distance)
+    if not reached:
+        assert got is None
+        return
+    grown = (min(start, reached[0][0]), max(end, reached[-1][1]))
+    expected: list[tuple[int, int]] = []
+    for satellite_start, satellite_end in sorted(
+        [*(satellite for satellite in satellites if satellite not in reached), grown]
+    ):
+        if expected and satellite_start <= expected[-1][1]:
+            expected[-1] = (expected[-1][0], max(expected[-1][1], satellite_end))
+        else:
+            expected.append((satellite_start, satellite_end))
+    assert got == expected
 
 
 def _write_fasta(directory: Path, contigs: dict[str, str]) -> Path:
