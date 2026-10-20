@@ -449,34 +449,46 @@ def test_records_are_sorted_by_the_contigs_of_the_input(
     ]
 
 
-# §2.3, a new phase set: M + n, M the largest whole-number PS of the input, kept and skipped
-# records included, and n the record's place among the record lines.
+# §2.3, a new phase set: the n-th whole number, from 1, that is not the PS of a record of the
+# input, compared as text, kept and skipped records included, n being the record's place
+# among the record lines.
 @pytest.mark.parametrize(
     ("case_lines", "expected"),
     [
         pytest.param(
-            ["2 A T 0|1:7", "5 T G 0/1"], ["2 A T 0|1:7", "5 T G 0|1:9"], id="after-a-ps-of-7"
+            ["2 A T 0|1:7", "5 T G 0/1"], ["2 A T 0|1:7", "5 T G 0|1:2"], id="below-a-ps-of-7"
         ),
         pytest.param(
-            ["2 A T 0|1:7", "4 G <DEL> 0|1:30", "6 A C 0/1"],
-            ["2 A T 0|1:7", "4 G <DEL> 0|1:30", "6 A C 0|1:33"],
-            id="after-the-ps-of-a-skipped-record",
+            ["2 A T 0|1:2", "4 G C 0|1:3", "6 A C 0/1"],
+            ["2 A T 0|1:2", "4 G C 0|1:3", "6 A C 0|1:5"],
+            id="the-numbers-the-input-uses-are-skipped",
+        ),
+        pytest.param(
+            ["2 A T 0|1:1", "4 G <DEL> 0|1:3", "6 A C 0/1"],
+            ["2 A T 0|1:1", "4 G <DEL> 0|1:3", "6 A C 0|1:5"],
+            id="the-ps-of-a-skipped-record-is-skipped",
+        ),
+        # 01 is not the text of 1, which is free.
+        pytest.param(
+            ["2 A T 0|1:01", "5 T G 0/1"],
+            ["2 A T 0|1:01", "5 T G 0|1:2"],
+            id="a-ps-with-a-leading-zero-takes-no-number",
         ),
         pytest.param(
             ["2 A T 0|1:chr1_5", "5 T G 0/1"],
             ["2 A T 0|1:chr1_5", "5 T G 0|1:2"],
-            id="a-ps-that-is-no-number-counts-as-none",
+            id="a-ps-that-is-no-number-takes-none",
         ),
-        # Python turns at most 4,300 digits into a number.
+        # Python turns at most 4,300 digits into a number, and no new phase set is that long.
+        pytest.param(
+            ["2 A T 0|1:" + "9" * 4300, "5 T G 0/1"],
+            ["2 A T 0|1:" + "9" * 4300, "5 T G 0|1:2"],
+            id="a-ps-of-4300-nines",
+        ),
         pytest.param(
             ["2 A T 0|1:" + "1" * 4301, "5 T G 0/1"],
             ["2 A T 0|1:" + "1" * 4301, "5 T G 0|1:2"],
-            id="a-ps-of-4301-digits-counts-as-none",
-        ),
-        pytest.param(
-            ["2 A T 0|1:" + "0" * 10 + "1" * 4300, "5 T G 0/1"],
-            ["2 A T 0|1:" + "0" * 10 + "1" * 4300, "5 T G 0|1:" + "1" * 4299 + "3"],
-            id="a-ps-of-4300-digits-after-leading-zeros-counts",
+            id="a-ps-of-4301-digits",
         ),
     ],
 )
@@ -522,16 +534,10 @@ def test_a_new_phase_set_is_one_no_record_of_the_input_uses(
         ),
         # bcftools 1.24 keeps a PS of 2,147,483,647 in an Integer and sets one more to missing.
         pytest.param(
-            ["2 A T 0|1:2147483645", "5 T G 0/1"],
+            ["2 A T 0|1:2147483647", "5 T G 0/1"],
             [FILEFORMAT_LINE],
             [FILEFORMAT_LINE, _GT_STRING, _PS_INTEGER],
-            id="added-when-the-new-phase-set-is-2147483647",
-        ),
-        pytest.param(
-            ["2 A T 0|1:2147483646", "5 T G 0/1"],
-            [FILEFORMAT_LINE],
-            [FILEFORMAT_LINE, _GT_STRING],
-            id="not-added-when-the-new-phase-set-is-2147483648",
+            id="added-when-a-ps-of-the-input-is-2147483647",
         ),
         pytest.param(
             ["2 A T 0|1:2147483648", "4 G <DEL> 0/1"],
@@ -552,6 +558,59 @@ def test_the_header_gains_the_gt_and_ps_lines_a_rewritten_record_needs(
     vcf = _write_vcf(tmp_path / "a.vcf", case_lines, header_lines=header_lines)
     respell_by_decomposing(vcf, reference, tmp_path / "b.vcf")
     assert read_header(tmp_path / "b.vcf") == [*expected_header, make_chrom_line(1)]
+
+
+# §2.3: a PS of the input near bcftools' 32-bit limit, declared Integer, and one of 4,300
+# digits; each re-spelling that writes a new phase set writes a small one beside them. On
+# reference GACGTANNCAGTC, the deletion at 9 is the record's second line and the record
+# under it the third.
+_LARGE_PHASE_SETS = [
+    pytest.param("2147483647", [FILEFORMAT_LINE, _PS_INTEGER], id="2147483647-declared-integer"),
+    pytest.param("9" * 4300, [FILEFORMAT_LINE], id="4300-nines"),
+]
+_LARGE_PHASE_SET_RESPELLINGS = [
+    pytest.param("decomposition", ["9 CAGT C 0|1:2", "11 G A 0|0:3"], id="decomposition"),
+    pytest.param(
+        "spanning deletions", ["9 CAGT C 0|1:2", "11 G A,* 0|2:2"], id="spanning-deletions"
+    ),
+]
+
+
+def _respell_large_phase_set(
+    case_files: CaseFiles,
+    tmp_path: Path,
+    respelling_name: str,
+    phase_set: str,
+    header_lines: Sequence[str],
+) -> tuple[Path, Path]:
+    reference = case_files.write_reference(1, "GACGTANNCAGTC")
+    vcf = _write_vcf(
+        tmp_path / "a.vcf",
+        [f"2 A T 0|1:{phase_set}", "9 CAGT C 0/1", "11 G A 0/0"],
+        header_lines=header_lines,
+    )
+    respelling = next(
+        respelling for respelling in RESPELLINGS if respelling.name == respelling_name
+    )
+    output = tmp_path / "b.vcf"
+    respelling.respell(vcf, reference, output, 2, None)
+    return vcf, output
+
+
+@pytest.mark.parametrize(("respelling_name", "expected"), _LARGE_PHASE_SET_RESPELLINGS)
+@pytest.mark.parametrize(("phase_set", "header_lines"), _LARGE_PHASE_SETS)
+def test_a_new_phase_set_beside_a_large_ps_of_the_input_is_small(
+    case_files: CaseFiles,
+    tmp_path: Path,
+    respelling_name: str,
+    expected: Sequence[str],
+    phase_set: str,
+    header_lines: Sequence[str],
+) -> None:
+    _, output = _respell_large_phase_set(
+        case_files, tmp_path, respelling_name, phase_set, header_lines
+    )
+    assert read_case_lines(output) == [f"2 A T 0|1:{phase_set}", *expected]
 
 
 def test_kept_records_are_written_byte_for_byte_and_rewritten_ones_with_their_columns(
@@ -1455,3 +1514,21 @@ def test_bcftools_reads_the_respelling_of_a_generated_file_as_its_input(
     check_generated_respellings(
         respelling, check, tmp_path_factory, max_examples=_BCFTOOLS_EXAMPLES
     )
+
+
+@_needs_bcftools
+@pytest.mark.parametrize(("respelling_name", "expected"), _LARGE_PHASE_SET_RESPELLINGS)
+@pytest.mark.parametrize(("phase_set", "header_lines"), _LARGE_PHASE_SETS)
+def test_bcftools_reads_a_new_phase_set_beside_a_large_ps_as_the_input(
+    case_files: CaseFiles,
+    tmp_path: Path,
+    respelling_name: str,
+    expected: Sequence[str],
+    phase_set: str,
+    header_lines: Sequence[str],
+) -> None:
+    del expected  # the records are the other test's
+    vcf, output = _respell_large_phase_set(
+        case_files, tmp_path, respelling_name, phase_set, header_lines
+    )
+    _check_bcftools_reads_as_input(vcf, output)

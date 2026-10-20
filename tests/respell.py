@@ -85,7 +85,8 @@ class _InputRecord:
 class _RespellingInput:
     """The input of a re-spelling, read as lines and as records (§2.1).
 
-    max_phase_set: the largest PS of the input that is a whole number, 0 when there is none.
+    taken_phase_set_numbers: the whole numbers, sorted, whose text is a PS of the input, of
+        those a new phase set can reach (_make_new_phase_set).
     are_phase_sets_integer: every PS of the input is a whole number of at most
         _MAX_INTEGER_PHASE_SET, so that the PS line can declare it Integer.
     """
@@ -93,7 +94,7 @@ class _RespellingInput:
     header_lines: tuple[str, ...]
     input_records: tuple[_InputRecord, ...]
     is_gzipped: bool
-    max_phase_set: int
+    taken_phase_set_numbers: tuple[int, ...]
     are_phase_sets_integer: bool
 
 
@@ -164,7 +165,7 @@ def respell_by_decomposing(
         ):
             output_records.append(_make_kept_record(input_record))
             continue
-        new_phase_set = str(respelling_input.max_phase_set + input_record.place)
+        new_phase_set = _make_new_phase_set(respelling_input, input_record.place)
         output_records.extend(
             _make_piece_record(input_record, piece, allele_indices, new_phase_set)
             for piece, allele_indices in pieces.items()
@@ -263,9 +264,7 @@ def respell_with_spanning_deletions(
             reference,
         )
     }
-    rewrites = _find_spanning_deletion_rewrites(
-        record_index, rewritable_places, respelling_input.max_phase_set
-    )
+    rewrites = _find_spanning_deletion_rewrites(record_index, rewritable_places, respelling_input)
     output_records = []
     for input_record in respelling_input.input_records:
         place = input_record.place
@@ -325,14 +324,13 @@ def _parse_input(vcf: Path, reference: IndexedFasta, ploidy: int) -> _Respelling
                 )
             )
     assert not records_by_line, "every record of parse_vcf is on a line read"
-    whole_phase_sets = [
-        number for number in map(_parse_phase_set_number, phase_sets) if number is not None
-    ]
     return _RespellingInput(
         header_lines=tuple(header_lines),
         input_records=tuple(input_records),
         is_gzipped=is_gzipped,
-        max_phase_set=max(whole_phase_sets, default=0),
+        taken_phase_set_numbers=_find_taken_phase_set_numbers(
+            phase_sets, len(input_records) + len(phase_sets)
+        ),
         are_phase_sets_integer=all(map(_is_integer_phase_set, phase_sets)),
     )
 
@@ -378,6 +376,38 @@ def _find_phase_sets(fields: Sequence[str]) -> Iterator[str]:
         values = sample_field.split(":")
         if ps_index < len(values) and values[ps_index] != ".":
             yield values[ps_index]
+
+
+def _find_taken_phase_set_numbers(phase_sets: Iterable[str], largest: int) -> tuple[int, ...]:
+    """The whole numbers from 1 to largest whose text, as parse_vcf compares it, is one of
+    phase_sets, sorted: `7` takes 7, and `007` takes none. Text longer than largest's takes
+    none a new phase set can reach, and is not turned into a number."""
+    max_digits = len(str(largest))
+    return tuple(
+        sorted(
+            int(phase_set)
+            for phase_set in phase_sets
+            if phase_set.isascii()
+            and phase_set.isdecimal()
+            and not phase_set.startswith("0")
+            and len(phase_set) <= max_digits
+            and int(phase_set) <= largest
+        )
+    )
+
+
+def _make_new_phase_set(respelling_input: _RespellingInput, place: int) -> str:
+    """The new phase set of the record at place among the input's record lines, from 1: the
+    place-th whole number, from 1, that no PS of the input takes (§2.3). It is at most the
+    number of record lines plus that of distinct PS values, which _RespellingInput's taken
+    numbers reach."""
+    taken = respelling_input.taken_phase_set_numbers
+    # The place-th free number x is the least with x minus the taken numbers up to x equal
+    # to place; counting up from place reaches it.
+    number = place
+    while (next_number := place + bisect.bisect_right(taken, number)) != number:
+        number = next_number
+    return str(number)
 
 
 def _parse_phase_set_number(phase_set: str) -> int | None:
@@ -904,10 +934,10 @@ class _SpanningDeletionRewrites:
 
 
 def _find_spanning_deletion_rewrites(
-    record_index: _RecordIndex, rewritable_places: set[int], max_phase_set: int
+    record_index: _RecordIndex, rewritable_places: set[int], respelling_input: _RespellingInput
 ) -> _SpanningDeletionRewrites:
     """The `*` each record of rewritable_places gets for each sample (§5), and the
-    unphased deletions an all-REF record joins, phased in their new phase sets, M + n."""
+    unphased deletions an all-REF record joins, phased in their new phase sets."""
     rewrites = _SpanningDeletionRewrites(sample_fields={}, star_places=set())
     for place in sorted(rewritable_places):
         record_edits = record_index.by_place[place]
@@ -922,7 +952,7 @@ def _find_spanning_deletion_rewrites(
                 continue
             phase_set = star.phase_set
             if star.rephased is not None:
-                phase_set = str(max_phase_set + star.rephased.place)
+                phase_set = _make_new_phase_set(respelling_input, star.rephased.place)
                 rephased_genotype = star.rephased.vcf_record.genotypes[sample]
                 assert isinstance(rephased_genotype, VcfGenotype), "it carries the deletion"
                 rephased_field = _format_genotype(
