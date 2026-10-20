@@ -1449,7 +1449,7 @@ def _check_partition(segments: Sequence[_Segment], length: int) -> None:
 
 def _partition(bases: str, parameters: StrFinderParameters) -> list[_Segment]:
     """pvc's partition_resident followed by assert_partitions."""
-    segments = _find_segments(bases, parameters)
+    segments = list(_find_segments(bases, parameters))
     _check_partition(segments, len(bases))
     return segments
 
@@ -1623,7 +1623,7 @@ def test_a_tract_at_position_one_is_generic_and_the_partition_still_starts_at_on
 
 
 def test_an_empty_contig_has_no_regions() -> None:
-    assert _find_segments("", _PVC_DEFAULT_CONFIG) == []
+    assert list(_find_segments("", _PVC_DEFAULT_CONFIG)) == []
 
 
 def _make_contig_with_at_repeats(offsets: Iterable[int], length: int) -> str:

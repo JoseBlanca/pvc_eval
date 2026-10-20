@@ -54,7 +54,7 @@ def main() -> None:
             ]
             features = segments._find_features(candidates, classification, bases, parameters)
             step7 = time.perf_counter()
-            segments._make_segments(features, len(bases))
+            list(segments._make_segments(features, len(bases)))
             step8 = time.perf_counter()
             num_features = len(classification.bundle_members) + len(classification.str_segments)
             num_satellites = sum(

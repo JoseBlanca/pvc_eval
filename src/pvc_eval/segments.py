@@ -795,10 +795,11 @@ def segment_contig(
     )
 
 
-def _find_segments(bases: str, parameters: StrFinderParameters) -> list[_Segment]:
+def _find_segments(bases: str, parameters: StrFinderParameters) -> Iterator[_Segment]:
     """Steps 1 to 8 of doc/specs/str_finder.md over the bases of a whole contig: its
     segments, consecutive from 0 to its length, 0-based and half-open (pvc
-    region_typing/mod.rs, partition_resident_in, over the whole contig)."""
+    region_typing/mod.rs, partition_resident_in, over the whole contig). Steps 1 to 7 run
+    before it returns; step 8 makes the segments as they are read."""
     candidates = list(
         _drop_near_contig_ends(_find_candidates(bases, parameters), bases, parameters)
     )
@@ -940,23 +941,19 @@ def _make_grown_satellites(
             return grown, members_left, str_segments_left
 
 
-def _make_segments(features: Iterable[_Segment], length: int) -> list[_Segment]:
+def _make_segments(features: Iterable[_Segment], length: int) -> Iterator[_Segment]:
     """Step 8 of doc/specs/str_finder.md: the features, sorted by start and not
     overlapping, with one generic region over each stretch between them and before the
     first and after the last, up to the contig's length (pvc region_typing/mod.rs,
     fill_generic_gaps). Positions are 0-based and half-open."""
-    segments: list[_Segment] = []
     covered_to = 0
     for feature in features:
         if feature.start > covered_to:
-            segments.append(
-                _Segment(start=covered_to, end=feature.start, region_type=RegionType.GENERIC)
-            )
-        segments.append(feature)
+            yield _Segment(start=covered_to, end=feature.start, region_type=RegionType.GENERIC)
+        yield feature
         covered_to = feature.end
     if covered_to < length:
-        segments.append(_Segment(start=covered_to, end=length, region_type=RegionType.GENERIC))
-    return segments
+        yield _Segment(start=covered_to, end=length, region_type=RegionType.GENERIC)
 
 
 def _find_requested_str_regions(
