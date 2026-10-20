@@ -761,7 +761,7 @@ Nothing about pvc_eval is trusted until these pass.
    being judged as §5.4 makes them: collisions are judged on
    edits as written (§5.4), so where the edits of one haplotype touch, the outcome can follow the
    spelling (decided by the owner on 19 October 2026, over collision rules that do not depend on
-   it). The re-spelling program is part of the tests.
+   it). The re-spelling program is part of the tests; its spec is `doc/specs/respell.md`.
    `bcftools norm` is not one of the re-spellings, since it can change a haplotype (§5.2).
 5. **The hard cases from pvc's STR work:** the VCF records behind the cases recorded in pvc's
    reports (GIAB's split indel-plus-SNP truth records against pvc's single repeat record; GATK's
