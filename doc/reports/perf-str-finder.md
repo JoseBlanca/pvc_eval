@@ -114,6 +114,21 @@ P4 on step 7, P5 and P6 on the peak memory.
   held as plain numbers until the gap after it decides it. The open subsequences built on 4 Mb
   fall from 6.76 million to 113,000. Tried with P1: step 1 2.4 s on 4 Mb. Code: about 15 lines and
   a second path in the loop.
+
+  *Kept, commit 587a4df.* The code adds 35 lines and removes 1: the held run, its type, a helper
+  that puts it on the stack, and a docstring paragraph that states the invariant (a run is held
+  only while the stack is empty) and why it is made final as the stack would make it. No test
+  was added: making a held run final one unit too early failed 6 tests, and not putting it on the
+  stack at a block's end failed 21. Outputs equal on 4, 16 and 64 Mb; 912 tests pass. On 4 Mb,
+  112,962 open subsequences are built instead of 4,598,463, and step 1 takes 2.13 s instead of
+  4.25 s. In alternating pairs against P1:
+
+  | input | P1 | P2 | median ratio | peak RSS |
+  |---|---|---|---|---|
+  | 4 Mb, 10 pairs | 4.479 ± 0.010 s | 2.312 ± 0.006 s | 0.516 | 57.1 → 57.1 MB |
+  | 16 Mb, 5 pairs | 19.156 ± 0.165 s | 10.298 ± 0.097 s | 0.539 | 128.6 → 128.5 MB |
+
+  More complicated, and a gain far over 20%: kept, with the numbers in the docstring.
 - **P3. Step 1: `_OpenSubsequence` without `frozen`.** It is a private working object that never
   leaves the function. The frozen form costs 283 ns per build against 135 ns, and is what stops
   threads from scaling. Measured after P1 and P2, which leave few builds, and at one and eight
