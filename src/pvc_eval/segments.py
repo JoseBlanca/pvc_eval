@@ -191,9 +191,6 @@ class _Candidate:
 # A maximal scoring subsequence: the indices of its scores, `[start, end)`, and its score.
 type _Subsequence = tuple[int, int, int]
 
-# A run of consecutive scores of one sign: their sum and how many they are.
-type _ScoreRun = tuple[int, int]
-
 # A run of positive scores held over an empty stack: the running totals before and after
 # it, and the indices of its scores, `[start, end)`.
 type _HeldRun = tuple[int, int, int, int]
@@ -220,10 +217,11 @@ class _OpenSubsequence:
 
 
 def _find_maximal_scoring_subsequences(
-    score_blocks: Iterator[Iterable[_ScoreRun]],
+    comparisons: Iterator[bytes], period: int, parameters: StrFinderParameters
 ) -> Iterator[tuple[list[_Subsequence], int | None]]:
-    """Find the maximal scoring subsequences of a score sequence (Ruzzo and Tompa, 1999),
-    given as consecutive blocks of runs of scores of one sign, no score 0. pvc
+    """Find the maximal scoring subsequences of one period's scores (Ruzzo and Tompa, 1999),
+    given as consecutive blocks of comparisons: score k is the match reward where byte k of
+    the blocks together is 0, a match, and minus the mismatch penalty elsewhere. pvc
     tandem_repeat.rs, maximal_scoring_subsequences.
 
     A subsequence is (start, end, score), `[start, end)` the indices of its scores in the
@@ -231,51 +229,82 @@ def _find_maximal_scoring_subsequences(
     no later score can change, in order of start, and the index at which the first
     subsequence still open starts, or the next index when none is open: every subsequence
     yielded later starts there or after. After the last block it yields the subsequences
-    left and None.
+    left and None. A subsequence that cannot be a candidate of step 1 may be left out.
 
-    A maximal scoring subsequence never starts or ends inside a run of scores of one sign,
-    since no score is 0: a run of positive scores is taken whole or not at all, and a run
-    of negative ones only lowers the total, which is lowest at the run's end. So the loop
+    A maximal scoring subsequence never starts or ends inside a run of matches or of
+    mismatches, since no score is 0: a run of matches is taken whole or not at all, and a
+    run of mismatches only lowers the total, which is lowest at the run's end. So the loop
     takes one step per run, and gives what one step per score gives.
 
     pvc holds every open subsequence to the end. Here, when the running total falls to or
     under the total before every open subsequence, those are final and are yielded: a later
     subsequence starts from a total that low, so it can never reach back into them.
 
-    A run of positive scores that comes to an empty stack is held as plain numbers, and
-    only while one is held is the stack empty. On the stack it would have no subsequence to
-    reach, so it would be open as it is, with link 0, and the least total before would be
-    its own. So the next run that brings the total to or under its total before makes it
-    final, as the stack would, without an open subsequence being made; any other run, or
-    the end of the block, puts it on the stack as it would have been. On 4 Mb of chr1 this
-    leaves 112,962 open subsequences made instead of 4.6 million, and str-regions takes 2.31 s
+    A run of matches that comes to an empty stack is held as plain numbers, and only while
+    one is held is the stack empty. On the stack it would have no subsequence to reach, so
+    it would be open as it is, with link 0, and the least total before would be its own. So
+    the mismatches that bring the total to or under its total before make it final, as the
+    stack would, without an open subsequence being made; any other mismatches, or the end
+    of the block, put it on the stack as it would have been. On 4 Mb of chr1 this leaves
+    112,962 open subsequences made instead of 4.6 million, and str-regions takes 2.31 s
     instead of 4.48 s (doc/reports/perf-str-finder.md, P2).
+
+    On an empty stack, a run of matches shorter than both (scan_min_copies - 1) * period and
+    mismatch_penalty // match_reward + 1, with a mismatch after it in its block, changes
+    nothing that is a candidate: that one mismatch brings the total to or under the total
+    before the run, which then is final on its own, with the period + its length bases,
+    under scan_min_copies copies, and the stack is empty again. So on an empty stack the
+    loop goes straight to the next run of matches at least that long, or to the run that
+    reaches the block's end, which may go on in the next block. The running total is not
+    kept over what it skips: on an empty stack, what is yielded later depends only on the
+    differences of later totals. On 4 Mb of chr1 the loop takes 1.19 million steps, each a
+    run of mismatches and the run of matches after it, instead of 9.2 million runs, and
+    str-regions takes 1.23 s instead of 2.06 s (doc/reports/perf-str-finder.md, P8).
     """
+    reward = parameters.match_reward
+    penalty = parameters.mismatch_penalty
+    # The fewest matches of a run that is not skipped on an empty stack, as zero bytes.
+    least_run = bytes(min((parameters.scan_min_copies - 1) * period, penalty // reward + 1))
     stack: list[_OpenSubsequence] = []
-    held: _HeldRun | None = None  # a run of positive scores over an empty stack
+    held: _HeldRun | None = None  # a run of matches over an empty stack
     lowest_before = 0  # the least total before any open subsequence, when there is one
     total = 0
-    index = 0
-    for block in score_blocks:
+    block_start = 0  # the index of the block's first score
+    for compared in comparisons:
+        length = len(compared)
+        # Past the block's end the comparisons read as matches, and the mismatches as one
+        # mismatch, so that each search below stops at the end at the latest, and a run of
+        # matches that reaches the end is never skipped.
+        mismatches = compared.translate(_MISMATCHES_AS_ZEROS) + b"\0"
+        compared += least_run + b"\0"
         final: list[_Subsequence] = []
-        for score, length in block:
-            before = total
-            total += score
-            index += length
-            if held is not None and total <= held[0]:  # a positive run never gets here
-                held_before, through, start, end = held
-                final.append((start, end, through - held_before))
+        position = 0  # the block's comparisons before it are taken
+        while position < length:
+            start = compared.find(0, position)
+            total -= penalty * (start - position)
+            if held is not None and total <= held[0]:
+                held_before, through, held_start, held_end = held
+                final.append((held_start, held_end, through - held_before))
                 held = None
-                continue
-            if held is not None:
+            elif held is not None:
                 stack.append(_make_held_open(held))
                 lowest_before = held[0]
                 held = None
-            if score > 0 and not stack:
-                held = (before, total, index - length, index)
-            elif score > 0:
+            elif stack and total <= lowest_before:
+                final.extend(open_one.get_subsequence() for open_one in stack)
+                stack.clear()
+            if not stack:  # and nothing is held
+                start = compared.find(least_run, start)
+            if start == length:
+                break
+            end = mismatches.find(0, start)
+            before = total
+            total += reward * (end - start)
+            if not stack:
+                held = (before, total, block_start + start, block_start + end)
+            else:
                 open_one, staying = _make_open_subsequence(
-                    stack, before, total, index - length, index
+                    stack, before, total, block_start + start, block_start + end
                 )
                 del stack[staying:]
                 stack.append(open_one)
@@ -283,14 +312,13 @@ def _find_maximal_scoring_subsequences(
                 lowest_before = (
                     open_one.before if staying == 0 else min(lowest_before, open_one.before)
                 )
-            elif stack and total <= lowest_before:
-                final.extend(open_one.get_subsequence() for open_one in stack)
-                stack.clear()
+            position = end
         if held is not None:  # the next block and the index yielded see it on the stack
             stack.append(_make_held_open(held))
             lowest_before = held[0]
             held = None
-        yield final, (stack[0].start if stack else index)
+        block_start += length
+        yield final, (stack[0].start if stack else block_start)
     yield [open_one.get_subsequence() for open_one in stack], None
 
 
@@ -335,50 +363,22 @@ def _find_smaller_before(stack: Sequence[_OpenSubsequence], before: int, top: in
     return -1
 
 
-def _make_score_blocks(
-    canonical: bytes, period: int, parameters: StrFinderParameters, block_bases: int
-) -> Iterator[list[_ScoreRun]]:
-    """The scores of one period as runs of one sign, in blocks that end where the blocks of
-    block_bases bases end, so that every period gives the same number of blocks. A run that
-    crosses the end of a block is cut there.
-
-    The base at j >= period scores the match reward when it and the base period before it
-    are the same A, C, G or T, and minus the mismatch penalty otherwise. Score k is the base
-    at k + period. Each block is translated on its own, so what is held is one block.
+def _make_comparisons(canonical: bytes, period: int, block_bases: int) -> Iterator[bytes]:
+    """The comparisons of one period, in blocks that end where the blocks of block_bases
+    bases end, so that every period gives the same number of blocks. Byte k of the blocks
+    together is 0, a match, when the bases at k + period and at k are the same A, C, G or T,
+    and not 0 otherwise; score k is the match reward or minus the mismatch penalty. Each
+    block is made on its own, so what is held is one block.
     """
-    reward = parameters.match_reward
-    penalty = -parameters.mismatch_penalty
     for block_start in range(0, len(canonical), block_bases):
         first = max(block_start - period, 0)
         last = max(min(block_start + block_bases, len(canonical)) - period, first)
-        length = last - first
         earlier = canonical[first:last].translate(_EARLIER_BASES)
         later = canonical[first + period : last + period]
         # A 0 byte where the two bases match, from one XOR of two ints, not a loop per base.
         # With the runs, step 1 takes 9.2 million steps on 4 Mb of chr1 instead of 24 million,
         # and str-regions 4.49 s instead of 5.73 s (doc/reports/perf-str-finder.md, P1).
-        compared = (int.from_bytes(earlier) ^ int.from_bytes(later)).to_bytes(length)
-        # The runs are found with bytes.find, not with re.finditer: on 3.15t, threads that make
-        # match objects at once slow each other, and find makes none. On 4 Mb of chr1, with
-        # one segment_contig per thread, eight threads took 5.0 to 5.7 s each with finditer and
-        # 2.9 to 3.8 s with find, and one thread 2.3 s and 2.1 s
-        # (doc/reports/perf-str-finder.md, P3).
-        mismatches = compared.translate(_MISMATCHES_AS_ZEROS)
-        runs: list[_ScoreRun] = []
-        mismatches_from = 0
-        start = compared.find(0)
-        while start >= 0:
-            end = mismatches.find(0, start)
-            if end < 0:
-                end = length
-            if start > mismatches_from:
-                runs.append((penalty * (start - mismatches_from), start - mismatches_from))
-            runs.append((reward * (end - start), end - start))
-            mismatches_from = end
-            start = compared.find(0, end)
-        if mismatches_from < length:
-            runs.append((penalty * (length - mismatches_from), length - mismatches_from))
-        yield runs
+        yield (int.from_bytes(earlier) ^ int.from_bytes(later)).to_bytes(last - first)
 
 
 def _is_primitive_motif(motif: bytes) -> bool:
@@ -474,7 +474,7 @@ def _find_candidates(
     found: dict[int, list[_Candidate]] = {period: [] for period in periods}
     streams = [
         _find_maximal_scoring_subsequences(
-            _make_score_blocks(canonical, period, parameters, block_bases)
+            _make_comparisons(canonical, period, block_bases), period, parameters
         )
         for period in periods
     ]

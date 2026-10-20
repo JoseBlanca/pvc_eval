@@ -37,11 +37,11 @@ from pvc_eval.segments import (
     _is_in_cluster,
     _make_bundle_member,
     _make_clusters,
+    _make_comparisons,
     _make_grown_satellites,
     _make_repeat_runs,
     _make_runs,
     _make_satellites_absorbing,
-    _make_score_blocks,
     _Rejection,
     _Segment,
     _StrSegment,
@@ -184,18 +184,22 @@ def _find_like_pvc(bases: str, min_period: int, max_period: int) -> list[_Candid
 
 
 def _find_rt_subsequences(scores: list[int], block_length: int) -> list[tuple[int, int, int]]:
-    """pvc's rt_segments (tandem_repeat.rs 1208), the scores fed in blocks of block_length,
-    each block as its runs of scores of one sign, (their sum, how many)."""
-    blocks = [
-        [
-            (sum(run), len(run))
-            for run in (list(group) for _, group in itertools.groupby(block, key=lambda s: s > 0))
-        ]
-        for block in (scores[i : i + block_length] for i in range(0, len(scores), block_length))
+    """pvc's rt_segments (tandem_repeat.rs 1208), the scores fed in blocks of block_length.
+    The scores take two values, the match reward and minus the mismatch penalty, given as
+    comparisons, 0 for a match; a scan_min_copies of 1 keeps every subsequence."""
+    reward = max((score for score in scores if score > 0), default=1)
+    penalty = -min((score for score in scores if score < 0), default=-1)
+    assert set(scores) <= {reward, -penalty}, scores
+    parameters = StrFinderParameters(
+        match_reward=reward, mismatch_penalty=penalty, scan_min_copies=1
+    )
+    comparisons = [
+        bytes(0 if score > 0 else 1 for score in scores[i : i + block_length])
+        for i in range(0, len(scores), block_length)
     ]
     subsequences = [
         subsequence
-        for found, _ in _find_maximal_scoring_subsequences(iter(blocks))
+        for found, _ in _find_maximal_scoring_subsequences(iter(comparisons), 1, parameters)
         for subsequence in found
     ]
     return sorted(subsequences)
@@ -292,11 +296,13 @@ _CRAFTED_SCORES = [
     [2, 2, 2, 2],
     [2, -7, 2],  # two singletons: the interruption is too costly to bridge
     [2, -3, 2],  # one merged subsequence: the dip is bridged
-    [5, -10, 8],  # dip below the left L: two subsequences
-    [5, -3, 8],  # dip stays above: one subsequence
+    # pvc's [5, -10, 8], [5, -3, 8] and [1, 1, 1, -2, 1, 1, 1, -10, 5, 5], each score of 5
+    # or 8 as that many scores of 1, and pvc's -10 as five scores of -2 in the third.
+    [1] * 5 + [-10] + [1] * 8,  # dip below the left L: two subsequences
+    [1] * 5 + [-3] + [1] * 8,  # dip stays above: one subsequence
     [2, 2, -7, 2, 2],
     [-7, 2, 2, -7, 2, -7, 2, 2, -7],
-    [1, 1, 1, -2, 1, 1, 1, -10, 5, 5],
+    [1, 1, 1, -2, 1, 1, 1] + [-2] * 5 + [1] * 10,
 ]
 
 
@@ -324,28 +330,28 @@ def test_ruzzo_tompa_matches_brute_force_on_pseudo_random() -> None:
         assert _find_rt_subsequences(scores, block_length=7) == expected, scores
 
 
-# Scored by hand at the defaults, a match 2 and a mismatch -7; score k is the base at k + period.
-_SCORE_BLOCK_CASES = [
+# Compared by hand: score k compares the base at k + period with the base at k, a match True.
+_COMPARISON_CASES = [
     # A=A, then N against A, N against N twice, A against N, then A=A.
-    ("n_never_matches_n", "AANNNAA", 1, 100, [[(2, 1), (-28, 4), (2, 1)]]),
+    ("n_never_matches_n", "AANNNAA", 1, 100, [[True, False, False, False, False, True]]),
     # Blocks of 4 bases end after base 3 and base 7: the scores 0 to 2, then 3 to 6.
-    ("a_block_end_cuts_a_run_of_matches", "AAAAAAAA", 1, 4, [[(6, 3)], [(8, 4)]]),
+    ("a_block_end_cuts_a_run_of_matches", "AAAAAAAA", 1, 4, [[True] * 3, [True] * 4]),
     # c=C, a=A, C=c, then T against a.
-    ("lower_case_matches_upper_case", "CAcaCT", 2, 100, [[(6, 3), (-7, 1)]]),
+    ("lower_case_matches_upper_case", "CAcaCT", 2, 100, [[True, True, True, False]]),
 ]
 
 
 @pytest.mark.parametrize(
     ("bases", "period", "block_bases", "expected"),
-    [case[1:] for case in _SCORE_BLOCK_CASES],
-    ids=[case[0] for case in _SCORE_BLOCK_CASES],
+    [case[1:] for case in _COMPARISON_CASES],
+    ids=[case[0] for case in _COMPARISON_CASES],
 )
-def test_the_scores_come_as_runs_of_one_sign_cut_at_the_blocks(
-    bases: str, period: int, block_bases: int, expected: list[list[tuple[int, int]]]
+def test_the_comparisons_are_zero_for_a_match_and_cut_at_the_blocks(
+    bases: str, period: int, block_bases: int, expected: list[list[bool]]
 ) -> None:
     canonical = bases.encode("ascii").translate(_CANONICAL)
-    got = _make_score_blocks(canonical, period, StrFinderParameters(), block_bases)
-    assert list(got) == expected
+    got = _make_comparisons(canonical, period, block_bases)
+    assert [[compared == 0 for compared in block] for block in got] == expected
 
 
 def test_finds_a_clean_perfect_tract() -> None:
@@ -653,6 +659,97 @@ def test_the_candidates_come_by_period_then_start() -> None:
     keys = [(candidate.period, candidate.start) for candidate in got]
     assert keys == sorted(keys)
     assert {candidate.period for candidate in got} == {1, 2, 3, 4, 5, 6}
+
+
+def _find_rt_by_score(scores: list[int]) -> list[tuple[int, int, int]]:
+    """The maximal scoring subsequences of scores, one score at a time, as Ruzzo and Tompa's
+    paper gives the algorithm: (start, end, score), `[start, end)` the indices of the scores."""
+    found: list[tuple[int, int, int, int]] = []  # start, end, total before, total after
+    total = 0
+    for index, score in enumerate(scores):
+        before, total = total, total + score
+        if score <= 0:
+            continue
+        start = index
+        while True:
+            lower = [j for j, (_, _, other_before, _) in enumerate(found) if other_before < before]
+            if not lower or found[lower[-1]][3] >= total:
+                break
+            start, _, before, _ = found[lower[-1]]
+            del found[lower[-1] :]
+        found.append((start, index + 1, before, total))
+    return [(start, end, after - before) for start, end, before, after in found]
+
+
+def _find_candidates_by_score(
+    bases: str, parameters: StrFinderParameters
+) -> list[tuple[int, int, int, int]]:
+    """Step 1 and step 3 of doc/specs/str_finder.md one score at a time: the candidates as
+    (start, end, period, score), by period and then start."""
+    letters = [base.upper() if base in "ACGTacgt" else None for base in bases]
+    reward, penalty = parameters.match_reward, parameters.mismatch_penalty
+    kept: list[tuple[int, int, int, int]] = []
+    for period in range(parameters.scan_min_period, parameters.scan_max_period + 1):
+        if period >= len(bases):
+            continue
+        scores = [
+            reward if letters[j] is not None and letters[j] == letters[j - period] else -penalty
+            for j in range(period, len(bases))
+        ]
+        for start, end, score in _find_rt_by_score(scores):
+            motif = "".join(letter or "N" for letter in letters[start : start + period])
+            primitive = all(
+                motif != motif[:shorter] * (period // shorter)
+                for shorter in range(1, period)
+                if period % shorter == 0
+            )
+            if (end + period - start) // period >= parameters.scan_min_copies and primitive:
+                kept.append((start, end + period, period, score))
+    survivors: list[tuple[int, int, int, int]] = []
+    for start, end, period, score in kept:
+        if not any(
+            other_period < period
+            and period % other_period == 0
+            and 2 * (min(end, other_end) - max(start, other_start)) >= end - start
+            for other_start, other_end, other_period, _ in survivors
+        ):
+            survivors.append((start, end, period, score))
+    floors = parameters.copy_floors
+    return [c for c in survivors if (c[1] - c[0]) // c[2] >= floors[c[2] - 1]]
+
+
+@settings(max_examples=500, deadline=None)
+@given(
+    bases=st.text(alphabet="ACGTNacgt", max_size=200)
+    | st.text(alphabet="ACGT", max_size=200)
+    | st.text(alphabet="AC", max_size=200),
+    periods=st.tuples(st.integers(1, 6), st.integers(1, 6)).map(sorted),
+    reward=st.integers(1, 10),
+    penalty=st.integers(1, 20),
+    scan_min_copies=st.integers(1, 8),
+    floors=st.tuples(*[st.integers(min_value=0, max_value=6)] * 6),
+    block_bases=st.integers(min_value=1, max_value=40),
+)
+def test_step_one_gives_the_candidates_of_one_score_at_a_time(
+    bases: str,
+    periods: list[int],
+    reward: int,
+    penalty: int,
+    scan_min_copies: int,
+    floors: tuple[int, int, int, int, int, int],
+    block_bases: int,
+) -> None:
+    parameters = StrFinderParameters(
+        scan_min_period=periods[0],
+        scan_max_period=periods[1],
+        match_reward=reward,
+        mismatch_penalty=penalty,
+        scan_min_copies=scan_min_copies,
+        copy_floors=floors,
+    )
+    got = _find_candidates(bases, parameters, block_bases=block_bases)
+    found = [(c.start, c.end, c.period, c.score) for c in got]
+    assert found == _find_candidates_by_score(bases, parameters)
 
 
 @pytest.mark.slow
