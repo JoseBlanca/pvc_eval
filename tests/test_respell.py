@@ -103,6 +103,25 @@ def test_decomposition_carries_the_phase_of_each_record(
     ("case_lines", "ploidy", "expected"),
     [
         pytest.param(
+            ["2 AC GT 1|0", "4 G A 0/1"],
+            2,
+            ["2 AC GT 1|0", "4 G A 0/1"],
+            id="phased-with-no-ps-and-unphased-kept",
+        ),
+        pytest.param(
+            ["2 AC GT 0/0 0/1", "4 G A 0/0 0/1"],
+            2,
+            ["2 AC GT 0/0 0/1", "4 G A 0/0 0/1"],
+            id="touching-on-the-second-sample-kept",
+        ),
+        # A malformed GT carries no edit, so it touches nothing; its record is kept for itself.
+        pytest.param(
+            ["2 AC GT 0/5", "4 G A 0/1"],
+            2,
+            ["2 AC GT 0/5", "4 G A 0|1:2"],
+            id="an-invalid-gt-touches-nothing",
+        ),
+        pytest.param(
             ["2 AC GT 1|0", "4 G A 0|1"],
             2,
             ["2 A G 1|0:.", "3 C T 1|0:.", "4 G A 0|1:."],
