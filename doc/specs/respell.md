@@ -538,8 +538,9 @@ records interact:
   insertion or the deletion of whole units of a repeat at its edge, or a random indel; one record
   in twenty with no ALT, whose GTs are drawn from `0` and `.` alone, and one in twenty with a
   `*` ALT;
-- 1 to 3 samples, ploidy 2 in four files of five and 1 otherwise; each GT phased in one draw of
-  two, with a PS of `1`, `2` or none, `.` in one allele of ten, malformed in one GT of fifty, and
+- 1 to 3 samples, ploidy 2 in four files of five and 1 otherwise; three samples in four with
+  every GT phased in phase set 1, so that phase sets join windows, and the others with each GT
+  phased in one draw of two, with a PS of `1`, `2` or none, `.` in one allele of ten, malformed in one GT of fifty, and
   of the other ploidy in one GT of fifty;
 - in one file of five, a second contig, so that the contigs' order and new phase sets across
   contigs are exercised.
@@ -560,7 +561,10 @@ merge is drawn too:
   of windows a block joins (§8), so that a re-spelling that loses or invents a phase set between
   windows is likely to be caught in one run. With phase drawn as above, one file in fourteen had
   one, and a defect seen only over a pair was missed by a run of 300 about one time in nine (the
-  review of milestone 2); the generator draws a shared phase set more often to reach it.
+  review of milestone 2). Drawing PS 1 for most phased GTs reached one file in seven; the
+  samples phased whole reach one in four (25% over 2,000 files). The share varies by a third
+  between runs of 300, so it is asserted by a test of the generator alone, which draws the same
+  files every run, and the properties stay random.
   Every test that checks a re-spelling with the oracle asserts that no window and no pair was
   over `ORACLE_CAP`.
 
