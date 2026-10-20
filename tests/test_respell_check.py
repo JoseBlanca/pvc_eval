@@ -220,8 +220,9 @@ def test_files_with_no_samples_raise(case_files: CaseFiles, tmp_path: Path) -> N
 
 
 # The property counts, in a Counter of its own test, the files whose re-spelling rewrote a
-# record, as the oracle's property does in tests/test_respell.py, and asserts the share once
-# hypothesis has run every example (§9.2: at least one file in ten).
+# record and the rows in a locus with an STR region, as the oracle's property counts in
+# tests/test_respell.py, and asserts both once hypothesis has run every example (§9.2: at
+# least one file in ten rewritten).
 @pytest.mark.parametrize("respelling", _RESPELLINGS)
 def test_a_generated_file_against_its_respelling_gives_the_outcomes_of_itself(
     tmp_path_factory: pytest.TempPathFactory, respelling: Respelling
@@ -234,19 +235,23 @@ def test_a_generated_file_against_its_respelling_gives_the_outcomes_of_itself(
         with ExitStack() as stack:
             directory = tmp_path_factory.mktemp("generated")
             reference, vcf, output = write_and_respell(generated, respelling, directory, stack)
-            check_respelling_outcomes(
+            rows = _make_checked_rows(
                 vcf,
                 output,
                 reference,
                 str_regions=write_planted_repeats(generated, directory),
                 ploidy=generated.ploidy,
             )
+            tally["rows in an STR locus"] += sum(bool(row.str_regions) for row in rows)
         tally["files"] += 1
         tally["rewritten"] += is_rewritten(vcf, output)
 
     check_respelling()
     assert tally["files"] >= _PROPERTY_EXAMPLES
     assert tally["rewritten"] * 10 >= tally["files"], tally
+    # The BED of the planted repeats is read: 9,415 of 12,152 rows were in an STR locus over
+    # 5,000 files on 20 October 2026.
+    assert tally["rows in an STR locus"] > 0, tally
 
 
 # --- GIAB's HG002, §9.4 ---
