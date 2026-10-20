@@ -16,21 +16,37 @@ Builds: `write_str_regions(reference, output, parameters, regions, num_threads)`
 `--help` line (what it does, default 4, and that memory grows with N), and their tests in
 `tests/test_str_regions.py`.
 
-How: a worker that segments one contig and returns the formatted rows of its STR regions, those the
-requested spans overlap; the contigs mapped over it in the order of the `.fai`, in this thread when
-`num_threads` is 1, and otherwise on a `ThreadPoolExecutor` whose `map` has `buffersize` so that at
-most about N results wait (as `vcf.py`'s `_map_in_order` does; `vcf.py` is not changed). The rows are
-written as they come. The checks of `num_threads` follow `parse_vcf`'s: a whole number from 1 to 256,
-`ValueError` from the function, and an argparse error naming `--threads` from the command line.
+How: a worker function that segments one contig with `segment_contig` and returns the formatted
+rows of its STR regions, as `write_str_regions` makes them today (`_find_requested_str_regions`
+over the contig's requested spans, then `_format_str_region`). The contigs are mapped over it in
+the order of the `.fai` (only those `--regions` names): in this thread when `num_threads` is 1, and
+otherwise with `ThreadPoolExecutor(max_workers=num_threads)` and
+`pool.map(worker, contigs, buffersize=2 * num_threads)`. `buffersize` is an argument of
+`concurrent.futures.Executor.map` since Python 3.14: map then submits at most that many tasks ahead
+of the result being read, instead of all of them. The rows are written as each contig's list comes
+back. `src/pvc_eval/vcf.py` has the same pattern in `_map_in_order`; it is private there and
+`vcf.py` is not changed, so `segments.py` has its own few lines. `num_threads` is a required
+parameter of `write_str_regions`, after `regions`; the existing callers in the tests pass it.
+`segments.py` gets its own `DEFAULT_NUM_THREADS = 4` (public, for the command line's default) and a
+private limit of 256, each with a comment that they are the VCF reader's, `doc/spec.md` and
+`vcf.py`'s `DEFAULT_NUM_THREADS`. `write_str_regions` raises `ValueError` for a `num_threads` that is
+not a whole number from 1 to 256, before it reads the `--regions` BED or opens the `.tmp`; the
+command line turns `--threads` outside 1 to 256 into a `PvcEvalInputError` with exit status 1, as
+it does for the other parameters, naming `--threads` (read how `cli.py` does that for them).
 
 Deliverables, each checked:
-- the tests of the spec's "How it is verified" for `--threads`, which fail before the change;
-- the BEDs of `benchmarks/data/chr1_10mb_4mb.fa` and `chr1_10mb_16mb.fa` (in the
-  `perf-str-finder` worktree's `benchmarks/data/`) unchanged at 1 and 4 threads;
+- the tests of the spec's "How it is verified" for `--threads`, which fail before the change, and the
+  whole suite passing, with the checks of `.claude/skills/coding/python.md` (with `PVC_EVAL_PVC` and
+  `PVC_EVAL_GRCH38` set, so that `tests/test_whole_port.py` runs);
+- the BEDs of `/Users/jose/devel/pvc_eval/.claude/worktrees/perf-str-finder/benchmarks/data/chr1_10mb_4mb.fa`
+  and `chr1_10mb_16mb.fa` beside it equal, under `cmp`, to `base/chr1_10mb_4mb.bed` and
+  `base/chr1_10mb_16mb.bed` there, at 1 and at 4 threads (one contig each: this checks the code path,
+  not the pool);
 - a measurement, reported, not committed: wall time and peak RSS of `str-regions` over GRCh38's
-  chromosomes 13 to 22 and Y (about 1 Gb) at 1, 2, 4 and 8 threads, the BED compared with the
-  1-thread one each time, from which the default of 4 is confirmed or a different one proposed to the
-  owner.
+  chromosomes 13 to 22 and Y (about 1 Gb, written as a FASTA with `benchmarks/make_str_slices.py`)
+  at 1, 2, 4 and 8 threads, the BED compared with the 1-thread one each time. This also shows that
+  N > 1 runs contigs at once. The default of 4 stays unless another N is at least 25% faster than 4
+  at a peak under 4 GB, in which case it is proposed to the owner with both numbers.
 
 What could go wrong: the output depending on which thread finished first (the test with contigs of
 different lengths guards it); a finished contig holding its segments while it waits (the worker
