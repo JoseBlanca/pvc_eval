@@ -143,7 +143,7 @@ summary out, with no thread yet.
 
 **What it stands on.** Milestones 1 and 2.
 
-- [ ] 4. The index reader
+- [x] 4. The index reader
 
 **What it gives.** The contigs a `.tbi` or `.csi` lists, read with `gzip` and `struct`, for
 milestone 5 to plan its scans.

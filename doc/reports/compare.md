@@ -52,3 +52,27 @@ on the last contig. Not taken: none.
 
 The implementer added the verb "note", for a pass-through that records something about the items
 it hands on, to the table of `python.md`, as that file asks.
+
+## Milestone 4: the index reader
+
+Built in 680c2ce and fixed in 7587c99 to 3a5ba9a. `parse_index_contigs`, in
+`src/pvc_eval/_vcf_index.py`, gives the contigs a VCF's `.tbi` and `.csi` list, joined, as a
+`frozenset`, reading only their headers with `gzip` and `struct`; the test data in
+`tests/data/vcf_index/` were made with bcftools 1.24, with the commands in `tests/data/README.md`.
+On 3a5ba9a `uv run pytest tests/test_vcf_index.py -q` gives "32 passed", the plan asked for at
+least 6; the five checks pass, with "1109 passed, 4 skipped" three runs in a row (at d756456).
+
+- The reviewer checked the layout on indexes made by `bcftools index -t`, `bcftools index -c -m
+  10`, `tabix -p vcf` and `tabix -C -m 20`, over 5,028 header contigs with names such as
+  `HLA-A*01:01:01:01`, and over 20,000 contigs spread across 11 BGZF blocks: each gave exactly the
+  contigs with records. On GIAB HG002's `.tbi` the reader gives chr1 to chr22 in 0.7 ms, reading
+  131,090 of its 1,657,747 bytes.
+- **Fixed, a blocker:** a damaged `.tbi` whose name length was below -1 stopped the run with a
+  traceback, where the spec ignores it with a warning. A fuzz test of 8,000 damaged indexes found 21
+  such files before the fix and none after (second look by the reviewer).
+- **Changed in the spec (1927bcb):** the warning for an index that cannot be read now holds also
+  when the VCF's other index is read, and says how to make the index again.
+- **Changed in the plan (9bd0b91):** the reader does not take the reference, so dropping the
+  contigs an index lists that the reference lacks moved to milestone 5, with a test.
+- Also fixed: five checks of the header that no test guarded, the contigs returned as a set since
+  no caller uses their order, and two helpers renamed for what they do. Not taken: none.
