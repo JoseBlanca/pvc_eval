@@ -9,10 +9,12 @@ check_respelled_haplotypes is the oracle's check of a re-spelling as its tests m
 hypothesis draws the ends of a range of whole numbers more often than its middle, so a rare
 kind is drawn at the top of its range, where it is also not what shrinking leads to. One run
 of 2,000 files on 20 October 2026 gave these shares, which another run moves by a few
-points: two contigs in 22% of files (§9.2 asks one in five), ploidy 1 in 20% (one in five),
-a contig with no N in 25% (one in four); no ALT in 5.4% of records (one in twenty), a `*`
-ALT in 3.6% (one in twenty); `.` in 8.5% of alleles (one in ten); a malformed GT in 1.4% of
-GTs and one of the other ploidy in 1.4% (one in fifty each).
+points: two contigs in 20% of files (§9.2 asks one in five), ploidy 1 in 22% (one in five),
+a contig with no N in 25% (one in four); no ALT in 5.8% of records (one in twenty), a `*`
+ALT in 4.2% (one in twenty); `.` in 8.1% of alleles (one in ten); a malformed GT in 1.3% of
+GTs and one of the other ploidy in 1.4% (one in fifty each). Another run of 2,000, of the
+GTs of ploidy 2: 86% phased, 46% homozygous, `./.` 0.8%; with no sample phased in one set,
+50% phased (one in two); and 25% of files with a pair of windows a block joins.
 
 Positions are 0-based and half-open, but for POS in the lines, which is 1-based.
 """
@@ -37,11 +39,17 @@ _CONTIG_NAMES = ("chr1", "chr2")
 _MIN_CONTIG_BASES = 12
 _MAX_CONTIG_BASES = 60
 _PADDING_BASES = 4  # the most N on each side of a contig that is padded
-# §9.2: at least one file in five has a pair of windows a block joins. Three samples of four
-# have every GT phased and heterozygous in phase set 1; the others are drawn as §9.2 says,
-# unphased GTs among them, often in the same file. On 20 October 2026, twelve runs of 300
-# files gave 61 to 121 files with a pair; the property's run, which is fixed, gives 106.
+# §9.2: at least one file in five has a pair of windows a block joins, so a shared phase set
+# is drawn more often: three samples of four have every GT phased in PS 1, and in the others
+# a phased GT takes PS 1 most of the time, `2` or none otherwise. The alleles are drawn as
+# §9.2 says in both. With every phased GT in PS 1 but phased one time in two, one run of
+# 2,000 files gave 15% with a pair.
+_PHASE_SETS = ("1", "1", "1", "1", "2", None)
 _ONE_PHASE_SET_DRAWS = 4
+# A GT of the other samples is unphased when a draw of 0 to 19 is below this: hypothesis
+# draws the low end more often in a large strategy, and 8 gave 50% phased over one run of
+# 2,000 files, where a draw of 0 or 1 gave 44%.
+_UNPHASED_DRAWS = 8
 
 
 class _RecordKind(Enum):
@@ -177,8 +185,7 @@ def write_generated_vcf(
 def make_generated_vcf(draw: st.DrawFn) -> GeneratedVcf:
     """A file of §9.2: one contig, or two in one file of five; 1 to 3 samples, of ploidy 2
     in four files of five and 1 otherwise; on each contig 1 to 6 records; and for three
-    samples of four every GT phased in phase set 1, so that windows are joined by a
-    block."""
+    samples of four every GT phased in PS 1, so that windows are joined by a block."""
     num_contigs = 2 if draw(st.integers(0, 4)) == 4 else 1
     num_samples = draw(st.integers(1, 3))
     ploidy = 2 if draw(st.integers(0, 4)) < 4 else 1
@@ -388,8 +395,8 @@ def _make_sample_field(
     """A sample's field: `.` in one allele of ten; malformed, with an allele past the ALTs,
     in one GT of fifty, but at a record with no ALT, whose GTs are of `0` and `.` alone
     (§9.2); and of the other ploidy in one GT of fifty. With is_one_phase_set, a GT of the
-    ploidy is phased in phase set 1 and heterozygous; otherwise it is phased in one draw of
-    two, with a PS of `1`, `2` or none."""
+    ploidy is phased in PS 1; otherwise it is phased in one draw of two, with a PS drawn
+    from _PHASE_SETS."""
     kind = draw(st.integers(0, 49))
     num_alleles = (3 - ploidy) if kind == 48 else ploidy
     alleles = [draw(_make_allele(num_alts)) for _ in range(num_alleles)]
@@ -398,15 +405,10 @@ def _make_sample_field(
     if num_alleles == 1:
         return alleles[0]
     if is_one_phase_set:
-        if alleles[0] == alleles[1]:
-            # Another index, so that `.` is drawn no more often; `.` at a record with no ALT.
-            indices = [str(index) for index in range(num_alts + 1)]
-            others = [allele for allele in indices if allele != alleles[0]] or ["."]
-            alleles[1] = draw(st.sampled_from(others))
         return f"{'|'.join(alleles)}:1"
-    if not draw(st.booleans()):
+    if draw(st.integers(0, 19)) < _UNPHASED_DRAWS:
         return "/".join(alleles)
-    phase_set = draw(st.sampled_from(["1", "2", None]))
+    phase_set = draw(st.sampled_from(_PHASE_SETS))
     gt = "|".join(alleles)
     return gt if phase_set is None else f"{gt}:{phase_set}"
 
