@@ -28,10 +28,12 @@ from tests.respell_cases import (
     read_vcf_lines,
 )
 from tests.respell_generator import (
+    RESPELLINGS,
     GeneratedVcf,
+    Respelling,
     check_respelled_haplotypes,
     make_generated_vcf,
-    write_generated_vcf,
+    write_and_respell,
 )
 
 from pvc_eval.errors import PvcEvalInputError
@@ -678,22 +680,31 @@ _ORACLE_EXAMPLES = 300  # §9.2
 _BCFTOOLS_EXAMPLES = 50  # §9.2
 
 
-def _write_and_decompose_case(
-    case_files: CaseFiles, directory: Path, case: RespellingCase
+# Each case of each re-spelling, with the re-spelling, and each re-spelling alone.
+_RESPELLING_CASES = [
+    pytest.param(respelling, case, id=f"{respelling.name}-{case.name}")
+    for respelling in RESPELLINGS
+    for case in respelling.cases
+]
+_RESPELLINGS = [pytest.param(respelling, id=respelling.name) for respelling in RESPELLINGS]
+
+
+def _write_and_respell_case(
+    case_files: CaseFiles, directory: Path, respelling: Respelling, case: RespellingCase
 ) -> tuple[IndexedFasta, Path, Path]:
-    """A case's reference and input, and its decomposition beside the input."""
+    """A case's reference and input, and its re-spelling beside the input, with no seed."""
     reference = case_files.write_reference(1, case.bases)
     vcf = _write_vcf(directory / "a.vcf", case.input_lines)
     output = directory / "b.vcf"
-    respell_by_decomposing(vcf, reference, output, ploidy=case.ploidy)
+    respelling.respell(vcf, reference, output, case.ploidy, None)
     return reference, vcf, output
 
 
-@pytest.mark.parametrize("case", [pytest.param(case, id=case.name) for case in DECOMPOSITION_CASES])
-def test_the_decomposition_of_a_case_passes_the_oracle(
-    case_files: CaseFiles, tmp_path: Path, case: RespellingCase
+@pytest.mark.parametrize(("respelling", "case"), _RESPELLING_CASES)
+def test_the_respelling_of_a_case_passes_the_oracle(
+    case_files: CaseFiles, tmp_path: Path, respelling: Respelling, case: RespellingCase
 ) -> None:
-    reference, vcf, output = _write_and_decompose_case(case_files, tmp_path, case)
+    reference, vcf, output = _write_and_respell_case(case_files, tmp_path, respelling, case)
     comparison = check_respelled_haplotypes(vcf, output, reference, ploidy=case.ploidy)
     assert comparison.num_windows >= 1
 
@@ -742,11 +753,11 @@ def _check_bcftools_reads_as_input(vcf: Path, output: Path) -> None:
 
 
 @_needs_bcftools
-@pytest.mark.parametrize("case", [pytest.param(case, id=case.name) for case in DECOMPOSITION_CASES])
-def test_bcftools_reads_the_decomposition_of_a_case_as_its_input(
-    case_files: CaseFiles, tmp_path: Path, case: RespellingCase
+@pytest.mark.parametrize(("respelling", "case"), _RESPELLING_CASES)
+def test_bcftools_reads_the_respelling_of_a_case_as_its_input(
+    case_files: CaseFiles, tmp_path: Path, respelling: Respelling, case: RespellingCase
 ) -> None:
-    _, vcf, output = _write_and_decompose_case(case_files, tmp_path, case)
+    _, vcf, output = _write_and_respell_case(case_files, tmp_path, respelling, case)
     _check_bcftools_reads_as_input(vcf, output)
 
 
@@ -774,16 +785,6 @@ def _is_rewritten(vcf: Path, output: Path) -> bool:
     return read_record_lines(vcf) != read_record_lines(output)
 
 
-def _write_and_decompose(
-    generated: GeneratedVcf, directory: Path, stack: ExitStack
-) -> tuple[IndexedFasta, Path, Path]:
-    """A generated file's reference and VCF, and its decomposition beside the VCF."""
-    reference, vcf = write_generated_vcf(generated, directory, stack)
-    output = directory / "b.vcf"
-    respell_by_decomposing(vcf, reference, output, ploidy=generated.ploidy)
-    return reference, vcf, output
-
-
 # The properties count, in a Counter of their own test, the files whose re-spelling rewrote a
 # record, and the oracle's the files with a pair of windows a block joins, and assert the
 # shares once hypothesis has run every example (§9.2: at least one file in ten rewritten, so
@@ -791,43 +792,45 @@ def _write_and_decompose(
 # that lost a phase set between windows is likely to be caught). A counter in the module would
 # be state that changes between tests (python.md, threads) and would tie the assertion to the
 # order the tests run in; hypothesis's own statistics are reported and cannot be asserted.
-def test_the_decomposition_of_a_generated_file_passes_the_oracle(
-    tmp_path_factory: pytest.TempPathFactory,
+@pytest.mark.parametrize("respelling", _RESPELLINGS)
+def test_the_respelling_of_a_generated_file_passes_the_oracle(
+    tmp_path_factory: pytest.TempPathFactory, respelling: Respelling
 ) -> None:
     tally: Counter[str] = Counter()
 
     @settings(max_examples=_ORACLE_EXAMPLES, deadline=None)
     @given(generated=make_generated_vcf())
-    def check_decomposition(generated: GeneratedVcf) -> None:
+    def check_respelling(generated: GeneratedVcf) -> None:
         with ExitStack() as stack:
             directory = tmp_path_factory.mktemp("generated")
-            reference, vcf, output = _write_and_decompose(generated, directory, stack)
+            reference, vcf, output = write_and_respell(generated, respelling, directory, stack)
             comparison = check_respelled_haplotypes(vcf, output, reference, ploidy=generated.ploidy)
         tally["files"] += 1
         tally["rewritten"] += _is_rewritten(vcf, output)
         tally["with a linked pair"] += comparison.num_linked_pairs > 0
 
-    check_decomposition()
+    check_respelling()
     assert tally["files"] >= _ORACLE_EXAMPLES
     assert tally["rewritten"] * 10 >= tally["files"], tally
     assert tally["with a linked pair"] * 5 >= tally["files"], tally
 
 
 @_needs_bcftools
-def test_bcftools_reads_the_decomposition_of_a_generated_file_as_its_input(
-    tmp_path_factory: pytest.TempPathFactory,
+@pytest.mark.parametrize("respelling", _RESPELLINGS)
+def test_bcftools_reads_the_respelling_of_a_generated_file_as_its_input(
+    tmp_path_factory: pytest.TempPathFactory, respelling: Respelling
 ) -> None:
     tally: Counter[str] = Counter()
 
     @settings(max_examples=_BCFTOOLS_EXAMPLES, deadline=None)
     @given(generated=make_generated_vcf())
-    def check_decomposition(generated: GeneratedVcf) -> None:
+    def check_respelling(generated: GeneratedVcf) -> None:
         with ExitStack() as stack:
             directory = tmp_path_factory.mktemp("generated")
-            _, vcf, output = _write_and_decompose(generated, directory, stack)
+            _, vcf, output = write_and_respell(generated, respelling, directory, stack)
         _check_bcftools_reads_as_input(vcf, output)
         tally["files"] += 1
         tally["rewritten"] += _is_rewritten(vcf, output)
 
-    check_decomposition()
+    check_respelling()
     assert tally["rewritten"] * 10 >= tally["files"], tally

@@ -1,8 +1,10 @@
 """The VCF files the properties of doc/specs/respell.md §9.2 generate with hypothesis: small
 contigs of random bases and planted repeats, and a few records on them dense enough to
 interact. make_generated_vcf is the strategy, GeneratedVcf what it gives, PlantedRepeat
-one repeat of it, and write_generated_vcf writes one to a directory; and
-check_respelled_haplotypes, the oracle's check of a re-spelling as its tests make it.
+one repeat of it, and write_generated_vcf writes one to a directory. RESPELLINGS is the
+table of the re-spellings the tests run, each a Respelling with its cases;
+write_and_respell writes a generated file and its re-spelling; and
+check_respelled_haplotypes is the oracle's check of a re-spelling as its tests make it.
 
 hypothesis draws the ends of a range of whole numbers more often than its middle, so a rare
 kind is drawn at the top of its range, where it is also not what shrinking leads to. Over
@@ -15,7 +17,7 @@ fifty each).
 Positions are 0-based and half-open, but for POS in the lines, which is 1-based.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass
 from enum import Enum
@@ -24,6 +26,8 @@ from pathlib import Path
 from hypothesis import strategies as st
 from tests.conftest import CaseFiles, write_case_vcf
 from tests.haplotype_oracle import ORACLE_CAP, HaplotypeComparison, check_same_haplotypes
+from tests.respell import respell_by_decomposing
+from tests.respell_cases import DECOMPOSITION_CASES, RespellingCase
 
 from pvc_eval.fasta import IndexedFasta
 
@@ -99,6 +103,43 @@ class _Record:
     start: int
     ref: str
     alts: tuple[str, ...]
+
+
+# A re-spelling as the tests call it: vcf, reference, output, the ploidy and a seed, which a
+# re-spelling that chooses nothing ignores.
+type RespellFunction = Callable[[Path, IndexedFasta, Path, int, int | None], None]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Respelling:
+    """One of the re-spellings of doc/specs/respell.md, with the cases of its section."""
+
+    name: str
+    cases: tuple[RespellingCase, ...]
+    respell: RespellFunction
+
+
+def _respell_by_decomposing(
+    vcf: Path, reference: IndexedFasta, output: Path, ploidy: int, seed: int | None
+) -> None:
+    del seed  # the decomposition chooses nothing (§3)
+    respell_by_decomposing(vcf, reference, output, ploidy=ploidy)
+
+
+RESPELLINGS = (
+    Respelling(name="decomposition", cases=DECOMPOSITION_CASES, respell=_respell_by_decomposing),
+)
+
+
+def write_and_respell(
+    generated: GeneratedVcf, respelling: Respelling, directory: Path, stack: ExitStack
+) -> tuple[IndexedFasta, Path, Path]:
+    """A generated file's reference, opened in stack, and VCF, in directory, and its
+    re-spelling beside the VCF, made with the file's seed."""
+    reference, vcf = write_generated_vcf(generated, directory, stack)
+    output = directory / "b.vcf"
+    respelling.respell(vcf, reference, output, generated.ploidy, generated.seed)
+    return reference, vcf, output
 
 
 def check_respelled_haplotypes(
