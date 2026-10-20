@@ -115,8 +115,11 @@ _UNREADABLE_INDEXES = {
     "tbi_not_of_a_vcf": (".tbi", _with_int32(f"{_VCF_B_D}.tbi", 8, 0)),
     # n_ref at byte 4, from 2 to 3, more than the names.
     "tbi_n_ref_not_its_names": (".tbi", _with_int32(f"{_VCF_B_D}.tbi", 4, 3)),
-    # l_nm at byte 32, from 10 to -1.
-    "tbi_names_length_negative": (".tbi", _with_int32(f"{_VCF_B_D}.tbi", 32, -1)),
+    # l_nm at byte 32, from 10 to -1, -2 and the lowest int32: a gzip read of -1 bytes reads the
+    # rest of the file, and one of less raises ValueError.
+    "tbi_names_length_minus_1": (".tbi", _with_int32(f"{_VCF_B_D}.tbi", 32, -1)),
+    "tbi_names_length_minus_2": (".tbi", _with_int32(f"{_VCF_B_D}.tbi", 32, -2)),
+    "tbi_names_length_lowest": (".tbi", _with_int32(f"{_VCF_B_D}.tbi", 32, -(2**31))),
     # The first byte of the names, at byte 36, from "c" to 0xff, which is not UTF-8.
     "tbi_names_not_utf8": (
         ".tbi",

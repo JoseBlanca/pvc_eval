@@ -117,7 +117,11 @@ def _check_format(file_format: int) -> None:
 
 def _read_exactly(index_file: BufferedIOBase, size: int) -> bytes:
     """The next size bytes of the file; raises _UnreadableIndexError when it ends first, or
-    when size is negative, since a read of -1 bytes reads the rest of the file."""
+    when size, a length from the header, is negative."""
+    # Checked before the read: gzip reads the rest of the file for -1 and raises ValueError
+    # for less.
+    if size < 0:
+        raise _UnreadableIndexError
     data = index_file.read(size)
     if len(data) != size:
         raise _UnreadableIndexError
