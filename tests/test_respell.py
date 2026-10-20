@@ -1775,13 +1775,14 @@ def test_the_gts_of_a_generated_record_with_no_alt_are_of_0_and_dot(
 # re-spelling that kept everything fails. As for the pairs below, the count is of fixed
 # files: the files with a shifted record ranged from 22 to 77 over 30 random runs of 300 on
 # 20 October 2026, around the 30 asserted, since hypothesis draws the files of one run
-# alike, and the fixed run gives 225 for the decomposition, 39 for the shift, 47 for the
-# spanning deletions and 49 for the merge; the properties stay random. The generator draws
-# deletions over other records so that the spanning deletions write a `*` in more than one
-# random file in ten, and pairs of SNPs past the other records so that the merge does. The
-# fixed files change with any change to how the generator draws, even one that draws the
-# same values through another strategy: making a SNP of the pair with a strategy of its own
-# took the merge's fixed count from 49 to 24.
+# alike, and the fixed run gives 216 for the decomposition, 31 for the shift, 32 for the
+# spanning deletions and 49 for the merge (21 October 2026); the properties stay random.
+# The generator draws deletions over other records, pairs of SNPs past the other records and
+# indels of planted repeats more often than the other kinds, so that the spanning
+# deletions, the merge and the shift each rewrite more than one random file in ten on
+# average (tests.respell_generator). The fixed files change with any change to how the
+# generator draws, even one that draws the same values through another strategy: making a
+# SNP of the pair with a strategy of its own took the merge's fixed count from 49 to 24.
 @pytest.mark.parametrize("respelling", RESPELLING_PARAMS)
 def test_a_tenth_of_the_generated_files_have_a_record_each_respelling_rewrites(
     tmp_path_factory: pytest.TempPathFactory, respelling: Respelling

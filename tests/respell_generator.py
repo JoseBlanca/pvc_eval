@@ -82,22 +82,30 @@ class _RecordKind(Enum):
     SNP_PAIR = "two SNPs after the other records"
 
 
-# The kinds a record of one ALT is drawn from, evenly: a deletion over another record three
-# times in seven, so that the `*` re-spelling writes a `*` in more than one file in ten
-# (§9.2). Drawn as often as the other kinds, it wrote one in 9.9% of 2,000 random files on 20
-# October 2026, and three times as often in 17.1%, with the shift's files going from 17.0%
-# to 15.2% and the files with a pair of windows a block joins from 28.1% to 26.2%. Two SNPs
-# past the records drawn before them, twice in nine, so that the merge rewrites more than one
-# file in ten (§9.2): over 30 random runs of 300 files on 20 October 2026, the merge rewrote
-# 6.4% of the files without them, 8.6% with them drawn once in eight and 11.9% twice in nine,
-# with the shift's files going from 14.7% to 11.9% and the `*` ones from 14.6% to 11.1%.
-# Drawn from the SNP kind instead, they gave 14.1%, 13.3% and 12.4%, but the fixed files of
-# the share's test gave the shift 19 of 300.
+# The kinds a record of one ALT is drawn from, evenly, 11 draws in all: a deletion over
+# another record 4 of them, so that the `*` re-spelling writes a `*` in more than one file in
+# ten; two SNPs past the records drawn before them 2, so that the merge does; the indel of a
+# planted repeat 2, so that the shift does; and each other kind 1 (§9.2). The shares of files
+# rewritten over 30 random runs of 300 files on 21 October 2026, with the seed None one time
+# in three, as mean (lowest run, highest run):
+#
+#   draws: deletion over, SNP pair, repeat indel, others   shift   `*`    merge
+#   3, 2, 1, 1 of 9                                         12.4%  10.8%  16.9%
+#   4, 2, 1, 1 of 10                                        12.1%  12.0%  16.0%
+#   4, 2, 2, 1 of 11                                        13.2%  11.7%  14.8%
+#
+# with the last ranging over the runs from 7.7% to 18.3%, 7.3% to 19.3% and 9.7% to 23.0%.
+# The first two gave the fixed files of the shares' test fewer than 30 for the shift or the
+# `*`, the last 31 and 32. With the seed always drawn and 3, 2, 1, 1 of 9, the means were
+# 11.9%, 11.1% and 11.9% on 20 October 2026, which the review of milestone 6 could not
+# reproduce: its 30 runs gave 11.9%, 9.2% and 10.2%.
 _RECORD_KIND_DRAWS = (
     *_RecordKind,
     _RecordKind.DELETION_OVER,
     _RecordKind.DELETION_OVER,
+    _RecordKind.DELETION_OVER,
     _RecordKind.SNP_PAIR,
+    _RecordKind.REPEAT_INDEL,
 )
 
 
@@ -121,7 +129,8 @@ class GeneratedVcf:
     num_samples: the samples, S0, S1...
     ploidy: what the file is read with; a GT of the other ploidy is drawn too.
     repeats: the repeats planted, for a --str-regions BED.
-    seed: a seed for the re-spellings that draw.
+    seed: a seed for the re-spellings that draw, or None one time in three, so that the
+        properties cover the largest shift and the longest runs too (§4, §6).
     """
 
     contigs: tuple[tuple[str, str], ...]
@@ -129,7 +138,7 @@ class GeneratedVcf:
     num_samples: int
     ploidy: int
     repeats: tuple[PlantedRepeat, ...]
-    seed: int
+    seed: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,7 +364,7 @@ def make_generated_vcf(draw: st.DrawFn) -> GeneratedVcf:
         num_samples=num_samples,
         ploidy=ploidy,
         repeats=tuple(repeat for contig in contigs for repeat in contig.repeats),
-        seed=draw(st.integers(0, 2**32 - 1)),
+        seed=None if draw(st.integers(0, 2)) == 0 else draw(st.integers(0, 2**32 - 1)),
     )
 
 
