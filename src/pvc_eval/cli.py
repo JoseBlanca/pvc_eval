@@ -185,18 +185,29 @@ _STR_REGIONS_ABOUT = (
 )
 
 
+# A paragraph of a --help description that starts with it is a command, printed as it is.
+_COMMAND_INDENT = "    "
 # The description of `pvc_eval compare --help`, one paragraph per item, in the words of
 # doc/spec.md and doc/specs/compare.md.
 _COMPARE_ABOUT = (
     "Compare two VCF files, file A and file B, over a reference genome. For each sample"
     " pair, the sequence each haplotype carries over each locus is rebuilt from the VCF"
-    " records of each file, so that two spellings of the same genotype agree, and the pair"
-    " gets one outcome at each locus.",
-    "A locus is a stretch of the reference holding VCF records of either file, chained by"
-    " overlap or by the chain distance, and widened to every STR region a VCF record"
-    " touches. The STR regions come from --str-regions or, without it, from the STR finder"
-    " run with its default parameters on the contigs with records; `pvc_eval str-regions`"
-    " finds them with other parameters.",
+    " records of each file, so that two spellings of the same genotype agree. A locus is a"
+    " stretch of the reference holding VCF records of either file, chained by overlap or by"
+    " the chain distance, and widened to every STR region a VCF record touches.",
+    "Each sample pair gets one outcome at each locus: same genotype; same alleles, other"
+    " genotype (the same non-reference alleles on different numbers of haplotypes); only in"
+    " A; only in B; different; reference in both; missing in A, missing in B or missing in"
+    " both (a haplotype the genotype says nothing about); invalid in A, invalid in B or"
+    " invalid in both (VCF records that claim something impossible for the sample); or too"
+    " complex (a sample that needs more phase assignments than --phasing-cap). Each locus"
+    " has a kind: SNP, indel, STR (it holds an STR region) or complex.",
+    "The STR regions are the tandem repeats of the reference. They come from --str-regions"
+    " or, without it, from the STR finder, run with its default parameters on the contigs"
+    " that hold a VCF record and, with --regions, only on those --regions names. It takes"
+    " from tens of seconds to several minutes for each chromosome of GRCh38. This command"
+    " writes them once, for --str-regions on later runs:",
+    f"{_COMMAND_INDENT}pvc_eval str-regions --reference ref.fa --output str.bed",
     "The table has a line of column names and one row per sample pair and compared locus,"
     " its fields separated by tabs, positions 1-based and inclusive. A path ending in .gz is"
     " gzipped. Each file is written as PATH.tmp and renamed when complete.",
@@ -356,7 +367,10 @@ def _add_compare_parser(commands: argparse._SubParsersAction) -> None:
         "compare",
         help="compare two VCF files over a reference and write the outcome of each locus",
         description="\n\n".join(
-            textwrap.fill(paragraph, break_on_hyphens=False) for paragraph in _COMPARE_ABOUT
+            paragraph
+            if paragraph.startswith(_COMMAND_INDENT)
+            else textwrap.fill(paragraph, break_on_hyphens=False)
+            for paragraph in _COMPARE_ABOUT
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -383,9 +397,9 @@ def _add_compare_parser(commands: argparse._SubParsersAction) -> None:
         "--regions",
         type=Path,
         metavar="BED",
-        help="compare only the loci that overlap these regions by at least one position, each"
-        " whole; every other locus is skipped, with no row and no count in the summary"
-        " (default: every locus)",
+        help="compare only the loci that share at least one position with these regions. Such"
+        " a locus is compared whole, its VCF records outside the regions included; every other"
+        " locus is skipped, with no row and no count in the summary (default: every locus)",
     )
     add(
         "--strata",
@@ -441,8 +455,8 @@ def _add_compare_parser(commands: argparse._SubParsersAction) -> None:
         type=int,
         default=DEFAULT_CHAIN_DISTANCE,
         metavar="N",
-        help="the most reference positions that may lie between a locus and the span of a"
-        f" VCF record it still takes in: 0 or more (default {DEFAULT_CHAIN_DISTANCE})",
+        help="VCF records whose spans have at most N reference positions between them are"
+        f" compared in one locus: 0 or more (default {DEFAULT_CHAIN_DISTANCE})",
     )
     add(
         "--summary",

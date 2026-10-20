@@ -495,6 +495,37 @@ def test_help_names_each_option_with_its_default(
         assert option_help[option].endswith(default)
 
 
+def test_help_names_every_outcome_and_kind_as_the_table_writes_them(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    status, stdout, _ = _run(["compare", "--help"], capsys)
+    assert status == 0
+    description = " ".join(stdout.split("\noptions:\n")[0].split())
+    # doc/spec.md §5.5 and §5.6, as Outcome and Kind give them to the table.
+    for word in (
+        "too complex",
+        "invalid in A",
+        "invalid in B",
+        "invalid in both",
+        "missing in A",
+        "missing in B",
+        "missing in both",
+        "reference in both",
+        "same genotype",
+        "same alleles, other genotype",
+        "only in A",
+        "only in B",
+        "different",
+        "SNP",
+        "indel",
+        "STR",
+        "complex",
+    ):
+        assert word in description
+    # On a line of its own, so that it can be copied.
+    assert "\n    pvc_eval str-regions --reference ref.fa --output str.bed\n" in stdout
+
+
 def test_help_has_no_evaluator(capsys: pytest.CaptureFixture[str]) -> None:
     status, stdout, _ = _run(["compare", "--help"], capsys)
     assert status == 0
