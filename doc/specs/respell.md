@@ -225,6 +225,12 @@ distance *k* of 1 or more, at most the largest one meeting all of these:
   span limit cut back to the REF allows no shift, since the shifted record's span would be its
   new REF and no longer meet the original;
 - **the contig**: no slide goes past the contig's last base;
+- **the bases**: the reference over the deleted bases and over every position the indel slides
+  past is A, C, G or T, and the deleted bases are the reference's own. `parse_vcf` accepts a REF
+  `A` where the reference has `M` or `N` (`doc/spec.md` §5.2), while reconciliation builds each
+  haplotype from the reference's bases; sliding on the VCF's letters would delete an `A` in place
+  of the `M` and change the haplotype (`GCMAAAT` with `2 CA C`, found by the review of
+  milestone 4);
 - **the phase**: for every sample, and every haplotype carrying the indel, no edit of another
   record that may share that haplotype touches the stretch the indel crosses: positions *a* to
   *b* + *k* for a deletion, and the positions the point passes over for an insertion. An edit
