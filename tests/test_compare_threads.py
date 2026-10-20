@@ -831,3 +831,60 @@ def test_stream_finalized_while_threads_are_listed_does_not_hang(tmp_path: Path)
     assert (completed.returncode, completed.stdout) == (0, "chr1\ncollected\n")
     assert "Error" not in completed.stderr
     assert "Exception" not in completed.stderr
+
+
+class _CountedFastas:
+    """A stand-in for IndexedFasta in pvc_eval.compare that keeps every handle opened, so
+    that a test can count those never closed; its lock keeps the list whole when threads
+    open handles at once."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._opened: list[IndexedFasta] = []
+        self._closed: set[int] = set()
+        counted = self
+
+        class CountedFasta(IndexedFasta):
+            def __init__(self, path: Path) -> None:
+                super().__init__(path)
+                with counted._lock:
+                    counted._opened.append(self)
+
+            def close(self) -> None:
+                super().close()
+                with counted._lock:
+                    counted._closed.add(id(self))
+
+        self.fasta_class = CountedFasta
+
+    def count_open(self) -> int:
+        with self._lock:
+            return sum(id(fasta) not in self._closed for fasta in self._opened)
+
+
+@pytest.mark.parametrize(
+    ("reader", "error"),
+    [("pvc_eval reader B", RuntimeError), ("pvc_eval reader A", KeyboardInterrupt)],
+    ids=["reader B cannot start", "Ctrl-C at reader A's start"],
+)
+def test_reader_that_does_not_start_leaves_no_reference_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reader: str, error: type[BaseException]
+) -> None:
+    case = write_compare_case(tmp_path)
+    fastas = _CountedFastas()
+    monkeypatch.setattr(compare_module, "IndexedFasta", fastas.fasta_class)
+    start = threading.Thread.start
+
+    def start_or_fail(thread: threading.Thread) -> None:
+        if thread.name == reader:
+            raise error("can't start new thread")
+        start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start_or_fail)
+    threads_before = set(threading.enumerate())
+    future = _start_call(lambda: list(compare(case.a, case.b, case.reference, finder_threads=2)))
+    with pytest.raises(error, match="can't start new thread"):
+        _get_result(future)
+    # Every thread of compare() that started ends, and closes what it opened.
+    assert _join_threads(threads_before, "pvc_eval", 5) == []
+    assert fastas.count_open() == 0

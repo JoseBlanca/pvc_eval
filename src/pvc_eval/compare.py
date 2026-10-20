@@ -379,8 +379,6 @@ def _start_threads(
 
     When stack exits, the stop is set; no thread is waited for (doc/specs/compare.md, "The
     stop").
-
-    Raises what IndexedFasta raises for the FASTA, before any reader starts.
     """
     stop = threading.Event()
     finder = None
@@ -397,25 +395,19 @@ def _start_threads(
         index_contigs = parse_index_contigs(paths[0]) | parse_index_contigs(paths[1])
         finder.put(contig for contig in reference.contigs if contig in index_contigs)
         finder.start(reference_path)
-    # Each reader reads the reference through a handle of its own, which it closes when it
-    # ends, so that compare() closes its own without waiting for the readers.
-    with ExitStack() as opened:
-        reader_references = [opened.enter_context(IndexedFasta(reference_path)) for _ in paths]
-        opened.pop_all()
-    for path, ploidy, buffer, reader_reference, file_name in zip(
-        paths, (config.ploidy_a, config.ploidy_b), buffers, reader_references, "AB", strict=True
+    for path, ploidy, buffer, file_name in zip(
+        paths, (config.ploidy_a, config.ploidy_b), buffers, "AB", strict=True
     ):
         open_vcf_records = functools.partial(
-            parse_vcf,
+            _open_vcf_records,
             path,
-            reader_reference,
             span_limit=config.span_limit,
             ploidy=ploidy,
             contigs=contigs_read,
         )
         threading.Thread(
             target=_parse_vcf_into_buffer,
-            args=(open_vcf_records, reader_reference, buffer, finder),
+            args=(open_vcf_records, reference_path, buffer, finder),
             name=f"pvc_eval reader {file_name}",
             daemon=True,
         ).start()
@@ -443,9 +435,25 @@ def _stop_threads(
         buffer.shutdown(immediate=True)
 
 
-def _parse_vcf_into_buffer(
-    open_vcf_records: Callable[[], Iterator[VcfRecord]],
+def _open_vcf_records(
+    path: Path,
     reference: IndexedFasta,
+    *,
+    span_limit: int | None,
+    ploidy: int,
+    contigs: frozenset[str] | None,
+) -> Generator[VcfRecord]:
+    """parse_vcf's stream over reference, which a reader thread has opened for itself."""
+    # parse_vcf is a generator function, so its stream has close().
+    return cast(
+        Generator[VcfRecord],
+        parse_vcf(path, reference, span_limit=span_limit, ploidy=ploidy, contigs=contigs),
+    )
+
+
+def _parse_vcf_into_buffer(
+    open_vcf_records: Callable[[IndexedFasta], Generator[VcfRecord]],
+    reference_path: Path,
     buffer: _Buffer,
     finder: _Finder | None,
 ) -> None:
@@ -455,17 +463,20 @@ def _parse_vcf_into_buffer(
     put in the finder's line. At the stop the buffer is shut down, and the reading ends with
     its stream closed.
 
-    open_vcf_records: parse_vcf with its arguments, called in this thread.
-    reference: the reader's own handle on the reference, which open_vcf_records reads and
-        this closes when the reading ends.
+    open_vcf_records: parse_vcf with its arguments but the reference, called in this thread
+        with the reader's own handle on the reference.
+    reference_path: the FASTA, which the reader opens for itself and closes when its reading
+        ends, so that compare() closes its own without waiting for it, and nothing is opened
+        for a reader that does not start.
     """
     # After the stop, nothing more is taken from the buffer.
-    with reference, suppress(ShutDown):
-        _put_vcf_records(open_vcf_records, buffer, finder)
+    with suppress(ShutDown):
+        _put_vcf_records(open_vcf_records, reference_path, buffer, finder)
 
 
 def _put_vcf_records(
-    open_vcf_records: Callable[[], Iterator[VcfRecord]],
+    open_vcf_records: Callable[[IndexedFasta], Generator[VcfRecord]],
+    reference_path: Path,
     buffer: _Buffer,
     finder: _Finder | None,
 ) -> None:
@@ -473,8 +484,10 @@ def _put_vcf_records(
     batch: list[VcfRecord] = []
     ending: BaseException | _END = _END
     try:
-        # parse_vcf is a generator function, so its stream has close().
-        with closing(cast(Generator[VcfRecord], open_vcf_records())) as vcf_records:
+        with (
+            IndexedFasta(reference_path) as reference,
+            closing(open_vcf_records(reference)) as vcf_records,
+        ):
             contig = None
             for vcf_record in vcf_records:
                 if finder is not None and vcf_record.contig != contig:
