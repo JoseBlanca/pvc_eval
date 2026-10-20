@@ -97,8 +97,9 @@ error. `compare()` passes the contigs `--regions` names, as above, to both reade
 - **At `parse_vcf`**, on a file with records on chr1, chr2, chr10 and chr3 of a reference in that
   order, with `contigs={"chr1"}`: only chr1's records come, in order, and none of chr10's, whose
   name begins with chr1. A line on another contig with a REF that differs from the reference, too
-  few sample columns, a POS of 0, a malformed GT, a symbolic ALT or a QUAL that is not a number
-  gives no error and no warning. Each of the four checks gives today's message and line number on a
+  few sample columns, a POS of 0, a symbolic ALT or a QUAL that is not a number, each of which
+  stops the run or gives a warning on a contig read, gives neither. (A malformed GT gives neither
+  on a contig read either: it makes the sample invalid, so it shows nothing here.) Each of the four checks gives today's message and line number on a
   skipped line: fewer than 8 columns; a POS that is not a number; a contig the reference lacks; a
   skipped line before the one before it, and a read line before a skipped one before it. A name in
   `contigs` the reference lacks gives no error. `contigs=None` gives today's records.
