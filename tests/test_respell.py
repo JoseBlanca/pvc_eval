@@ -545,6 +545,19 @@ def test_the_reach_stops_at_the_end_of_the_contig(case_files: CaseFiles, line: s
     assert _find_reach(reference, CONTIG, vcf_record.start, vcf_record.alleles) == (1, 6)
 
 
+# A slide of 99 bases, longer than the 64 the reach reads at a time, to the left and to the
+# right, in a homopolymer of 100 As at 3-102.
+@pytest.mark.parametrize(
+    "line",
+    [pytest.param("101 AA A 0/1", id="left"), pytest.param("2 CA C 0/1", id="right")],
+)
+def test_the_reach_slides_past_one_read_of_the_reference(case_files: CaseFiles, line: str) -> None:
+    reference = case_files.write_contigs({CONTIG: "GC" + "A" * 100 + "TG"})
+    (vcf_record,) = case_files.write_and_parse_records(reference, [line])
+    assert vcf_record.span == (1, 102)
+    assert _find_reach(reference, CONTIG, vcf_record.start, vcf_record.alleles) == (1, 102)
+
+
 def test_the_reach_has_no_limit_where_the_span_is_cut(case_files: CaseFiles) -> None:
     # The deletion of an A at 3 slides to 9: its span would reach 6 bases past its REF, 2-3.
     reference = case_files.write_reference(1, "GCAAAAAAAT")
