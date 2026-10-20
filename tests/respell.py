@@ -36,6 +36,7 @@ from pvc_eval.vcf import (
 
 _GZIP_MAGIC = b"\x1f\x8b"  # the first two bytes of a gzip file, and so of a bgzipped one
 _SPANNING_DELETION = "*"
+_PLAIN_BASES = frozenset("ACGT")
 # The columns of a VCF line, from 0; the samples' start after FORMAT.
 _CHROM_COLUMN = 0
 _POS_COLUMN = 1
@@ -689,6 +690,7 @@ def _count_largest_shift(
         reference, vcf_record.contig, edit.end, edit.deleted or edit.inserted
     )
     largest_shift = min(num_slide, _count_span_shift(edit, vcf_record.span, contig_length))
+    largest_shift = _count_plain_shift(reference, vcf_record.contig, edit, largest_shift)
     if largest_shift < 1:
         return 0
     # The stretch the indel crosses moved by largest_shift: a to b + k for a deletion of a
@@ -703,6 +705,24 @@ def _count_largest_shift(
             if other_edit.end >= edit.start:
                 largest_shift = min(largest_shift, other_edit.start - edit.end - 1)
     return max(largest_shift, 0)
+
+
+def _count_plain_shift(
+    reference: IndexedFasta, contig: str, edit: _Edit, largest_shift: int
+) -> int:
+    """How far, up to largest_shift, an indel can move over the reference's plain bases (§4,
+    the bases): its deleted bases must be the reference's own and A, C, G or T, and so must
+    every position it slides past. parse_vcf accepts a REF A over an M or an N, but
+    reconciliation builds a haplotype from the reference's bases."""
+    if edit.deleted:
+        deleted_bases = reference.get_bases(contig, edit.start, edit.end)
+        if deleted_bases != edit.deleted or not _PLAIN_BASES.issuperset(deleted_bases):
+            return 0
+    slid_past = reference.get_bases(contig, edit.end, edit.end + largest_shift)
+    return next(
+        (index for index, base in enumerate(slid_past) if base not in _PLAIN_BASES),
+        largest_shift,
+    )
 
 
 def _count_span_shift(edit: _Edit, span: Span, contig_length: int) -> int:

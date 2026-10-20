@@ -813,6 +813,34 @@ def test_the_shift_stops_short_of_an_edit_that_may_share_the_haplotype(
     assert _shift(case_files, tmp_path, "GCAAAAT", case_lines, ploidy=ploidy) == expected
 
 
+# §4, the bases: parse_vcf accepts a REF A where the reference has M or N, and the shift
+# slides only over the reference's own A, C, G and T, which reconciliation builds from.
+@pytest.mark.parametrize(
+    ("bases", "case_lines", "expected"),
+    [
+        pytest.param("GCMAAAT", ["2 CA C 0/1"], ["2 CA C 0/1"], id="deleting-an-m-kept"),
+        pytest.param("GCNAAAT", ["2 CA C 0/1"], ["2 CA C 0/1"], id="deleting-an-n-kept"),
+        # The As slid past are the reference's own up to the N at 6: the deletion moves to 5.
+        pytest.param(
+            "GCAAANT",
+            ["2 CA C 0/1"],
+            ["4 AA A 0/1:."],
+            id="slides-up-to-an-n",
+        ),
+        # The inserted N would slide past the reference's N at 3.
+        pytest.param("GCNAT", ["2 C CN 0/1"], ["2 C CN 0/1"], id="inserting-an-n-kept"),
+    ],
+)
+def test_the_shift_slides_only_over_plain_bases_of_the_reference(
+    case_files: CaseFiles,
+    tmp_path: Path,
+    bases: str,
+    case_lines: Sequence[str],
+    expected: Sequence[str],
+) -> None:
+    assert _shift(case_files, tmp_path, bases, case_lines) == expected
+
+
 def test_the_shift_stops_only_for_edits_of_its_own_contig(
     case_files: CaseFiles, tmp_path: Path
 ) -> None:
