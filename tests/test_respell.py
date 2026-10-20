@@ -33,6 +33,7 @@ from tests.respell_generator import (
     GeneratedVcf,
     Respelling,
     check_respelled_haplotypes,
+    is_rewritten,
     make_generated_vcf,
     write_and_respell,
     write_generated_vcf,
@@ -803,16 +804,6 @@ def test_a_fifth_of_the_generated_files_have_a_pair_of_windows_a_block_joins(
     assert tally["with a linked pair"] * 5 >= tally["files"], tally
 
 
-def _is_rewritten(vcf: Path, output: Path) -> bool:
-    """Whether output has a record line vcf does not: some record was rewritten. A record
-    rewritten into the line it had is not counted."""
-
-    def read_record_lines(path: Path) -> list[str]:
-        return [line for line in read_vcf_lines(path) if not line.startswith("#")]
-
-    return read_record_lines(vcf) != read_record_lines(output)
-
-
 # The properties count, in a Counter of their own test, the files whose re-spelling rewrote a
 # record, and assert the share once hypothesis has run every example (§9.2: at least one file
 # in ten, so that a re-spelling that kept everything would fail). A counter in the module
@@ -833,7 +824,7 @@ def test_the_respelling_of_a_generated_file_passes_the_oracle(
             reference, vcf, output = write_and_respell(generated, respelling, directory, stack)
             check_respelled_haplotypes(vcf, output, reference, ploidy=generated.ploidy)
         tally["files"] += 1
-        tally["rewritten"] += _is_rewritten(vcf, output)
+        tally["rewritten"] += is_rewritten(vcf, output)
 
     check_respelling()
     assert tally["files"] >= _ORACLE_EXAMPLES
@@ -855,7 +846,7 @@ def test_bcftools_reads_the_respelling_of_a_generated_file_as_its_input(
             _, vcf, output = write_and_respell(generated, respelling, directory, stack)
         _check_bcftools_reads_as_input(vcf, output)
         tally["files"] += 1
-        tally["rewritten"] += _is_rewritten(vcf, output)
+        tally["rewritten"] += is_rewritten(vcf, output)
 
     check_respelling()
     assert tally["rewritten"] * 10 >= tally["files"], tally

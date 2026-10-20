@@ -3,8 +3,9 @@ contigs of random bases and planted repeats, and a few records on them dense eno
 interact. make_generated_vcf is the strategy, GeneratedVcf what it gives, PlantedRepeat
 one repeat of it, and write_generated_vcf writes one to a directory. RESPELLINGS is the
 table of the re-spellings the tests run, each a Respelling with its cases;
-write_and_respell writes a generated file and its re-spelling; and
-check_respelled_haplotypes is the oracle's check of a re-spelling as its tests make it.
+write_and_respell writes a generated file and its re-spelling, write_planted_repeats the
+BED of its planted repeats, and is_rewritten says whether a re-spelling rewrote a record;
+and check_respelled_haplotypes is the oracle's check of a re-spelling as its tests make it.
 
 hypothesis draws the ends of a range of whole numbers more often than its middle, so a rare
 kind is drawn at the top of its range, where it is also not what shrinking leads to. One run
@@ -29,7 +30,7 @@ from hypothesis import strategies as st
 from tests.conftest import CaseFiles, write_case_vcf
 from tests.haplotype_oracle import ORACLE_CAP, HaplotypeComparison, check_same_haplotypes
 from tests.respell import respell_by_decomposing
-from tests.respell_cases import DECOMPOSITION_CASES, RespellingCase
+from tests.respell_cases import DECOMPOSITION_CASES, RespellingCase, read_vcf_lines
 
 from pvc_eval.fasta import IndexedFasta
 
@@ -148,6 +149,28 @@ def write_and_respell(
     output = directory / "b.vcf"
     respelling.respell(vcf, reference, output, generated.ploidy, generated.seed)
     return reference, vcf, output
+
+
+def write_planted_repeats(generated: GeneratedVcf, directory: Path) -> Path:
+    """A BED of the generated file's planted repeats in directory, three columns a line, as
+    read_str_regions reads a --str-regions BED (doc/specs/respell.md §9.3). The repeats of a
+    contig are pieces of it, in order and apart, so the BED is sorted and none overlaps."""
+    bed = directory / "repeats.bed"
+    bed.write_text(
+        "".join(f"{repeat.contig}\t{repeat.start}\t{repeat.end}\n" for repeat in generated.repeats),
+        encoding="utf-8",
+    )
+    return bed
+
+
+def is_rewritten(vcf: Path, output: Path) -> bool:
+    """Whether output has a record line vcf does not: some record was rewritten. A record
+    rewritten into the line it had is not counted."""
+
+    def read_record_lines(path: Path) -> list[str]:
+        return [line for line in read_vcf_lines(path) if not line.startswith("#")]
+
+    return read_record_lines(vcf) != read_record_lines(output)
 
 
 def check_respelled_haplotypes(
