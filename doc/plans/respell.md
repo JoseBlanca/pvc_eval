@@ -75,7 +75,7 @@ what 1 builds.
   own; it must agree with `parse_vcf`'s spans where those are not cut, which a test checks on
   S1, S2 and the cases of `doc/spec.md` §5.2.
 
-- [ ] **2. The oracle and the generated files**
+- [x] **2. The oracle and the generated files**
 
   What it gives: `check_same_haplotypes`, which shows a re-spelling right without pvc_eval's
   reconciliation, and the hypothesis generator of small contigs with repeats; both run on the
