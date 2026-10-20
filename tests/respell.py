@@ -250,19 +250,7 @@ def respell_with_spanning_deletions(
     _check_output(vcf, output)
     respelling_input = _parse_input(vcf, reference, ploidy)
     record_index = _make_record_index(respelling_input.input_records)
-    rewritable_places = {
-        place
-        for place, record_edits in record_index.by_place.items()
-        if not _is_kept_whatever_is_written(
-            record_edits.vcf_record, place, record_index.touched_places
-        )
-        and not _is_near_spanning_deletion(
-            record_edits.vcf_record.contig,
-            [(record_edits.vcf_record.start, record_edits.vcf_record.alleles)],
-            record_index.spanning_deletions,
-            reference,
-        )
-    }
+    rewritable_places = _find_rewritable_places(record_index, reference)
     sample_fields, star_places = _find_spanning_deletion_rewrites(
         record_index, rewritable_places, respelling_input
     )
@@ -312,8 +300,8 @@ def respell_by_merging(
     input_records = respelling_input.input_records
     mergeable_places = {
         place
-        for place, record_edits in record_index.by_place.items()
-        if _is_mergeable(record_edits, record_index, reference)
+        for place in _find_rewritable_places(record_index, reference)
+        if not _is_giving_missing(record_index.by_place[place])
     }
     output_records = []
     first = 0
@@ -498,6 +486,25 @@ def _is_kept_whatever_is_written(
     if any(not isinstance(genotype, VcfGenotype) for genotype in vcf_record.genotypes):
         return True
     return place in touched_places
+
+
+def _find_rewritable_places(record_index: _RecordIndex, reference: IndexedFasta) -> set[int]:
+    """The places of the records with an ALT that no row of §2.2 keeps for itself: not for
+    a `*` ALT, an invalid GT, a touch, nor its own reach near a `*` record's REF. What a
+    re-spelling writes for one is the re-spelling's to check."""
+    return {
+        place
+        for place, record_edits in record_index.by_place.items()
+        if not _is_kept_whatever_is_written(
+            record_edits.vcf_record, place, record_index.touched_places
+        )
+        and not _is_near_spanning_deletion(
+            record_edits.vcf_record.contig,
+            [(record_edits.vcf_record.start, record_edits.vcf_record.alleles)],
+            record_index.spanning_deletions,
+            reference,
+        )
+    }
 
 
 def _find_edits(vcf_record: VcfRecord) -> tuple[_Edit | None, ...]:
@@ -833,14 +840,11 @@ def _make_piece_record(
     for genotype in vcf_record.genotypes:
         assert isinstance(genotype, VcfGenotype), "a record with an invalid GT is kept"
         alleles = [
-            "." if allele is MISSING else str(int(allele in allele_indices))
+            MISSING if allele is MISSING else int(allele in allele_indices)
             for allele in genotype.alleles
         ]
-        if len(alleles) == 1:
-            sample_fields.append(_format_sample(alleles, phased=False, phase_set=None))
-            continue
         phase_set = genotype.phase_set if genotype.phased else new_phase_set
-        sample_fields.append(_format_sample(alleles, phased=True, phase_set=phase_set))
+        sample_fields.append(_format_genotype(alleles, phased=True, phase_set=phase_set))
     return _make_rewritten_record(
         input_record,
         piece.start + 1,
@@ -1178,25 +1182,13 @@ def _make_spanned_record(
 _MAX_POSITIONS_BETWEEN = 2
 
 
-def _is_mergeable(
-    record_edits: _RecordEdits, record_index: _RecordIndex, reference: IndexedFasta
-) -> bool:
-    """Whether a record can be in a run (§6): it is not kept for a row of §2.2 of its own,
-    has no `*` ALT and gives no sample `.`. The reach of the record a run writes is the
-    run's to check."""
-    vcf_record = record_edits.vcf_record
-    if _is_kept_whatever_is_written(vcf_record, record_edits.place, record_index.touched_places):
-        return False
-    if any(
+def _is_giving_missing(record_edits: _RecordEdits) -> bool:
+    """Whether a record gives some sample `.`, which keeps it out of a run (§6)."""
+    return any(
         allele is MISSING
-        for genotype in vcf_record.genotypes
+        for genotype in record_edits.vcf_record.genotypes
         if isinstance(genotype, VcfGenotype)
         for allele in genotype.alleles
-    ):
-        return False
-    written = [(vcf_record.start, vcf_record.alleles)]
-    return not _is_near_spanning_deletion(
-        vcf_record.contig, written, record_index.spanning_deletions, reference
     )
 
 
@@ -1432,20 +1424,17 @@ def _make_kept_record(input_record: _InputRecord) -> _OutputRecord:
     )
 
 
-def _format_sample(alleles: Sequence[str], *, phased: bool, phase_set: str | None) -> str:
-    """A sample's `GT:PS`: the alleles joined by `|` when phased and `/` when not, and the
-    phase set of a phased GT, `.` when it has none or the GT is unphased."""
-    gt = ("|" if phased else "/").join(alleles)
-    return f"{gt}:{phase_set if phased and phase_set is not None else '.'}"
-
-
 def _format_genotype(
     alleles: Sequence[int | MISSING], *, phased: bool, phase_set: str | None
 ) -> str:
-    """A sample's `GT:PS` from its alleles' indices, `.` for MISSING; a GT of one allele has
-    no phase."""
-    alleles_written = ["." if allele is MISSING else str(allele) for allele in alleles]
-    return _format_sample(alleles_written, phased=phased and len(alleles) > 1, phase_set=phase_set)
+    """A sample's `GT:PS` from its alleles' indices, `.` for MISSING: joined by `|` when
+    phased and `/` when not, and the phase set of a phased GT, `.` when it has none or the GT
+    is unphased. A GT of one allele has no phase."""
+    is_phased = phased and len(alleles) > 1
+    gt = ("|" if is_phased else "/").join(
+        "." if allele is MISSING else str(allele) for allele in alleles
+    )
+    return f"{gt}:{phase_set if is_phased and phase_set is not None else '.'}"
 
 
 def _make_rewritten_record(

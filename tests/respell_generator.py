@@ -460,9 +460,7 @@ def _make_one_alt_records(
 
 @st.composite
 def _make_snp(draw: st.DrawFn, contig: _Contig) -> _Record:
-    start = draw(st.integers(contig.core_start, contig.core_end - 1))
-    ref = contig.bases[start]
-    return _Record(start, ref, (draw(st.sampled_from([base for base in _BASES if base != ref])),))
+    return _make_snp_at(contig, draw(st.integers(contig.core_start, contig.core_end - 1)), draw)
 
 
 @st.composite
