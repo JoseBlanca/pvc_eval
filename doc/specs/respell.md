@@ -1,10 +1,11 @@
 # The re-spelling program — specification
 
-*Status: draft, 20 October 2026, for the owner's approval. No code of it exists yet; the
-decomposition of `tests/test_reconcile_property.py`, `_make_decomposed_lines`, is replaced by
-the one here. It builds the program `doc/spec.md` §7.4 asks for, and stands on `doc/spec.md` §2,
-§5.2, §5.4 and §7, on `doc/specs/reconciliation.md` §4 for the edits, phase units and blocks, and
-on the VCF reader, `parse_vcf`.*
+*Status: draft, 20 October 2026, for the owner's approval. No code of it exists yet. The tests
+of reconciliation already decompose records, in `_make_decomposed_lines` of
+`tests/test_reconcile_property.py`, and the decomposition here replaces it. It builds the program
+`doc/spec.md` §7.4 asks for, and stands on `doc/spec.md` §2, §5.2, §5.4 and §7, on
+`doc/specs/reconciliation.md` §4 for the edits, phase units and blocks, and on pvc_eval's VCF
+reader, `parse_vcf`, which gives each record normalised, with its span and its VCF genotypes.*
 
 `doc/spec.md` §7.4 checks pvc_eval's central claim: that two spellings of the same genotypes
 agree. It compares a file with re-spellings of itself, and every row must be in the set allowed
@@ -12,9 +13,8 @@ for a file against itself (§7.3). The re-spelling program makes those re-spelli
 VCF file again in other words, in four ways: each record decomposed into one-base and one-indel
 records, indels shifted right within their repeats, `*` alleles added under deletions as GATK
 writes them, and neighbouring records merged into complex ones. A re-spelling that changed a
-haplotype would make §7.4 fail for no fault of pvc_eval, or pass where pvc_eval is wrong, so the
-program is checked by an oracle of its own, written for it, that does not use the code §7.4
-tests. This spec gives the four re-spellings, which records each one rewrites and which it keeps
+haplotype would make §7.4 fail where pvc_eval is right, so the program is checked by an oracle of
+its own, written for it, that does not use the code §7.4 tests. This spec gives the four re-spellings, which records each one rewrites and which it keeps
 as they are, the files they write, the oracle, and how all of it is checked. It all lives under
 `tests/`, as §7.4 says, and adds nothing to `src/`.
 
@@ -29,7 +29,8 @@ on the same haplotype. Beyond that rule, this spec decides:
   phased in one phase set on different haplotypes, they may be, and that counts;
 - that a record near a `*` is kept as it is by every re-spelling, since its spellings can cover
   the `*` differently;
-- that a rewritten record keeps only CHROM, POS, REF, ALT, QUAL and the GT and PS of each sample.
+- that a rewritten record keeps only CHROM, POS, REF, ALT, QUAL and the GT and PS of each sample;
+- what the oracle compares where the phase is not known (§8).
 
 One point is the owner's, **Open 1**, at the end: whether the `*` re-spelling may write GATK's
 commonest case, a deletion and a SNP under it, both heterozygous and unphased.
@@ -53,10 +54,10 @@ spec adds:
 | **rewritten record** | a record of the input that a re-spelling replaces by records it writes itself | |
 | **kept record** | a record of the input that a re-spelling writes as the input has it, byte for byte | "skipped" |
 | **carries** | a haplotype carries the edit of the VCF allele its VCF genotype gives it at a record; `.` and REF carry none | |
-| **may share a haplotype** | two VCF alleles of one sample, at two records, may be on one haplotype unless both VCF genotypes are phased in one phase set and the alleles are on different haplotypes. With ploidy 1 they always are. | |
+| **may share a haplotype** | two VCF alleles of one sample, at two records, may be on one haplotype unless both VCF genotypes are phased in one phase set and the alleles are on different haplotypes. Two records in different phase sets, or unphased, may. A sample of ploidy 1 has one haplotype, which all its alleles share. | |
 | **touch** | as `doc/spec.md` §2: two stretches touch when they overlap or lie next to each other. The stretch of an insertion is the point it goes in at, between two positions, so it touches both. | |
-| **reach** | the stretch a record's spellings can take: its REF, widened for each ALT whose edit is an insertion or a deletion by every placement it can slide to (`doc/spec.md` §5.2) | "span", which `parse_vcf` gives and the span limit can cut |
-| **window** | the oracle's unit: a maximal stretch of a contig over which the spans of the records with an ALT of both files chain, overlapping or next to each other (§8) | "locus", which is §5.3's |
+| **reach** | the stretch a record's spellings can take: its REF, widened for each ALT whose edit is an insertion or a deletion by every position it can slide to (`doc/spec.md` §5.2), with no limit. The re-spellings work it out with a slide of their own, for records of the input and for the records they would write | "span", which `parse_vcf` gives and which the span limit, 10 kb by default, cuts back to the REF |
+| **window** | the oracle's unit: a stretch of a contig made by joining the spans of the records with an ALT of both files while they overlap or lie next to each other (§8) | "locus", which is §5.3's |
 
 ## 2. What every re-spelling does
 
@@ -65,10 +66,12 @@ spec adds:
 A re-spelling reads its input twice: as text, line by line, to keep the header and the kept
 records as they are; and with `parse_vcf`, with the reference and the ploidy it is given, for the
 records normalised, their spans and their VCF genotypes. Each record of `parse_vcf` is matched to
-its line by its `line_number`. `parse_vcf` yields records in order of span start, so the
+its line by the line number it carries. Both read with `DEFAULT_SPAN_LIMIT`, the default of
+`doc/spec.md` §5.2, as the check of §7.4 does. `parse_vcf` yields records in order of span start, so the
 re-spelling puts them back in the order of the file first.
 
-Whatever stops `parse_vcf` stops the re-spelling, with the same `PvcEvalInputError`, before it
+Whatever stops `parse_vcf` stops the re-spelling, with the same `PvcEvalInputError`, pvc_eval's
+error for a fault of the input, before it
 writes anything: a REF that differs from the reference, a contig the reference lacks, a REF past
 its contig's end, records out of order. A file that pvc_eval cannot read has no re-spelling.
 
@@ -88,15 +91,13 @@ file says or would test nothing:
 
 The edits compared are those of `doc/specs/reconciliation.md` §4.2, as written: the edit of each
 ALT trimmed left first, where the record stands. A `.` carries no edit, as in reconciliation's
-collisions. The `*` rows above take care of the one place where reconciliation reads the edits
+collisions, whichever haplotype it is on. The `*` rows above take care of the one place where reconciliation reads the edits
 of a missing haplotype.
 
 A missing haplotype, `.`, is otherwise no reason to keep a record: the re-spellings carry it into
 what they write, as each section says. So is a record at the first or the last base of its
 contig: a VCF allele there is written as VCF writes it (§3), and an indel slides up to the
 contig's end and no further (§4).
-
-A **record with a REF mismatch** never reaches a re-spelling (§2.1).
 
 Each re-spelling has its own conditions too, in its section. A record that does not meet them is
 kept.
@@ -109,11 +110,11 @@ kept.
 **Rewritten records** are written with these columns: CHROM; POS; ID `.`; REF and ALT, upper
 case; QUAL as the input record has it, or for a merged record the lowest QUAL of the records
 merged, `.` when none has one; FILTER `.`; INFO `.`; FORMAT `GT:PS`; and for each sample its GT
-and its PS. The GT is written with `|` when the VCF genotype is phased and with `/` when it is
+and its PS. A file with no sample columns has no FORMAT column either. The GT is written with `|` when the VCF genotype is phased and with `/` when it is
 not, unless the re-spelling's section changes its phase; a GT of ploidy 1 has no separator. The PS is the phase set of a phased GT, `.` when it has
 none or the GT is unphased. Nothing else of the input record is kept: pvc_eval reads no ID,
-FILTER or INFO, and of the FORMAT fields only GT, PS and GQ, of which GQ only fills the `gq`
-columns of `doc/spec.md` §6, which §7.4 does not check.
+FILTER or INFO, and of the FORMAT fields only GT, PS and GQ, the genotype quality, which only
+fills the `gq` columns of `doc/spec.md` §6, which §7.4 does not check.
 
 **A new phase set** is a PS that no record of the input uses: M + n, where M is the largest PS of
 the input that is a whole number, 0 when there is none, and n is the place of the record it is
@@ -122,11 +123,16 @@ is the record's. `parse_vcf` compares PS values as text, so a PS of the input th
 number cannot equal one.
 
 **The header** is the input's, line by line, with one line added before `#CHROM` when the output
-writes a PS other than `.` and the header has no `##FORMAT=<ID=PS,` line:
+writes a rewritten record and the header has no `##FORMAT=<ID=PS,` line:
 
 ```
 ##FORMAT=<ID=PS,Number=1,Type=Integer,Description="Phase set">
 ```
+
+with `Type=String` in place of `Type=Integer` when some PS of the input is not a whole number.
+bcftools 1.24 warns about a FORMAT field the header lacks, even with only `.` as its values, and
+stops with exit status 8 on a PS such as `chr1_5` declared `Integer` (both seen by the review on
+20 October 2026).
 
 **The order.** Records are sorted by contig, in the input's order of contigs, and by POS, which is
 what `parse_vcf` asks (`doc/spec.md` §5.2). Records of one POS keep the order of the input
@@ -139,16 +145,16 @@ otherwise it is plain text. The name of the output is the caller's.
 
 **Valid.** `parse_vcf` reads the output with the same reference and ploidy without an error, and
 `bcftools view` (1.24) reads it with exit status 0 and no message on standard error that it does
-not also give for the input. bcftools 1.24 warns, and goes on, when the header lacks a FORMAT
-line or a contig line (seen on 20 October 2026 with a header of two lines); those warnings come
-from the input's header, and the output adds no other.
+not also give for the input, the messages compared with their positions removed, since bcftools
+writes one in each (`FORMAT 'GT' at chr1:5 is not defined in the header`) and a re-spelling moves
+records. bcftools 1.24 warns, and goes on, when the header lacks a FORMAT line or a contig line
+(seen on 20 October 2026 with a header of two lines); those warnings come from the input's
+header, and the output adds no other.
 
 ## 3. Decomposition
 
 **What it does.** Each record that is not kept is replaced by records of one replaced base or one
-indel, which are its **pieces**, with the VCF genotypes carried over. This is what GIAB's
-benchmark writes where a caller writes one complex record, and the commonest difference between
-two spellings.
+indel, which are its **pieces**, with the VCF genotypes carried over.
 
 **The pieces.** Each ALT's edit is found as reconciliation finds it, and its replaced stretch and
 its new bases are aligned from the left: a SNP at each position where they differ, then the
@@ -172,13 +178,14 @@ decomposition adds no block. For each sample:
   record uses: one unit, as before;
 - with ploidy 1 there is no phase, and the GT is written as one allele.
 
-**The cases.** Each gives the reference from position 1, the input, and the output, on `chr1`, as
-`POS REF ALT` and one sample field per sample, `GT:PS` for a rewritten record. A record written
-*as read* is kept.
+**The cases**, D1 to D12, each a test with its output as a literal. Each gives the reference from
+position 1, the input, and the output, on `chr1`, as `POS REF ALT` and one sample field per
+sample, `GT:PS` for a rewritten record. A record written *as read* is kept. The cases of the
+other sections, S, T, M and O, are written the same way.
 
 | D | reference | input | output |
 |---|---|---|---|
-| 1 | `GACGTA` | `2 ACGT TCGAA 0/1` | `2 A T 0\|1:1`, `5 T A 0\|1:1`, `5 T TA 0\|1:1`: SNPs at 2 and 5, and the A left over inserted after 5 |
+| 1 | `GACGTA` | `2 ACGT TCGAA 0/1` | `2 A T 0\|1:1`, `5 T A 0\|1:1`, `5 T TA 0\|1:1`: aligned from the left, `ACGT` and `TCGA` differ at 2 and 5, and the A left over is inserted after 5 |
 | 2 | `GACGT` | `2 ACG TCA,TCG 1/2` | `2 A T 1\|1:1`, `4 G A 1\|0:1`: the SNP at 2 is one record, which both ALTs make |
 | 3 | `GACGTA` | `2 AC GT 1\|0:7`, `5 T G 0\|1:7` | `2 A G 1\|0:7`, `3 C T 1\|0:7`, `5 T G 0\|1:7`: the pieces stay in phase set 7 |
 | 4 | `GACGTA` | `2 AC GT 0/1`, `4 G A 0/1` | both as read: the edits of 2–3 and 4 lie next to each other, and unphased they may share a haplotype |
@@ -189,9 +196,9 @@ decomposition adds no block. For each sample:
 | 9 | `GACT`, ploidy 1 | `2 AC GT 1` | `2 A G 1:.`, `3 C T 1:.` |
 | 10 | `ACGT` | `1 AC C 0/1` | `1 AC C 0\|1:1`: the deletion of the first base is anchored on the base after it |
 | 11 | `ACGT` | `1 A CA 0/1` | `1 A CA 0\|1:1`: so is an insertion before it |
-| 12 | `TAAC` | `3 AC G,AA 0/1`, `3 A G,AA 1/2` | both as read: the insertion of an A after 3 falls inside the stretch `AC → G` replaces (`doc/specs/reconciliation.md` §9) |
+| 12 | `TAAC` | `3 AC G,AA 0/1`, `3 A G,AA 1/2` | both as read: the insertion of an A after 3 falls between the two positions `AC → G` replaces, which collides, while decomposed it would not (`doc/specs/reconciliation.md` §9) |
 
-Cases 1, 2, 7, 8, 10, 11 and 12 are those of `_make_decomposed_lines`, whose output differs in
+D1, D2, D7, D8, D10, D11 and D12 are the cases of `_make_decomposed_lines`, whose output differs in
 two ways: a kept record is now written as read, not with its GT rewritten, and the lines of one
 POS come in the order of the input, not in order of span start.
 
@@ -253,15 +260,20 @@ re-spelling writes the `*`.
 sample when all of these hold:
 
 - *h* carries, at another record D, a deletion: an edit that replaces one or more positions with
-  no bases, which deletes, as written, a position of R's REF;
+  no bases, which deletes, as written, a position of R's REF as `parse_vcf` trims it. The REF as
+  the file writes it can reach further: `12 TC TA` is `13 C A` trimmed, and a `*` there for a
+  deletion of 12 alone is not covered, so B's sample would be invalid (found by the review);
 - R's VCF genotype gives *h* REF, `0`. A `.` is left as it is. An ALT on *h* would be an edit
   touching the deletion, and R would be kept;
 - the phase between R and D on *h* is known, in one of three ways:
   1. both VCF genotypes are phased in one phase set;
-  2. R gives REF on every haplotype of the sample, so R can be written in D's phase unit: in D's
-     phase set when D is phased, in a new phase set made for D, given to both, when D is
-     unphased and heterozygous, and as it stands when D is unphased and homozygous. All the
-     deletions over R of that sample must then be in one phase unit;
+  2. R gives REF on every haplotype of the sample. R is then written in D's phase unit, which
+     ties it to D without adding a block, since an all-REF VCF genotype is no block: in D's
+     phase set when D is phased; in a new phase set made for D, given to both, when D is
+     unphased and heterozygous; and with its phase as read when D is unphased and homozygous,
+     since every haplotype then gets a `*`. When the deletions over R of that sample come from
+     records of two or more phase units, R would have to join both, and that sample gets no `*`
+     at R;
   3. the ploidy is 1.
 
   When D is unphased and heterozygous, D is rewritten as well, with its VCF genotype phased in
@@ -294,7 +306,8 @@ for its own allele, so a multi-sample file is where most of them appear, as in T
 neighbouring ones. The merge joins runs of neighbouring records into one complex record.
 
 **A run** is two or more records, consecutive in the order of §2.3, of one contig, each one's REF
-overlapping the stretch of the records before it or lying at most 2 positions after it. The run's
+overlapping the stretch of the records before it, or starting after it with at most 2 positions
+between them (M1 has 1, M8 has 3). The run's
 stretch runs from the first position of its REFs to the last; the REFs are the normalised ones of
 `parse_vcf`. A run is merged only when all of these hold:
 
@@ -315,6 +328,8 @@ appearance, samples in the order of the header and haplotypes in order; a haplot
 is REF gets `0`. The GT is phased, in the phase set of the run's heterozygous VCF genotypes, when
 those are phased, and unphased otherwise. A merge across samples can need as many ALTs as there
 are distinct haplotypes, as M5 shows.
+
+A run whose every haplotype gets REF, all `0/0`, has no ALT to write and is not merged.
 
 Without a seed, the runs are as long as the conditions allow, taken from the left. With a seed,
 each record that could join the run before it does so with probability 1/2, so that runs of
@@ -343,7 +358,8 @@ and hold both spellings, which is what §7.4 tests.
 
 The program is in `tests/respell.py`, the oracle in `tests/haplotype_oracle.py`, and the check of
 §7.4 in `tests/respell_check.py`; the tests import them as `tests.conftest` is imported now.
-`respell` joins the verb table of `.claude/skills/coding/python.md`, in the commit of the code that
+`respell` joins the table of `.claude/skills/coding/python.md` that gives each verb of a function
+name one meaning, in the commit of the code that
 first uses it, meaning "write a VCF file again in other words that give every sample the same
 haplotypes (`doc/specs/respell.md`)".
 
@@ -377,7 +393,7 @@ two headers name different samples.
 class HaplotypeComparison:
     num_windows: int            # windows compared, over every sample
     num_linked_pairs: int       # pairs of windows compared together (§8)
-    num_over_cap: int           # windows and pairs not compared, over ORACLE_CAP
+    num_over_cap: int           # windows and pairs not compared, over ORACLE_CAP in either file
 
 ORACLE_CAP = 4096   # phase assignments; doc/specs/reconciliation.md §4.1's default cap
 
@@ -385,7 +401,8 @@ def check_same_haplotypes(vcf_a: Path, vcf_b: Path, reference: IndexedFasta, *,
                           ploidy: int = DEFAULT_PLOIDY) -> HaplotypeComparison: ...
 ```
 
-The check of §7.4 runs file A against file B through the stages (§9.3) and raises
+The check of §7.4 runs file A against file B through the stages of pvc_eval, reading,
+loci, reconciliation and evaluation (§9.3), and raises
 `AssertionError` at the first row out of the allowed set, or the first sample whose result in B
 differs from A's, with the locus, the sample, the outcome and both results. `str_regions` is a
 `--str-regions` BED; without one, the STR regions come from `segment_contig` over the reference.
@@ -399,7 +416,8 @@ def check_respelling_outcomes(vcf_a: Path, vcf_b: Path, reference: IndexedFasta,
 
 `tests/test_reconcile_property.py` keeps its property, with file B made by
 `respell_by_decomposing` from file A written to its directory, and its hand cases of
-`_make_decomposed_lines` become cases of `respell_by_decomposing` (§3). One decomposition is left.
+`_make_decomposed_lines` become cases of `respell_by_decomposing` (§3), so the tests have one
+decomposition, not two.
 
 ## 8. The oracle
 
@@ -407,8 +425,8 @@ The oracle rebuilds, for every sample, the haplotype sequences each file gives, 
 are equal. It is a short function of the tests, written for this purpose. It reads both files with
 `parse_vcf`, which gives the records, their trimmed alleles, their spans and their VCF genotypes,
 and imports nothing else of pvc_eval but the reference reader: not `pvc_eval.reconcile`,
-`pvc_eval.loci` or `pvc_eval.evaluate`, which are what §7.4 tests. A test reads its imports to
-keep it so.
+`pvc_eval.loci` or `pvc_eval.evaluate`, which are what §7.4 tests. A test checks that its
+module imports none of them.
 
 **What is determined.** Where every VCF genotype is phased in one phase set, a sample's two
 haplotypes are fixed, and the oracle could compare them base by base over a whole contig. Where
@@ -418,19 +436,25 @@ the sets. Two kinds of facts are determined:
 - **within a window**, the sample's possible genotypes over it: for every phase assignment of the
   blocks with a heterozygous VCF genotype in the window, the multiset of the haplotypes' sequences over the window;
 - **between two windows a block joins**, the possible genotypes over both together: for every
-  assignment of the blocks with a record in either, the multiset of the haplotypes' pairs of
-  sequences, one over each window. A phase set with records in windows 1, 4 and 9 joins 1 with 4
-  and 4 with 9.
+  assignment of the blocks with a heterozygous VCF genotype in either, the multiset of the
+  haplotypes' pairs of sequences, one over each window. With the windows of a contig numbered
+  from the left, a phase set with heterozygous VCF genotypes in windows 1, 4 and 9 joins 1 with 4
+  and 4 with 9. A window where it has only homozygous ones joins nothing: phase does not pass
+  through it, and joining through it would let a B that moved window 9's record to another phase
+  set pass (found by the review).
 
 A **window**, of §1, is built from both files, so that every spelling of an event in either file
 falls in one: the spans of all records with an ALT, of both files, sorted, joined while they
-overlap or lie next to each other. The span of a record holds every edit it makes and every
+overlap or lie next to each other. A record whose only ALT is `*` has its REF as its span;
+records with a symbolic allele are not read. Windows, and the phase sets that join them, are
+per contig. The span of a record holds every edit it makes and every
 placement of its indels, so a haplotype's edits in a window change nothing outside it, and
 the sequence of a window is the reference over it with the edits applied. A record with no ALT
 belongs to every window its REF overlaps, where only its `.` matters.
 
-Phase between windows is carried only by blocks, and two windows of one block are linked
-through every window of it in between, so consecutive pairs are the ones compared. A file B that
+Phase between windows is carried only by blocks, and two windows where one block is
+heterozygous are linked through every such window of it in between, so consecutive pairs are the
+ones compared. A file B that
 loses a phase set, or that gives two records of A a phase set they did not share, changes the
 possible genotypes over some such pair, of A's blocks or of B's, and the oracle sees it.
 
@@ -440,8 +464,10 @@ possible genotypes over some such pair, of A's blocks or of B's, and the oracle 
   common position, an insertion lies between two positions one edit replaces, or two insertions
   go in at one point), or when it carries a `*` and no edit it carries replaces, as written, a
   position of that record's REF; the assignment then gives no genotype;
-- **missing**, when it is not impossible and is `.` at some record of the window. An uncovered
-  `*` with a `.` elsewhere in the window counts as missing, since the `.` might cover it;
+- **missing**, when it is not impossible and is `.` at some record of the window. A `*` that no
+  edit covers does not make the haplotype impossible when the haplotype is `.` at another record
+  of the window: that `.` might be the deletion that covers it, so the haplotype is missing, as
+  in reconciliation;
 - otherwise **a sequence**: the reference over the window with its edits applied in position
   order, an insertion before a replacement that starts at its point.
 
@@ -451,7 +477,8 @@ rule, so where a file already in the input relies on a placement, both files are
 there alike; every `*` a re-spelling writes stands under its deletion as written.
 
 A sample with a malformed GT, or a GT of another ploidy, at a record of the window is, there,
-`malformed GT` or `ploidy mismatch`, which must be the same in both files. With ploidy 1 there
+`malformed GT` or `ploidy mismatch`, which must be the same in both files; a pair with such a
+window is compared the same way, by that reason. With ploidy 1 there
 are no assignments and a window has one possible genotype.
 
 A window, or a pair, whose blocks give more than `ORACLE_CAP` assignments is not compared and is
@@ -468,6 +495,7 @@ reports the count.
 | 3 | `9 CAGT C 0\|1:5`, `11 G A 1\|0:5` | `9 CAGT C 0\|1:5`, `11 G A,* 2\|1:5` | raises: in B the `*` is on the haplotype without the deletion, which is impossible, so B gives no genotype over 9–12 and A gives `{CAAT, C}` |
 | 4 | `2 AC GT ./1` | `2 A G .\|1:1`, `3 C T .\|1:1` | passes: both give `{., GT}` over 2–3, one window |
 | 5 | `2 A T 0/1` | `2 A T 0/1` | passes, with 1 window and no pair |
+| 6 | `2 A T 0\|1:5`, `6 A C 1\|1:5`, `10 A G 0\|1:5` | the same, `10 A G 0\|1:6` | raises: phase set 5 is homozygous at 6, so it joins 2 with 10, where A gives `{(A, A), (T, G)}` alone and B also `{(A, G), (T, A)}` |
 
 ## 9. How it is verified
 
@@ -482,7 +510,7 @@ Each check is made at the function that shows it, with its expected result as a 
   no output file. The header: the PS line added once, and not added when the input has one. A
   bgzipped input gives an output that starts with the gzip bytes and that `parse_vcf` reads. The
   same seed gives the same bytes, for the shift and the merge.
-- **At `check_same_haplotypes`**: O1 to O5; and every case of §3 to §6, input against output,
+- **At `check_same_haplotypes`**: O1 to O6; and every case of §3 to §6, input against output,
   passes.
 - **At `check_respelling_outcomes`**: every case of §3 to §6, input against output, passes; and
   one case through `segment_contig`, the AT repeat of `tests/test_loci_from_vcf.py` with
@@ -503,7 +531,10 @@ records interact:
   insertion or the deletion of whole units of a repeat at its edge, or a random indel; one record
   in twenty with no ALT, and one in twenty with a `*` ALT;
 - 1 to 3 samples, ploidy 2 in four files of five and 1 otherwise; each GT phased in one draw of
-  two, with a PS of `1`, `2` or none, `.` in one allele of ten, and malformed in one GT of fifty.
+  two, with a PS of `1`, `2` or none, `.` in one allele of ten, malformed in one GT of fifty, and
+  of the other ploidy in one GT of fifty;
+- in one file of five, a second contig, so that the contigs' order and new phase sets across
+  contigs are exercised.
 
 Every property runs a fixed 300 examples, with `deadline=None`, and the seed of the shift and the
 merge is drawn too:
@@ -526,7 +557,7 @@ kept with its literals.
 `check_respelling_outcomes` takes file A and its re-spelling B through the stages of
 `doc/spec.md` §4: `parse_vcf` for each; `build_loci` over both, with segments from
 `read_str_regions` over the BED, or from `segment_contig`; `reconcile_loci`; and
-`make_outcome_rows`, with `locus_kind` for the kind and no stratum. The sample pairs pair each
+`make_outcome_rows`, with `locus_kind` for the kind and no `--strata` class. The sample pairs pair each
 sample with itself. It asserts, at every locus and for every pair:
 
 - the outcome is *same genotype*, *reference in both*, *missing in both*, *invalid in both* or
@@ -558,9 +589,11 @@ missing.
 
 A re-spelling holds the input's records and lines in memory, which for a GIAB chromosome is some
 10^5 records. Whether a record is touched is found by a sweep over the records in order of REF,
-comparing each only with those whose REF touches it, since an edit lies within its REF: the
-square of the records, which `_make_decomposed_lines` took (0.96 s for 2,000 records, measured in
-the reconciliation work), would take hours on a chromosome. The oracle holds one window, or one
+comparing each only with those whose REF touches it, since an edit lies within its REF; the
+shift's crossed stretch and the records near a `*` are found the same way over the reach. The
+square of the records, which `_make_decomposed_lines` took, would take some 40 minutes on a
+chromosome: 0.96 s for 2,000 records in the reconciliation work (`doc/reports/reconciliation.md`,
+19 October 2026, on the owner's Mac), times 2,500. The oracle holds one window, or one
 pair, at a time, with at most `ORACLE_CAP` assignments for each sample. Neither is measured yet;
 the real VCF's run is the first measurement.
 
@@ -570,7 +603,8 @@ the real VCF's run is the first measurement.
 `11 G A 0/1` as `11 G A,* 1/2`, both unphased. Unphased, the SNP may share the deletion's
 haplotype, where the two collide, so by the rule of 19 October 2026 the `*` re-spelling keeps
 both records (T7) and never writes this case. Reconciliation already gives the two spellings the
-same result (`doc/specs/reconciliation.md` §4.4, R1, third row), since the assignment that puts
+same result: its case R1 (`doc/specs/reconciliation.md` §4.4, third row) is this one, tested at
+`reconcile`, the function that reconciles one locus, since the assignment that puts
 them on one haplotype is impossible in both.
 
 - **Keep the rule (recommended).** The `*` re-spelling writes a `*` only where the phase is known
@@ -579,8 +613,8 @@ them on one haplotype is impossible in both.
 - **Allow it.** R gets a `*` on the haplotype that gives it REF when D is heterozygous and every
   ALT R gives the sample collides with D's deletion: the only assignments left put the deletion
   on R's REF haplotype. It tests the commonest real case through the pipeline, at the cost of a
-  rule that departs from "edits that touch are kept" and that the oracle has to follow too; about
-  a day of work more.
+  rule that departs from "edits that touch are kept" and that the oracle has to follow too: one
+  more condition in §5, its cases, and a property that draws the case.
 
 Meanwhile the implementer keeps the rule.
 
