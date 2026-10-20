@@ -129,8 +129,10 @@ An index decides only when a scan starts, never whether a contig's loci get thei
 contig that an out-of-date index leaves out is still scanned when a reader reaches it. A contig it
 lists and no file has a record on is scanned for nothing, and its segments are dropped. So the
 rows never depend on the index. An index that cannot be read is ignored, with a warning:
-"a.vcf.gz.tbi could not be read as the index of a VCF; the contigs of a.vcf.gz are scanned for
-STR regions as the reading reaches them, which can take longer." When both a `.tbi` and a `.csi`
+"a.vcf.gz.tbi could not be read as the index of a VCF and is ignored; a contig of a.vcf.gz that
+no other index lists is scanned for STR regions only once the reading reaches it, which can take
+longer. To use the index, make it again with `bcftools index -t a.vcf.gz`." (`-c` for a `.csi`.)
+The text holds whether or not the VCF's other index was read. When both a `.tbi` and a `.csi`
 are beside a VCF, both are read and their contigs joined, since either may be the one out of date.
 Their contigs that the reference lacks are ignored, since a record on one stops the run when the
 reader reaches it.
