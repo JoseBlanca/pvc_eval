@@ -101,9 +101,9 @@ def write_table(
 
     The table has every row but, without all_rows, those reference in both; the summary
     counts every row. Each file is written to `<path>.tmp` and renamed to its path when
-    every row is written; a path ending in `.gz` is gzipped. When rows raises, or Ctrl-C
-    stops the run, the `.tmp` files are removed, the files at the paths are left as they
-    were, and the exception goes on.
+    every row is written, the summary first; a path ending in `.gz` is gzipped. When rows
+    raises, or Ctrl-C stops the run, the `.tmp` files are removed, the files at the paths
+    are left as they were, and the exception goes on.
 
     Raises PvcEvalInputError, before any row is read, naming --output or --summary, for a
     path that is a directory or whose `.tmp` cannot be made, and for a summary that is the
@@ -130,7 +130,10 @@ def write_table(
         _write_rows(rows, outputs[0], outputs[1] if len(outputs) == 2 else None, all_rows=all_rows)
         for written in outputs:
             _close_output(written)
-        for written in outputs:
+        # The summary first and the table last, so a failure between the two renames leaves
+        # the earlier table, never a table newer than its summary (doc/specs/compare.md,
+        # "Writing the files").
+        for written in reversed(outputs):
             _rename_output(written)
     except BaseException:
         _remove_temporary_files(outputs)

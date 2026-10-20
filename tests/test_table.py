@@ -358,6 +358,25 @@ def test_rows_that_raise_leave_the_files_as_they_were(
         assert list(tmp_path.iterdir()) == []
 
 
+def test_a_summary_that_cannot_be_renamed_leaves_the_earlier_table(tmp_path: Path) -> None:
+    output, summary = tmp_path / "loci.tsv", tmp_path / "summary.tsv"
+    output.write_text("earlier table\n", encoding="utf-8")
+
+    def yield_rows_then_take_the_summarys_path() -> Iterator[OutcomeRow]:
+        yield _WORKED_ROW
+        summary.mkdir()  # after the check before the first row, so the rename fails
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        write_table(yield_rows_then_take_the_summarys_path(), output, summary=summary)
+    assert str(raised.value) == (
+        f"--summary {summary} could not be written: Is a directory. Give another --summary,"
+        " and run again."
+    )
+    # The summary is renamed first, so the table the user reads is the earlier one.
+    assert output.read_text(encoding="utf-8") == "earlier table\n"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["loci.tsv", "summary.tsv"]
+
+
 def _make_path_errors(tmp_path: Path, option: str) -> list[tuple[str, Path, str]]:
     """Each path of option that cannot be written: its id, the path, and the message, as
     `str-regions` gives them for --output. The faults are made by _make_path_fault."""
