@@ -124,6 +124,7 @@ def compare(
             chain_distance=config.chain_distance,
         )
         reconciled_loci = reconcile_loci(
+            # It also logs the counts of each contig when its loci are done.
             _drop_skipped_loci(loci, regions, start_time),
             indexed_fasta,
             sample_pairs,

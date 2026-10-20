@@ -1,6 +1,6 @@
 """The four-contig case of doc/specs/compare.md, "How it is verified", which the tests of
-compare() share: a reference of four contigs, chr1 to chr3 with STR regions the STR finder
-admits and chr4 with none, and the VCF text of file A, with records on chr1 and chr3, and of
+compare() share: a reference of four contigs, chr1 to chr3 of 300 bases each with STR
+regions the STR finder admits and chr4 of 200 bases with none, and the VCF text of file A, with records on chr1 and chr3, and of
 file B, with records on chr2 and chr3, two samples in each and one sample pair by name,
 HG002.
 
@@ -16,7 +16,9 @@ from pvc_eval.segments import GenomeSegment, RegionType
 
 # Filler with no run of one base longer than two and no pair of bases twice in a row, with
 # perfect repeats planted in it: chr1, (AC)8 at 101-116 and (AGT)6 at 201-218; chr2,
-# (ATTC)5 at 121-140; chr3, (CA)10 at 101-120; chr4, none (1-based, inclusive).
+# (ATTC)5 at 121-140; chr3, (CA)10 at 101-120; chr4, none (1-based, inclusive). Where a
+# repeat meets the filler, a C makes a run of three: CCC at 116-118 of chr1 and at 99-101
+# of chr3.
 CONTIGS = {
     "chr1": (
         "AAGCGGCACTTGTAAGTGCCACGCCGCTTGGTCTTCTGTTGTTCGCTGGTGCTGAGCAAGCACGCCATAAGGCCAAGGCCATAC"
