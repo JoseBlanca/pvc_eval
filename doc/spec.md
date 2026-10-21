@@ -110,7 +110,8 @@ the contigs whose loci need STR regions.
 
 **Errors, which stop the run:** a VCF not sorted in the `.fai`'s contig order and by position; a
 contig in a VCF but not in the reference; a VCF record whose REF reaches past the end of its
-contig, or whose REF differs from the reference (§5.2); no sample pairs; a sample named in `--sample-map` absent
+contig, or whose REF differs from the reference (§5.2); an ALT `.` among other ALTs (§5.2); a
+gzipped VCF or BED that is damaged (§5.2); no sample pairs; a sample named in `--sample-map` absent
 from its file; a line of `--sample-map` that is not two fields; a pair given twice; a sample name
 given twice in a header, when a pair needs it. Samples present in only one file and not mapped are listed as a warning and not
 compared.
@@ -346,7 +347,23 @@ is absent, and pvc_eval never needs pvc to run.
 **Reading.** A VCF, plain or gzipped (known by its first two bytes), is read as UTF-8 text; a
 byte-order mark at its start is dropped, as for a BED, and a gzip file cut short or damaged stops
 the run with a message naming the line it was reached at (decided by the owner on 19 October
-2026).
+2026). gzip checks its data only at the end of each compressed block, so damaged bytes reach the
+reader as text first, and a line made of them would be reported as a fault of the file's content,
+a column missing or records out of order: on 21 October 2026, of 5,087 copies of one gzipped VCF
+each with one byte changed, 4,202 were reported so. So when reading a gzipped VCF or BED stops at
+a fault of its content, the file is first checked whole, and if gzip finds it damaged, the run
+stops with a message saying that the file is damaged and must be compressed or copied again, in
+place of the fault of the line (decided by the owner on 21 October 2026). This holds also where
+the fault is found after the line is read, by sample pairing, `--strata` or `--regions`. A good
+file is read once; the whole check costs only a read that already failed. A BGZF file, as `bgzip`
+and `bcftools` write, ends with an empty block that marks its end; one cut between two blocks
+reads as a valid shorter file, so a BGZF file without that block is cut short, as htslib also
+says (found by the review of 21 October 2026).
+
+**The ALT `.`.** `.` alone as the ALT is a record with no ALT (below). `.` as one of several ALTs
+(`G A,.`) means nothing in VCF, and stops the run with an error naming the file and the line
+(decided by the owner on 21 October 2026); it was read as an allele. The rule holds also for a
+record with a symbolic ALT, `<DEL>,.`, which is otherwise skipped.
 
 **Checks.** Each VCF record's contig must be in the reference, its REF must lie within the contig's
 length, and records must come in the `.fai`'s contig order and by position; otherwise the run stops

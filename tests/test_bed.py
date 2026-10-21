@@ -5,6 +5,7 @@ A BED line is 0-based and half-open, as the intervals parse_bed yields are.
 """
 
 import gzip
+import io
 from pathlib import Path
 
 import pytest
@@ -269,6 +270,107 @@ def test_parse_bed_refuses_a_damaged_gzip(
         f"{path} is a gzip file cut short or damaged at or after line {line_number}. Compress"
         " or copy it again, and run again."
     )
+
+
+# A BED of two lines, and the change that makes the end of its second one no number.
+_TWO_BED_LINES = b"chr1\t0\t10\nchr1\t20\t30\n"
+_END_NOT_A_NUMBER = (b"\t20\t30\n", b"\t20\tX0\n")
+
+
+def test_parse_bed_reports_a_damaged_gzip_read_as_a_fault_of_a_line_as_damaged(
+    tmp_path: Path,
+) -> None:
+    # Stored deflate blocks hold the text as it is, so the change, made after gzip took its
+    # CRC-32, reaches the reader as text, and gzip finds the damage only at the end.
+    compressed = gzip.compress(_TWO_BED_LINES, compresslevel=0, mtime=0)
+    path = write_compressed_bed(tmp_path, compressed.replace(*_END_NOT_A_NUMBER))
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_bed(path, _CONTIGS))
+
+    assert str(raised.value) == (
+        f"{path} is damaged: gzip's own check of the whole file fails (`gzip -t {path}` shows"
+        " it), so the fault pvc_eval found at line 2 may come from the damaged bytes rather"
+        " than from the file's content. Copy or compress the file again from its source, and"
+        " run again."
+    )
+    assert "line 2: the end, 'X0', is not a whole number" in str(raised.value.__cause__)
+
+
+@pytest.mark.parametrize("gzipped", [False, True], ids=["plain", "gzipped_whole"])
+def test_parse_bed_keeps_the_message_of_a_line_of_an_undamaged_file(
+    tmp_path: Path, gzipped: bool
+) -> None:
+    text = _TWO_BED_LINES.replace(*_END_NOT_A_NUMBER)
+    path = write_compressed_bed(tmp_path, gzip.compress(text) if gzipped else text)
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_bed(path, _CONTIGS))
+
+    assert str(raised.value) == (
+        f"{path}, line 2: the end, 'X0', is not a whole number. A BED line gives its start"
+        " and its end as whole numbers of 0 or more; correct the line and run again."
+    )
+
+
+@pytest.mark.parametrize("replacement", ["none", "directory"])
+def test_parse_bed_gives_the_message_of_a_bed_gone_before_the_whole_check(
+    tmp_path: Path, replacement: str
+) -> None:
+    compressed = gzip.compress(_TWO_BED_LINES, compresslevel=0, mtime=0)
+    path = write_compressed_bed(tmp_path, compressed.replace(*_END_NOT_A_NUMBER))
+    bed_lines = parse_bed(path, _CONTIGS)
+    next(bed_lines)
+    # Removed, or replaced by a directory, while the reader holds it open, so that the
+    # fault of line 2 is read and the whole check cannot open the file.
+    path.unlink()
+    if replacement == "directory":
+        path.mkdir()
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        next(bed_lines)
+
+    assert (
+        str(raised.value)
+        == {
+            "none": f"{path} does not exist. Check its path and run again.",
+            "directory": f"{path} is a directory, not a BED file. Check its path and run again.",
+        }[replacement]
+    )
+
+
+def test_parse_bed_refuses_a_bgzipped_bed_without_its_end_block(tmp_path: Path) -> None:
+    # A BGZF file ends with an empty block of 28 bytes; cut between blocks, it would read as
+    # a whole shorter file.
+    path = write_compressed_bed(tmp_path, _BGZIPPED_BED[:-28])
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_bed(path, _CONTIGS))
+
+    assert str(raised.value) == (
+        f"{path} is a gzip file cut short or damaged: it is in BGZF, as bgzip and bcftools"
+        " write, and lacks the empty block that ends such a file. Copy or compress the file"
+        " again from its source, and run again."
+    )
+
+
+def test_parse_bed_opens_a_good_gzipped_bed_read_to_its_end_with_gzip_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = write_compressed_bed(tmp_path, gzip.compress(_TWO_BED_LINES))
+    paths_opened: list[Path] = []
+    gzip_open = gzip.open
+
+    def open_and_count(
+        filename: Path, mode: str, encoding: str | None = None
+    ) -> gzip.GzipFile | io.TextIOWrapper:
+        paths_opened.append(filename)
+        return gzip_open(filename, mode, encoding=encoding)
+
+    monkeypatch.setattr(gzip, "open", open_and_count)
+
+    assert len(list(parse_bed(path, _CONTIGS))) == 2
+    assert paths_opened == [path]
 
 
 def test_parse_bed_refuses_a_line_separated_by_spaces(tmp_path: Path) -> None:

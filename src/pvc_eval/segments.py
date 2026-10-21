@@ -21,7 +21,7 @@ from enum import Enum, StrEnum
 from importlib.metadata import version
 from pathlib import Path
 
-from pvc_eval._text_files import open_temporary_output
+from pvc_eval._text_files import check_gzip_whole, open_temporary_output
 from pvc_eval.bed import parse_bed
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
@@ -1235,7 +1235,8 @@ def _find_requested_spans(path: Path, reference: IndexedFasta) -> dict[str, list
     sorted (doc/specs/str_finder.md, "The str-regions command").
 
     Raises PvcEvalInputError for what parse_bed refuses, and, naming the file and the line,
-    for an end past its contig's length.
+    for an end past its contig's length, or for a damaged gzip BED in its place (doc/spec.md
+    §5.2).
     """
     contig_lengths = _get_contig_lengths(reference)
     requested: dict[str, list[_Span]] = {}
@@ -1243,9 +1244,11 @@ def _find_requested_spans(path: Path, reference: IndexedFasta) -> dict[str, list
         length = contig_lengths[bed_line.contig]
         if bed_line.end > length:
             where = f"{path}, line {bed_line.line_number}"
-            raise PvcEvalInputError(
+            error = PvcEvalInputError(
                 _make_past_contig_end_message(where, bed_line.end, bed_line.contig, length)
             )
+            check_gzip_whole(error, path, "BED", bed_line.line_number)
+            raise error
         requested.setdefault(bed_line.contig, []).append((bed_line.start, bed_line.end))
     return requested
 

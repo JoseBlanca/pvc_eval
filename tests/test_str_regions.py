@@ -636,6 +636,33 @@ def test_each_refusal_of_a_regions_bed_names_the_line(
     assert not Path(f"{output}.tmp").exists()
 
 
+def test_a_damaged_gzipped_regions_bed_read_as_an_end_past_its_contig_is_reported_damaged(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fasta = _write_fasta(tmp_path, {"four_a": _FOUR_A})
+    regions = tmp_path / "regions.bed.gz"
+    # Stored deflate blocks hold the text as it is, so an end of 150 changed to 152, past
+    # the 151 bases of four_a, after gzip took its CRC-32, reaches the reader as text.
+    text = b"four_a\t0\t10\nfour_a\t10\t152\n"
+    compressed = gzip.compress(text.replace(b"152", b"150"), compresslevel=0, mtime=0)
+    regions.write_bytes(compressed.replace(b"\t150\n", b"\t152\n"))
+    output = tmp_path / "str.bed"
+    status, stderr = _run(
+        [
+            *("str-regions", "--reference", str(fasta)),
+            *("--output", str(output), "--regions", str(regions)),
+        ],
+        capsys,
+    )
+    assert (status, stderr) == (
+        1,
+        f"{regions} is damaged: gzip's own check of the whole file fails (`gzip -t {regions}`"
+        " shows it), so the fault pvc_eval found at line 2 may come from the damaged bytes"
+        " rather than from the file's content. Copy or compress the file again from its"
+        " source, and run again.\n",
+    )
+
+
 # ---- The errors of the command ----------------------------------------------------------
 
 

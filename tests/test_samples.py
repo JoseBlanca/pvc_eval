@@ -1,3 +1,4 @@
+import gzip
 import logging
 from collections.abc import Sequence
 from pathlib import Path
@@ -419,3 +420,56 @@ def test_every_sample_paired_gives_no_warning(
 def test_sample_pair_raises_for_a_negative_index(index_a: int, index_b: int, message: str) -> None:
     with pytest.raises(ValueError, match=message):
         SamplePair(name_a="HG002", index_a=index_a, name_b="HG002", index_b=index_b)
+
+
+def _write_damaged_header(path: Path, sample_names: Sequence[str], old: bytes, new: bytes) -> Path:
+    """A VCF header gzipped in stored deflate blocks, which hold the text as it is, with old
+    replaced by new after gzip took its CRC-32: the change reaches the reader as text, and
+    gzip finds the damage only at the end."""
+    line = "\t".join([_FIXED_COLUMNS, *sample_names])
+    text = f"##fileformat=VCFv4.3\n{line}\n".encode()
+    compressed = gzip.compress(text, compresslevel=0, mtime=0)
+    assert compressed.count(old) == 1
+    path.write_bytes(compressed.replace(old, new))
+    return path
+
+
+def _make_damaged_message(path: Path) -> str:
+    return (
+        f"{path} is damaged: gzip's own check of the whole file fails (`gzip -t {path}` shows"
+        " it), so the fault pvc_eval found may come from the damaged bytes rather than from"
+        " the file's content. Copy or compress the file again from its source, and run again."
+    )
+
+
+@pytest.mark.parametrize(
+    ("new", "map_text", "fault"),
+    [
+        (b"XG002\tXG003", None, "share no sample name"),
+        (b"XG002\tHG003", "HG002\tHG002\n", "'HG002' is not a sample of"),
+        (b"HG002\tHG002", None, "names the sample HG002 in two columns"),
+    ],
+    ids=["no_shared_name", "map_name_absent", "name_twice"],
+)
+def test_damaged_gzip_header_read_as_a_fault_of_the_samples_is_reported_damaged(
+    tmp_path: Path, new: bytes, map_text: str | None, fault: str
+) -> None:
+    path_a = _write_damaged_header(tmp_path / "a.vcf.gz", ["HG002", "HG003"], b"HG002\tHG003", new)
+    path_b = _write_header(tmp_path / "b.vcf", ["HG002", "HG003"])
+    sample_map = None if map_text is None else _write_map(tmp_path, map_text)
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        make_sample_pairs(path_a, path_b, sample_map=sample_map)
+
+    assert str(raised.value) == _make_damaged_message(path_a)
+    assert fault in str(raised.value.__cause__)
+
+
+def test_undamaged_gzip_header_with_no_shared_name_keeps_its_message(tmp_path: Path) -> None:
+    path_a = tmp_path / "a.vcf.gz"
+    line = "\t".join([_FIXED_COLUMNS, "XG002", "XG003"])
+    path_a.write_bytes(gzip.compress(f"##fileformat=VCFv4.3\n{line}\n".encode()))
+    path_b = _write_header(tmp_path / "b.vcf", ["HG002", "HG003"])
+
+    with pytest.raises(PvcEvalInputError, match="share no sample name"):
+        make_sample_pairs(path_a, path_b)

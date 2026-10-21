@@ -12,6 +12,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from pvc_eval._text_files import check_gzip_whole
 from pvc_eval.bed import BedLine, parse_bed
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.locus import Locus
@@ -81,13 +82,18 @@ def read_strata(path: Path, contigs: Sequence[str]) -> Strata:
     contigs: the reference's contig names.
 
     Raises PvcEvalInputError as parse_bed does, a line on a contig the reference lacks
-    among them, and for a line whose class is missing, empty or holds a `,`.
+    among them, and for a line whose class is missing, empty or holds a `,`; for a gzip
+    BED that is damaged, it says so in place of the fault of the line (doc/spec.md §5.2).
     """
     spans_by_class: defaultdict[str, defaultdict[str, list[tuple[int, int]]]] = defaultdict(
         lambda: defaultdict(list)
     )
     for bed_line in parse_bed(path, contigs):
-        name = _parse_class(bed_line, path)
+        try:
+            name = _parse_class(bed_line, path)
+        except PvcEvalInputError as err:
+            check_gzip_whole(err, path, "BED", bed_line.line_number)
+            raise
         spans_by_class[name][bed_line.contig].append((bed_line.start, bed_line.end))
     return Strata({name: Regions(spans) for name, spans in spans_by_class.items()})
 
