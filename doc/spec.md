@@ -379,7 +379,11 @@ by the owner on 19 October 2026, in place of marking the record and making its l
 Two bases agree when the bases their IUPAC codes stand for overlap: `N` agrees with any base, `R`
 with `A` or `G`, `A` only with codes that include `A`; so a reference that writes `M` or `N` at a
 site where the VCF has a plain base, as some references and callers do, is no difference, while a
-VCF made on another build still is (decided by the owner on 19 October 2026). The error says how
+VCF made on another build still is (decided by the owner on 19 October 2026). Only the letters of
+ASCII are upper-cased for the comparison: a letter outside ASCII is no IUPAC code and agrees with
+no base, so a REF holding one differs from the reference. Upper-cased by Python's rules, `ß` became
+`SS`, one base longer, and stopped the run with a traceback, and `ſ` became `S` and agreed with `G`
+(found by the review of milestone 1 of `doc/plans/hard-cases.md`, 21 October 2026). The error says how
 many records of the file agreed with the reference before the failing one, which tells a wrong
 reference (none) from a damaged line (many); with `--regions`, only the records of the contigs it
 names are compared with the reference and counted (`doc/specs/regions_read.md`). A record with a symbolic allele (§9) is checked only
