@@ -1,8 +1,10 @@
 # Work report: the re-spelling program
 
 *Done, 21 October 2026. The plan is `doc/plans/respell.md`, built from `doc/specs/respell.md`,
-on the branch `respell`; the last commit of code is 630d173. Nothing is merged into `main` or
-pushed.*
+on the branch `respell`; the last commit of code is 630d173. On the owner's order of 21 October
+2026, `main` was merged into the branch and the GIAB test given the `num_threads` that `main`'s
+`write_str_regions` asks for (496ebe3): the five checks gave "1886 passed, 9 skipped" and the four
+GIAB tests passed in 132 s; then the branch was merged into `main`. Nothing is pushed.*
 
 ## For the owner
 
