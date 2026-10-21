@@ -26,9 +26,9 @@ things found on the way are not fixed here, and neither blocks the merge:
   from `_check_ref` in `pvc_eval.vcf` instead of an error naming the line, and `ſ` is read as the
   IUPAC code `S`. It is on `main` already. It would be a small plan of one milestone, or an issue.
 - The warning for a record whose span the span limit cut says it "was given only its REF as its
-  span"; a cut record with a `*` now keeps its REF as written too. A user reading it about such a
-  record would think the span narrower by the padding. A change of one sentence of text pvc_eval
-  prints, which is the owner's to approve.
+  span". A reviewer thought it no longer fits a record with a `*`, which keeps its REF as written.
+  It does fit: a user reads "its REF" as the REF the file wrote, which is now exactly the span of
+  such a record. It is left as it is.
 
 ## Milestone 1: a `*` measured against its record's REF as written
 
@@ -64,9 +64,8 @@ check` pass.
 - Not taken: the errors reviewer's question whether a `written_ref` with a negative start should
   be refused; the spec asks only that it hold the trimmed REF, as it asks of a span.
 - The correctness reviewer's second look at the span fix found it settled, with its tests failing
-  without it, and parse_vcf's order kept on 1,500 random records. Its nit, left for the owner: the
-  span-limit warning still says a cut record "was given only its REF as its span", where a record
-  with a `*` now keeps its REF as written too.
+  without it, and parse_vcf's order kept on 1,500 random records. Its nit, that the span-limit warning's "only its REF as its span" no longer fits a record with a
+  `*`, does not hold: the REF the file wrote is that record's span.
 - The tests reviewer noted that no property test compares `reconcile` and the oracle on records
   with a `*`; the two read one field, and the R10 tests guard it. Left as it is.
 
