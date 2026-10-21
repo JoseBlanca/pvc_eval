@@ -38,7 +38,7 @@ with its `.fai`.
 
 They run in order: milestone 2's cases S11 and E5 stand on milestone 1.
 
-- [ ] **1. A `*` measured against its record's REF as written**
+- [x] **1. A `*` measured against its record's REF as written**
 
   What it gives: a padded record with a `*`, as pvc writes, is read as its caller meant, in
   pvc_eval, in the haplotype oracle and in the re-spelling program.

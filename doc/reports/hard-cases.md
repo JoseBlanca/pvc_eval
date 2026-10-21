@@ -36,6 +36,10 @@ check` pass.
   were added.
 - Not taken: the errors reviewer's question whether a `written_ref` with a negative start should
   be refused; the spec asks only that it hold the trimmed REF, as it asks of a span.
+- The correctness reviewer's second look at the span fix found it settled, with its tests failing
+  without it, and parse_vcf's order kept on 1,500 random records. Its nit, left for the owner: the
+  span-limit warning still says a cut record "was given only its REF as its span", where a record
+  with a `*` now keeps its REF as written too.
 - The tests reviewer noted that no property test compares `reconcile` and the oracle on records
   with a `*`; the two read one field, and the R10 tests guard it. Left as it is.
 
