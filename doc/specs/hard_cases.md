@@ -1,11 +1,10 @@
 # pvc's hard cases — specification
 
-*Status: draft of 21 October 2026, for the owner's approval of each expected outcome. Open 1 was
-answered by the owner on 21 October 2026: a `*` is measured against its record's REF as written
-(§6). No test of it exists yet. It answers `doc/spec.md` Open 3 and replaces the text of its §7.5. It stands on
+*Status: approved by the owner on 21 October 2026, with each expected outcome, and with its Open 1
+answered the same day: a `*` is measured against its record's REF as written (§6). No test of it
+exists yet. It answers `doc/spec.md` Open 3 and replaces the text of its §7.5. It stands on
 `doc/spec.md` §5.2 to §5.5, on `doc/specs/loci.md`, `doc/specs/reconciliation.md` and
-`doc/specs/compare.md`, and on the oracle of `doc/specs/respell.md` §8,
-`tests/haplotype_oracle.py`.*
+`doc/specs/compare.md`, and on the oracle of `doc/specs/respell.md` §8, `tests/haplotype_oracle.py`.*
 
 pvc's work on tandem repeats met, in its reports, the disagreements between VCF files that pvc_eval
 was made to judge: GIAB writing one haplotype as an indel and a SNP where pvc writes one record over
@@ -18,7 +17,7 @@ table that `compare()` must give for it: the outcome, the locus, its locus allel
 of each file. Each becomes a test that runs `compare()` on a few hundred bases of the real
 reference.
 
-What is asked of the owner is to approve each expected outcome, since the check stands on them. 34
+The owner approved each expected outcome on 21 October 2026, since the check stands on them. 34
 of the 50 are *same genotype*: the files spell one haplotype differently and pvc_eval must see
 through it. 11 are *different* and 4 *same alleles, other genotype*, where the files truly
 disagree. One, E11, is *invalid in B*, file B being pvc's: pvc wrote what it meant to be TR's
