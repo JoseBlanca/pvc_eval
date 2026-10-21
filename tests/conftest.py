@@ -2,11 +2,14 @@
 writes a case's reference and VCF lines to a directory and reads them back with parse_vcf,
 its fixture; write_case_vcf, which writes a case's lines as a VCF file, with
 make_chrom_line and FILEFORMAT_LINE; and the helpers that build a case's sample pairs and
-read its locus's bases.
+read its locus's bases; and EnvironmentPath and get_paths_from_environment, which give
+the paths a test reads from the environment, or skip it.
 """
 
+import os
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -142,3 +145,42 @@ def pair_samples(num_samples: int) -> tuple[SamplePair, ...]:
         SamplePair(name_a=f"S{index}", index_a=index, name_b=f"S{index}", index_b=index)
         for index in range(num_samples)
     )
+
+
+@dataclass(frozen=True, slots=True)
+class EnvironmentPath:
+    """A path the test reads from the environment: its variable, what it names, and the
+    suffixes of the files that must be beside it."""
+
+    variable: str
+    what: str
+    beside: tuple[str, ...] = ()
+
+
+def get_paths_from_environment(*needed: EnvironmentPath) -> list[Path]:
+    """The paths the variables name, in their order. The test is skipped, naming each that
+    is missing, when a variable is unset, or its file or a file beside it does not
+    exist."""
+    paths = []
+    missing = []
+    for environment_path in needed:
+        variable, what = environment_path.variable, environment_path.what
+        value = os.environ.get(variable)
+        if not value:
+            missing.append(f"{variable} is not set; it names {what}")
+            continue
+        path = Path(value)
+        absent = [
+            f"{path.name}{suffix}"
+            for suffix in environment_path.beside
+            if not Path(f"{path}{suffix}").is_file()
+        ]
+        if not path.is_file():
+            missing.append(f"{variable} names {path}, which does not exist; it names {what}")
+        elif absent:
+            missing.append(f"{variable} names {path}, which has no {', '.join(absent)} beside it")
+        else:
+            paths.append(path)
+    if missing:
+        pytest.skip(". ".join(missing))
+    return paths

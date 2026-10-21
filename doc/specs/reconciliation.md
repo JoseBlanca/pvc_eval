@@ -31,6 +31,9 @@ The owner decided, on 19 October 2026:
   under an MNP, over deletions only (Open 4 of the draft);
 - two genotypes all REF count as equal whatever their ploidies (Open 5 of the draft).
 
+On 21 October 2026 the owner decided that a `*` is measured against its record's REF as the file
+wrote it, before normalising, over the normalised REF (`doc/specs/hard_cases.md` §6; R10 below).
+
 The decisions change `doc/spec.md` beyond its §5.4 and §5.5, as §10 lists. Four smaller points
 are decided here, each where it stands: a GT of only `.` is missing whatever its
   number of alleles (§2); a sample in no pair is not reconciled (§4); a reason is written whenever a sample is invalid, also in a row *too complex*
@@ -217,15 +220,18 @@ leaves nothing of either, one that spells REF, makes no edit.
   when they go in at the same point. An insertion at either end of a replaced stretch, or a
   replacement next to another, does not collide.
 - It carries a `*` that no deletion **covers**. A deletion covers a `*` when one of its placements
-  deletes a position of the `*` record's REF; any other edit covers it when, as written, it
-  replaces such a position, as GATK writes `*` under an MNP (decided by the owner on 19 October
+  deletes a position of the `*` record's REF as the file wrote it, before normalising; any other
+  edit covers it when, as written, it replaces such a position, as GATK writes `*` under an MNP (decided by the owner on 19 October
   2026). An edit of a record whose allele the haplotype carries counts. So does an edit among the
   alleles of a record where the haplotype is `MISSING`, since it might carry that one. The placements of a deletion are where it was
   written and every slide of `doc/spec.md` §5.2 that deletes only positions of its record's span:
   a record whose span the span limit cut back to its REF allows only the slides within its REF. A deletion is an
   edit that replaces one or more positions with no bases. Where the span is not cut, the base
   before the deletion's left-aligned form, its anchor in `bcftools norm`'s spelling, is deleted
-  by none of its placements; the base before it as written may be, when it slides left.
+  by none of its placements; the base before it as written may be, when it slides left. The REF as
+  written is the stretch `VcfRecord.written_ref` gives (§7); it holds the normalised REF, and is
+  wider where the file padded the record over bases its alleles share, as pvc does (decided by the
+  owner on 21 October 2026, R10).
 
 **Missing.** A haplotype that is not impossible and carries `MISSING` at any record has a missing
 locus allele, however many other records give it a definite allele. Impossibility comes first: a
@@ -340,6 +346,17 @@ sample with a malformed GT at one record and a GT of another ploidy at another: 
 GT` or `ploidy mismatch`. `./.` read with ploidy 1, and
 `.` with ploidy 2: missing.
 
+**R10. A padded `*` record.** Reference 10–21 `TATACACATAGG`, `10 TATACAC TATAC,* 1/2` and
+`15 ACATA A 0/1`, unphased, the records of `doc/specs/hard_cases.md` S11 over their own few bases.
+Normalised, the first record is `12 TAC T,*`, whose 2-base deletion deletes 13–14, and the second
+deletes 16–19, or 15–18 slid left. The first record's span holds its REF as written, 10–16
+(`doc/spec.md` §5.2), so the locus is 10–19. The `*`'s REF as written is 10–16, which both
+placements of the second deletion reach, so it covers the `*`. Assignment 0 puts the 2-base
+deletion on one haplotype and the `*` with the 4-base deletion on the other: alleles
+`TATACACATA,TATACATA,TATACA`, possible genotypes `(1, 2)`. Assignment 1 leaves the `*` on a
+haplotype with no deletion, which is impossible. Measured against the normalised REF, 12–14, which
+no placement reaches, the sample would be invalid, `contradicting records`.
+
 ## 5. Evaluation
 
 Evaluation takes the sample results of the two samples of a pair and gives the outcome of
@@ -445,6 +462,27 @@ class SamplePair:
 def make_sample_pairs(path_a: Path, path_b: Path, *,
                       sample_map: Path | None = None) -> tuple[SamplePair, ...]: ...
 ```
+
+`VcfRecord` gains one field, the REF as written that a `*` is measured against (§4.2), which
+nothing else reads:
+
+```python
+# pvc_eval.vcf
+class VcfRecord:
+    ...                                # the fields it has, unchanged
+    written_ref: Span | None = None    # 0-based and half-open; None stands for (start, end)
+```
+
+`parse_vcf` sets it to the stretch the file's REF covers, from POS to POS plus the length of REF,
+before trimming, on every record where that stretch differs from the normalised REF, and leaves
+it `None` on the others, where `None` stands for the normalised REF. So a record built by hand
+with `None` equals the record `parse_vcf` gives for the same line, and the field costs no memory
+on the records whose REF lost no base: on 100,000 records of one SNP and one sample, held by
+`parse_vcf`, 610 bytes per record against 721 when every record holds it (measured by the review
+of milestone 1 of `doc/plans/hard-cases.md`, 21 October 2026, with tracemalloc; 601 before the
+field). The owner chose it on 21 October 2026. `VcfRecord` raises `ValueError` when it is given one
+that does not contain its normalised REF. A record with a `*` allele has it in its span
+(`doc/spec.md` §5.2).
 
 The types every evaluator shares are in a module that holds only them, as `pvc_eval.locus` holds
 `Locus`:
@@ -556,7 +594,7 @@ a literal.
   their text; the first 10 names and the count after them.
 - **At `reconcile`**, on `Locus` values built in the test, with their records read by `parse_vcf`
   from a few lines written to `tmp_path`, so that each record has the span the reader gives it:
-  every case of §4.4, R1 to R9, with its locus alleles and its possible genotypes. Then the
+  every case of §4.4, R1 to R10, with its locus alleles and its possible genotypes. Then the
   order of the locus alleles across two samples and two files; a sample in no pair, which adds
   nothing; a file with no record in the locus, all REF; a record with no ALT whose REF reaches
   past the locus, `0/0` (all REF) and `./.` (missing); and ploidy 1, with a `1` and a `0`.

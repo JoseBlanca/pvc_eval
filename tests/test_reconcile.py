@@ -5,6 +5,7 @@ The cases give positions 1-based and inclusive, as the spec does; a Locus is 0-b
 half-open, so a locus 9-12 of the spec is Locus(start=8, end=12).
 """
 
+import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -184,6 +185,28 @@ CASES = {
         alleles=("TAAAA",),
         result_a=CONTRADICTING,
         span_limit=2,
+    ),
+    # R10, reference 10-21 TATACACATAGG, locus 10-19: the `*` record is normalised to
+    # 12 TAC T,*, its span holds its REF as written, 10-16, and both placements of the
+    # deletion of 16-19, as written or slid to 15-18, delete a position of it.
+    "R10-padded-star-covered-by-its-ref-as-written": Case(
+        ref_start=10,
+        bases="TATACACATAGG",
+        locus=(10, 19),
+        lines_a=["10 TATACAC TATAC,* 1/2", "15 ACATA A 0/1"],
+        alleles=("TATACACATA", "TATACATA", "TATACA"),
+        result_a=((1, 2),),
+    ),
+    # Beside R10, reference 9-21 GTATACACATAGG, locus 10-17: the deletion of the A at 11 lies
+    # in the padding on the left of the `*` record's trimmed REF, 12-14, and in its REF as
+    # written, 10-16, so it covers the `*`.
+    "R10-beside-star-covered-by-a-deletion-in-the-left-padding": Case(
+        ref_start=9,
+        bases="GTATACACATAGG",
+        locus=(10, 17),
+        lines_a=["10 TA T 0/1", "10 TATACAC TATAC,* 0/2"],
+        alleles=("TATACACA", "TTACACA"),
+        result_a=((0, 1),),
     ),
     # R3, reference 21-26 CAGAGT, locus 21-25.
     "R3-as-written": Case(
@@ -370,6 +393,27 @@ def test_reconcile_gives_the_locus_alleles_and_possible_genotypes_of_each_case(
         results_a={0: case.result_a},
         results_b={0: case.result_b},
     )
+
+
+# §7: a record built without written_ref is measured against its REF, here R10's normalised
+# REF, 12-14, which no placement of the deletion reaches. The records keep the spans parse_vcf
+# gives them, so the locus is R10's, 10-19.
+def test_reconcile_measures_a_star_without_written_ref_against_its_ref(
+    case_files: CaseFiles,
+) -> None:
+    reference = case_files.write_reference(10, "TATACACATAGG")
+    records = tuple(
+        dataclasses.replace(vcf_record, written_ref=None)
+        for vcf_record in case_files.write_and_parse_records(
+            reference, ["10 TATACAC TATAC,* 1/2", "15 ACATA A 0/1"]
+        )
+    )
+    locus = make_locus((10, 19), records)
+
+    reconciled = reconcile(locus, get_locus_bases(reference, locus), pair_samples(1))
+
+    assert reconciled.alleles == ("TATACACATA",)
+    assert reconciled.results_a == {0: CONTRADICTING}
 
 
 # doc/specs/reconciliation.md §9: two records of one haplotype whose edits touch give a file

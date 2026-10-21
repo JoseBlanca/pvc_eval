@@ -270,6 +270,26 @@ def test_locus_widened_by_str_region_gives_its_row(tmp_path: Path) -> None:
     ]
 
 
+# doc/spec.md §5.2: the `*` record's REF as written, 2-17, holds the deletion of the T at 17,
+# 14 positions past its trimmed REF, 2-3, so its span puts both in one locus, where the
+# deletion covers the `*`.
+def test_a_deletion_in_the_padding_of_a_star_record_shares_its_locus(tmp_path: Path) -> None:
+    case = write_compare_case(
+        tmp_path,
+        contigs={"chr1": "GACGTCAGTTGCAAGCTAGGATCCAT"},
+        lines_a=[
+            "chr1 2 ACGTCAGTTGCAAGCT AGTCAGTTGCAAGCT,* 50 1/2:40 0/0:40",
+            "chr1 16 CT C 50 0/1:40 0/0:40",
+        ],
+        lines_b=["chr1 2 AC A 50 1|0:40 0/0:40", "chr1 16 CT C 50 0|1:40 0/0:40"],
+    )
+    config = CompareConfig(str_regions=write_bed(tmp_path / "str.bed", []))
+
+    rows = compare(case.a, case.b, case.reference, config, finder_threads=0)
+
+    assert [(row.start, row.end, row.outcome) for row in rows] == [(1, 17, Outcome.SAME_GENOTYPE)]
+
+
 def test_contigs_with_records_are_scanned_and_contig_4_is_not(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -2,7 +2,8 @@
 compare() share: a reference of four contigs, chr1 to chr3 of 300 bases each with STR
 regions the STR finder admits and chr4 of 200 bases with none, and the VCF text of file A, with records on chr1 and chr3, and of
 file B, with records on chr2 and chr3, two samples in each and one sample pair by name,
-HG002.
+HG002. write_fasta, which writes a FASTA and its .fai, serves the tests of
+doc/specs/hard_cases.md too.
 
 Positions in the VCF lines are 1-based, as in a VCF; the STR regions are 0-based and
 half-open, as GenomeSegment gives them.
@@ -93,7 +94,7 @@ def write_compare_case(
 ) -> CompareCase:
     """Writes the reference, its .fai and the two VCF files of a case to directory."""
     reference = directory / "ref.fa"
-    _write_fasta(reference, contigs)
+    write_fasta(reference, contigs)
     path_a = directory / "a.vcf"
     path_b = directory / "b.vcf"
     _write_vcf(path_a, SAMPLES_A, lines_a)
@@ -107,8 +108,9 @@ def write_bed(path: Path, lines: Sequence[str]) -> Path:
     return path
 
 
-def _write_fasta(path: Path, contigs: Mapping[str, str]) -> None:
-    """A FASTA of lines of _FASTA_LINE_BASES bases, and its .fai."""
+def write_fasta(path: Path, contigs: Mapping[str, str]) -> None:
+    """Writes a FASTA of these contigs, by name, in lines of _FASTA_LINE_BASES bases, and
+    its .fai beside it."""
     fasta_text = ""
     fai_lines = []
     for name, bases in contigs.items():

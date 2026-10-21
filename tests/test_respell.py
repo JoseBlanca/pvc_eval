@@ -282,6 +282,22 @@ def test_records_whose_edits_touch_on_a_haplotype_they_may_share_are_kept(
             ["2 A T 0/1", "3 C G,* 0/2"],
             id="next-to-a-star-ref-on-the-right",
         ),
+        # ACGT -> AGT,* is trimmed to AC -> A,* at 2-3, but the file's REF covers 2-5, which
+        # the SNP at 5 overlaps; the trimmed REF ends a position before it.
+        pytest.param(
+            "GACGTA",
+            ["2 ACGT AGT,* 0/2", "5 T G 0/1"],
+            ["2 ACGT AGT,* 0/2", "5 T G 0/1"],
+            id="touches-a-padded-star-ref-as-written",
+        ),
+        # CGTA -> CGA,* is trimmed to GT -> G,* at 4-5, but the file's REF covers 3-6, next
+        # to the SNP at 2; the trimmed REF starts a position after.
+        pytest.param(
+            "GACGTA",
+            ["2 A T 0/1", "3 CGTA CGA,* 0/2"],
+            ["2 A T 0/1", "3 CGTA CGA,* 0/2"],
+            id="touches-a-padded-star-ref-as-written-on-the-left",
+        ),
         pytest.param(
             "GACGTA",
             ["2 A <DEL> 0/1", "5 T G 0/1"],

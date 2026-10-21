@@ -12,7 +12,8 @@ Positions are 0-based and half-open, but in the messages, which give windows 1-b
 inclusive as a VCF does.
 
 Public: check_same_haplotypes, HaplotypeComparison, ORACLE_CAP; check_same_samples, which the
-check of §7.4 uses too.
+check of §7.4 uses too; find_possible_genotypes, one file's possible genotypes over a
+stretch, which the tests of doc/specs/hard_cases.md §5 use.
 """
 
 import bisect
@@ -170,6 +171,87 @@ def check_same_haplotypes(
     return HaplotypeComparison(
         num_windows=num_windows, num_linked_pairs=num_linked_pairs, num_over_cap=num_over_cap
     )
+
+
+def find_possible_genotypes(
+    vcf: Path,
+    reference: IndexedFasta,
+    contig: str,
+    start: int,
+    end: int,
+    sample: int,
+    *,
+    ploidy: int = DEFAULT_PLOIDY,
+) -> frozenset[tuple[str, ...]] | None:
+    """A sample's possible genotypes over a stretch of one contig, from one file's records
+    (doc/specs/hard_cases.md §5), with the phase assignments of the blocks of all the
+    file's windows in the stretch taken together.
+
+    The file is read with parse_vcf over reference with ploidy; the windows are those of
+    its records alone. start and end are 0-based and half-open; sample is the sample's
+    index in the file. Each genotype is a sorted tuple of sequences, one per haplotype,
+    the reference's bases between the windows.
+
+    Gives None when the sample is invalid over the windows: a malformed GT, a GT of
+    another ploidy, or no phase assignment that gives a genotype. Raises ValueError when a
+    window crosses an end of the stretch, when the windows have more than ORACLE_CAP phase
+    assignments, and when a haplotype is missing.
+    """
+    records = [
+        vcf_record
+        for vcf_record in parse_vcf(vcf, reference, ploidy=ploidy)
+        if vcf_record.contig == contig
+    ]
+    windows = _make_windows(reference, contig, [records])
+    all_window_records = _find_window_records(windows, records)
+    indices = []
+    for index, window in enumerate(windows):
+        if window.end <= start or end <= window.start:
+            continue
+        if window.start < start or end < window.end:
+            raise ValueError(
+                f"the window {_format_windows(contig, [window])} crosses the stretch"
+                f" {contig}:{start + 1}-{end}"
+            )
+        indices.append(index)
+    stretch_windows = [windows[index] for index in indices]
+    result = _find_sample_result(
+        stretch_windows, [all_window_records[index] for index in indices], sample, ploidy
+    )
+    if result is _OVER_CAP:
+        raise ValueError(f"the windows have more than {ORACLE_CAP} phase assignments")
+    if isinstance(result, _InvalidReason) or not result:
+        return None
+    return frozenset(
+        tuple(
+            sorted(
+                _join_windows(reference, contig, start, end, stretch_windows, values)
+                for values in genotype
+            )
+        )
+        for genotype in result
+    )
+
+
+def _join_windows(
+    reference: IndexedFasta,
+    contig: str,
+    start: int,
+    end: int,
+    windows: Sequence[_Window],
+    values: Sequence[_HaplotypeValue],
+) -> str:
+    """One haplotype's sequence over a stretch, 0-based and half-open: its value over each
+    window, and the reference's bases between them. ValueError when a value is MISSING."""
+    pieces = []
+    position = start
+    for window, value in zip(windows, values, strict=True):
+        if value is MISSING:
+            raise ValueError(f"a haplotype is missing at {_format_windows(contig, [window])}")
+        pieces.extend((reference.get_bases(contig, position, window.start), value))
+        position = window.end
+    pieces.append(reference.get_bases(contig, position, end))
+    return "".join(pieces)
 
 
 def _check_windows(
@@ -393,7 +475,13 @@ def _find_haplotype_value(
             is_missing = True
             missing_edits.extend(_make_alt_edits(vcf_record))
         elif vcf_record.alleles[allele] == _SPANNING_DELETION:
-            star_refs.append((vcf_record.start, vcf_record.end))
+            # A `*` is measured against its record's REF as the file wrote it, or, for a
+            # record built without it, its REF (doc/specs/reconciliation.md §4.2 and §7).
+            star_refs.append(
+                (vcf_record.start, vcf_record.end)
+                if vcf_record.written_ref is None
+                else vcf_record.written_ref
+            )
         elif allele != 0:
             edit = _make_edit(vcf_record, vcf_record.alleles[allele])
             if edit is not None:
@@ -444,7 +532,7 @@ def _is_colliding(edit: _Edit, other: _Edit) -> bool:
 
 
 def _is_covered(star_ref: tuple[int, int], edits: Sequence[_Edit]) -> bool:
-    """Whether an edit, as written, replaces a position of a `*` record's REF."""
+    """Whether an edit, as written, replaces a position of a `*` record's REF as written."""
     star_start, star_end = star_ref
     return any(edit.deleted and edit.start < star_end and star_start < edit.end for edit in edits)
 

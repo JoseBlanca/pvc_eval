@@ -26,6 +26,7 @@ from pvc_eval.vcf import (
     Span,
     VcfGenotype,
     VcfRecord,
+    get_written_ref,
     trim_alt,
 )
 
@@ -444,10 +445,11 @@ def _is_star_covered(
     haplotype: _Haplotype,
 ) -> bool:
     """Whether a `*` the haplotype carries is covered (§4.2): a deletion covers it when one
-    of its placements deletes a position of the `*` record's REF, and any other edit when,
-    as written, it replaces one. The edits that count are those of the alleles the
-    haplotype carries at the other records, and every ALT of a record where it is
-    MISSING, since it might carry that one."""
+    of its placements deletes a position of the `*` record's REF as the file wrote it, and
+    any other edit when, as written, it replaces one. The edits that count are those of the
+    alleles the haplotype carries at the other records, and every ALT of a record where it
+    is MISSING, since it might carry that one."""
+    star_start, star_end = get_written_ref(star_record)
     for vcf_record, record_edits, allele_index in zip(records, edits, haplotype, strict=True):
         if vcf_record is star_record:
             continue
@@ -456,7 +458,7 @@ def _is_star_covered(
             if edit is None or edit.covered is None:
                 continue
             start, end = edit.covered
-            if start < star_record.end and star_record.start < end:
+            if start < star_end and star_start < end:
                 return True
     return False
 

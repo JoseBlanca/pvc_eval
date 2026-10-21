@@ -39,6 +39,13 @@ HEADER = (
     "##fileformat=VCFv4.3\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tHG002\tHG003\n"
 )
 
+# Written by their names, since ruff takes the long s for an f and the Kelvin sign for a K,
+# a combining mark joins the character before it, and a no-break space looks like a space.
+LONG_S = "\N{LATIN SMALL LETTER LONG S}"
+KELVIN_SIGN = "\N{KELVIN SIGN}"
+COMBINING_ACUTE = "\N{COMBINING ACUTE ACCENT}"
+NO_BREAK_SPACE = "\N{NO-BREAK SPACE}"
+
 type MakeReference = Callable[[str, str], IndexedFasta]
 
 
@@ -321,7 +328,7 @@ def test_contig_missing_from_the_reference_stops_the_run(
 
 @pytest.mark.parametrize(
     "alt",
-    ["<DEL>", "A]chr2:20]", "[chr2:20[A", "A.", ".A", "T,A.", ".A,T"],
+    ["<DEL>", "A]chr2:20]", "[chr2:20[A", "A.", ".A", "T,A.", ".A,T", "<DEL>,ß"],
     ids=[
         "symbolic",
         "breakend_right",
@@ -330,6 +337,7 @@ def test_contig_missing_from_the_reference_stops_the_run(
         "single_breakend_left",
         "single_breakend_among_other_alts",
         "single_breakend_before_other_alts",
+        "symbolic_beside_an_alt_outside_ascii",
     ],
 )
 def test_symbolic_alleles_are_skipped_and_counted(
@@ -1022,6 +1030,71 @@ def test_alt_dot_written_with_more_than_one_character_stops_the_run(
     )
 
 
+# The end of an error for an ALT outside ASCII, after the place of the ALT or the character.
+ALT_DAMAGED = (
+    "a character outside ASCII, which is no base, so the line looks damaged. Correct it or"
+    " remove it, and run again."
+)
+# An insertion of 100,000 characters whose last is ß.
+LONG_ALT = "G" + "A" * 99_998 + "ß"
+
+
+@pytest.mark.parametrize(
+    ("alts", "found"),
+    [
+        ("ß", "ALT 'ß' (U+00DF) of chr1:1 holds"),
+        ("Aß", "ALT 'Aß' (U+00DF) of chr1:1 holds"),
+        ("A,ß", "ALT 'A,ß' (U+00DF) of chr1:1 holds"),
+        ("ß,*", "ALT 'ß,*' (U+00DF) of chr1:1 holds"),
+        (f"A{COMBINING_ACUTE}", f"ALT 'A{COMBINING_ACUTE}' (U+0301) of chr1:1 holds"),
+        (f"A{NO_BREAK_SPACE}", f"ALT 'A{NO_BREAK_SPACE}' (U+00A0) of chr1:1 holds"),
+        (f"ß{COMBINING_ACUTE}", f"ALT 'ß{COMBINING_ACUTE}' (U+00DF, U+0301) of chr1:1 holds"),
+        ("ßAß", "ALT 'ßAß' (U+00DF) of chr1:1 holds"),
+        (
+            "ACGTACGTACGTACGTACGß",
+            "ALT 'ACGTACGTACGTACGTACGß' (U+00DF) of chr1:1 holds",
+        ),
+        (
+            "ACGTACGTACGTACGTACGTß",
+            "ALT 1 of chr1:1 (21 characters) has 'ß' (U+00DF) at character 21,",
+        ),
+        (
+            LONG_ALT,
+            "ALT 1 of chr1:1 (100,000 characters) has 'ß' (U+00DF) at character 100,000,",
+        ),
+        (
+            f"A,{'C' * 30}ß",
+            "ALT 2 of chr1:1 (31 characters) has 'ß' (U+00DF) at character 31,",
+        ),
+    ],
+    ids=[
+        "alone",
+        "after_a_base",
+        "second_alt",
+        "beside_a_star",
+        "combining_mark_after_a_base",
+        "no_break_space_after_a_base",
+        "two_characters_outside_ascii",
+        "one_character_twice",
+        "column_of_20_characters_quoted_whole",
+        "column_of_21_characters_named_where",
+        "insertion_of_100000_characters",
+        "second_alt_of_a_long_column",
+    ],
+)
+def test_alt_holding_a_character_outside_ascii_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta, alts: str, found: str
+) -> None:
+    # Upper-cased by Python's rules, ß would be the allele SS, and agree with another
+    # file's SS. An ALT column of more than 20 characters is not written in the message.
+    path = write_vcf(tmp_path, f"chr1\t1\t.\tG\t{alts}\t.\t.\t.\tGT\t0/1\t0/0\n")
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == f"{path}, line 3: {found} {ALT_DAMAGED}"
+
+
 def test_records_at_the_same_pos_both_come_out(tmp_path: Path, reference: IndexedFasta) -> None:
     path = write_vcf(
         tmp_path,
@@ -1190,6 +1263,75 @@ def test_iupac_codes_that_share_no_base_differ(
     )
 
 
+# A character outside ASCII is written with its code point, so that one that looks like a
+# base, or like nothing, is not read as one.
+@pytest.mark.parametrize(
+    ("reference_bases", "ref", "found"),
+    [
+        (
+            "G",
+            "ß",
+            "is 'ß' (U+00DF), and the reference, read in upper case, has 'G' there"
+            " ('ß' (U+00DF) is no IUPAC code).",
+        ),
+        (
+            "G",
+            LONG_S,
+            f"is '{LONG_S}' (U+017F), and the reference, read in upper case, has 'G' there"
+            f" ('{LONG_S}' (U+017F) is no IUPAC code).",
+        ),
+        (
+            "AGT",
+            "AßT",
+            "is 'AßT' (U+00DF), and the reference, read in upper case, has 'AGT' there"
+            " ('ß' (U+00DF) is no IUPAC code).",
+        ),
+        (
+            "ACGTACGTACGTACGTACGTG",
+            "ACGTACGTACGTACGTACGTß",
+            "(21 bases) has 'ß' (U+00DF) at chr1:23, where the reference, read in upper case,"
+            " has 'G' ('ß' (U+00DF) is no IUPAC code).",
+        ),
+        (
+            "G",
+            KELVIN_SIGN,
+            f"is '{KELVIN_SIGN}' (U+212A), and the reference, read in upper case, has 'G' there"
+            f" ('{KELVIN_SIGN}' (U+212A) is no IUPAC code).",
+        ),
+        (
+            "GA",
+            f"G{COMBINING_ACUTE}",
+            f"is 'G{COMBINING_ACUTE}' (U+0301), and the reference, read in upper case, has 'GA'"
+            f" there ('{COMBINING_ACUTE}' (U+0301) is no IUPAC code).",
+        ),
+    ],
+    ids=[
+        "sharp_s_against_g",
+        "long_s_against_g",
+        "sharp_s_inside_a_longer_ref",
+        "sharp_s_ending_a_ref_of_21_bases",
+        "kelvin_sign_against_g",
+        "combining_mark_after_g",
+    ],
+)
+def test_ref_letter_outside_ascii_differs_from_the_reference(
+    tmp_path: Path, make_reference: MakeReference, reference_bases: str, ref: str, found: str
+) -> None:
+    # Upper-cased by Python's rules, ß would be SS, one base longer, and the long s would be
+    # S, the code for C or G; only ASCII letters are upper-cased, so each is no IUPAC code.
+    path = write_vcf(tmp_path, f"chr1\t3\t.\t{ref}\t.\t.\t.\t.\tGT\t0/0\t0/0\n")
+    reference = make_reference(*make_fasta({"chr1": f"GG{reference_bases}GG"}))
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == (
+        f"{path}, line 3: the REF of chr1:3 {found} It is the first record read with no"
+        " symbolic allele, so the VCF looks made on another reference: compare against the"
+        " reference it was called on, and run again."
+    )
+
+
 @pytest.mark.parametrize(
     ("line", "found"),
     [
@@ -1262,6 +1404,100 @@ def test_records_are_trimmed_and_never_moved(tmp_path: Path, reference: IndexedF
     (record,) = parse_vcf(path, reference)
 
     assert get_placement(record) == (3, ("AA", "A"), (2, 5))
+
+
+# doc/specs/reconciliation.md R10: the reference 10-21 TATACACATAGG, 1-based, after 9 Gs.
+@pytest.mark.parametrize(
+    ("line", "start", "alleles", "written_ref"),
+    [
+        # Trimmed to TAC -> T,* at 12-14, 1-based; the file's REF covers 10-16.
+        ("chr1\t10\t.\tTATACAC\tTATAC,*", 11, ("TAC", "T", "*"), (9, 16)),
+        # Trimmed at the left alone, to ACAC -> A at 13-16.
+        ("chr1\t12\t.\tTACAC\tTA", 12, ("ACAC", "A"), (11, 16)),
+        # A REF that lost no base: None, as a record built by hand has.
+        ("chr1\t15\t.\tACATA\tA", 14, ("ACATA", "A"), None),
+    ],
+    ids=["padded-star-record", "padded-at-the-left", "unpadded-record"],
+)
+def test_written_ref_is_the_ref_as_the_file_wrote_it_where_it_differs(
+    tmp_path: Path,
+    make_reference: MakeReference,
+    line: str,
+    start: int,
+    alleles: tuple[str, ...],
+    written_ref: tuple[int, int] | None,
+) -> None:
+    reference = make_reference(*make_fasta({"chr1": "GGGGGGGGGTATACACATAGG"}))
+    path = write_vcf(tmp_path, f"{line}\t.\t.\t.\tGT\t1/2\t0/0\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    assert (record.start, record.alleles, record.written_ref) == (start, alleles, written_ref)
+
+
+def test_written_ref_left_out_is_none_which_stands_for_the_ref() -> None:
+    record = VcfRecord(
+        contig="chr1",
+        start=11,
+        alleles=("TAC", "T", "*"),
+        qual=None,
+        genotypes=(),
+        line_number=1,
+        span=(11, 17),
+    )
+
+    assert record.written_ref is None
+
+
+# doc/spec.md §5.2: TAC -> T at 12-14, 1-based, slides to 16-17, so it spans 12-17; with
+# the `*`, the span holds the REF as written, 10-16, too, also once a limit of 1 cuts the
+# span to the trimmed REF.
+@pytest.mark.parametrize(
+    ("alts", "span_limit", "span"),
+    [
+        ("TATAC,*", SpanLimit(), (9, 17)),
+        ("TATAC,*", SpanLimit(span_limit=1), (9, 16)),
+        ("TATAC", SpanLimit(), (11, 17)),
+    ],
+    ids=["star-record", "star-record-cut-by-the-limit", "no-star"],
+)
+def test_span_of_a_record_with_a_star_holds_its_ref_as_written(
+    tmp_path: Path,
+    make_reference: MakeReference,
+    alts: str,
+    span_limit: SpanLimit,
+    span: tuple[int, int],
+) -> None:
+    reference = make_reference(*make_fasta({"chr1": "GGGGGGGGGTATACACATAGG"}))
+    path = write_vcf(tmp_path, f"chr1\t10\t.\tTATACAC\t{alts}\t.\t.\t.\tGT\t1/2\t0/0\n")
+
+    (record,) = parse_vcf(path, reference, **span_limit)
+
+    assert record.span == span
+
+
+@pytest.mark.parametrize(
+    ("written_ref", "message"),
+    [
+        ((12, 16), "written REF 12-16 must contain the REF, 11-14"),
+        ((9, 13), "written REF 9-13 must contain the REF, 11-14"),
+    ],
+    ids=["starts-after-the-ref", "ends-before-the-ref"],
+)
+def test_written_ref_that_does_not_hold_the_ref_is_refused(
+    written_ref: tuple[int, int], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        VcfRecord(
+            contig="chr1",
+            start=11,
+            alleles=("TAC", "T", "*"),
+            qual=None,
+            genotypes=(),
+            line_number=1,
+            span=(11, 17),
+            written_ref=written_ref,
+        )
 
 
 def test_records_come_out_in_order_of_span_start(
@@ -2055,6 +2291,7 @@ def make_placed_line(gt: str, gq: int) -> vcf._PlacedLine:
         qual=30.0,
         line_number=gq,
         span=(0, 1),
+        written_ref=None,
         fields=fields,
     )
 

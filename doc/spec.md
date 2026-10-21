@@ -110,7 +110,7 @@ the contigs whose loci need STR regions.
 
 **Errors, which stop the run:** a VCF not sorted in the `.fai`'s contig order and by position; a
 contig in a VCF but not in the reference; a VCF record whose REF reaches past the end of its
-contig, or whose REF differs from the reference (§5.2); an ALT `.` among other ALTs (§5.2); a
+contig, or whose REF differs from the reference (§5.2); an ALT `.` among other ALTs, or an ALT that holds a letter outside ASCII (§5.2); a
 gzipped VCF or BED that is damaged (§5.2); no sample pairs; a sample named in `--sample-map` absent
 from its file; a line of `--sample-map` that is not two fields; a pair given twice; a sample name
 given twice in a header, when a pair needs it. Samples present in only one file and not mapped are listed as a warning and not
@@ -365,6 +365,13 @@ says (found by the review of 21 October 2026).
 (decided by the owner on 21 October 2026); it was read as an allele. The rule holds also for a
 record with a symbolic ALT, `<DEL>,.`, which is otherwise skipped.
 
+**An ALT outside ASCII.** An ALT of bases that holds a letter outside ASCII stops the run with an
+error naming the file, the line, the position and the letter with its code point (decided by the
+owner on 21 October 2026). Upper-cased by Python's rules, `ß` became the allele `SS` and agreed with
+another file's `SS`; such a letter is no base, as in a REF (below), and comes only from a damaged
+file. A record with a symbolic allele, `<DEL>` or `<DEL>,ß`, is skipped as before, unchecked for its
+other ALTs, since such a record is checked only for its contig and its order (below).
+
 **Checks.** Each VCF record's contig must be in the reference, its REF must lie within the contig's
 length, and records must come in the `.fai`'s contig order and by position; otherwise the run stops
 with an error naming the file and line. A position past a contig's end means the VCF was made on
@@ -379,7 +386,11 @@ by the owner on 19 October 2026, in place of marking the record and making its l
 Two bases agree when the bases their IUPAC codes stand for overlap: `N` agrees with any base, `R`
 with `A` or `G`, `A` only with codes that include `A`; so a reference that writes `M` or `N` at a
 site where the VCF has a plain base, as some references and callers do, is no difference, while a
-VCF made on another build still is (decided by the owner on 19 October 2026). The error says how
+VCF made on another build still is (decided by the owner on 19 October 2026). Only the letters of
+ASCII are upper-cased for the comparison: a letter outside ASCII is no IUPAC code and agrees with
+no base, so a REF holding one differs from the reference. Upper-cased by Python's rules, `ß` became
+`SS`, one base longer, and stopped the run with a traceback, and `ſ` became `S` and agreed with `G`
+(found by the review of milestone 1 of `doc/plans/hard-cases.md`, 21 October 2026). The error says how
 many records of the file agreed with the reference before the failing one, which tells a wrong
 reference (none) from a damaged line (many); with `--regions`, only the records of the contigs it
 names are compared with the reference and counted (`doc/specs/regions_read.md`). A record with a symbolic allele (§9) is checked only
@@ -424,7 +435,10 @@ two spellings of one event always overlap (§5.3):
   cannot slide, so that `C → CT` at 10 overlaps a record at 11 (the third case below).
 - A record with several ALTs spans the union of its ALTs' spans.
 - A span always holds the record's trimmed REF, since its locus alleles are built where it was
-  written.
+  written. The span of a record with a `*` allele also holds its REF as the file wrote it, before
+  trimming, also when the span limit cuts the span back: a `*` names those bases (§5.4), and the
+  deletion that covers it must fall in the same locus (decided by the owner on 21 October 2026,
+  over leaving such a deletion to another locus, where the `*` was judged uncovered).
 - At the ends of a contig a span stops at the contig: an insertion after its last base has no base
   after it in its span, and a deletion slid to its first base has no anchor before it.
 
@@ -577,13 +591,16 @@ meant; the two are the same haplotype unless another edit lies at p+1 or p+2.
   Left first puts the insertion after the anchor, as VCF does.
 - A `*` allele makes no edit: it says the haplotype's bases here are removed by another VCF record,
   which carries that edit. The haplotype must carry a deletion, from another VCF record of the
-  locus, that deletes a position of the `*` record's normalised REF, where it was written or at
-  any other placement its span allows (§5.2), or another edit that replaces such a position as
-  written, as GATK writes `*` under an MNP; a haplotype missing at a VCF record might carry any
-  of its ALTs. If it carries none, the haplotype is **impossible**.
+  locus, that deletes a position of the `*` record's REF as the file wrote it, before normalising,
+  where the deletion was written or at any other placement its span allows (§5.2), or another edit
+  that replaces such a position as written, as GATK writes `*` under an MNP; a haplotype missing
+  at a VCF record might carry any of its ALTs. If it carries none, the haplotype is **impossible**.
   The placements count because `bcftools norm` moves the deletion and leaves the `*` record where
   it was. A deletion's anchor base is in its span but deleted by no placement, so a `*` on it
-  alone is not covered.
+  alone is not covered. The REF counts as written because a `*` names the bases of the REF its
+  caller wrote: pvc pads a record with a `*` over bases its alleles share, and normalising would
+  trim away the very bases the deletion reaches (decided by the owner on 21 October 2026, over
+  the normalised REF; `doc/specs/hard_cases.md` §6, cases S11 and E5).
 - The edits of one haplotype are applied to the reference over the locus in position order. Two
   edits **collide** if they change the same reference position, if one is an insertion between
   two positions the other replaces, or if they are two insertions at the same point, as written. Colliding edits cannot both apply: the haplotype is **impossible**.
@@ -790,10 +807,11 @@ Nothing about pvc_eval is trusted until these pass.
    spelling (decided by the owner on 19 October 2026, over collision rules that do not depend on
    it). The re-spelling program is part of the tests; its spec is `doc/specs/respell.md`.
    `bcftools norm` is not one of the re-spellings, since it can change a haplotype (§5.2).
-5. **The hard cases from pvc's STR work:** the VCF records behind the cases recorded in pvc's
-   reports (GIAB's split indel-plus-SNP truth records against pvc's single repeat record; GATK's
-   overlapping records at STR edge deletions; HipSTR's whole-repeat records). They are copied into
-   this spec, each with the outcome it must give, before it is approved (**Open 3**).
+5. **The hard cases from pvc's STR work:** 50 cases, each the VCF records of two real files at one
+   locus from pvc's reports, with a few hundred bases of the reference and the row `compare()` must
+   give: GIAB's split records against pvc's one repeat record, deletions at a repeat's edge written
+   with overlapping records, HipSTR's whole-repeat records, and other spellings. They are given,
+   with their outcomes, in `doc/specs/hard_cases.md`, approved by the owner on 21 October 2026.
 
 ## 8. Comparing evaluators
 
@@ -836,6 +854,5 @@ Open 1, haploid genotypes, and Open 2, the phasing cap's default, were answered 
 19 October 2026: each file is read with one ploidy, 1 or 2, and a GT of another ploidy makes the
 sample invalid (§5.4); the cap stays at 4096, to be lowered if it costs too much time.
 
-**Open 3. The hard cases of §7.5.** The VCF records of the cases in pvc's reports, and the outcome
-each must give, are to be copied into §7 from pvc's reports. Until then §7.5 checks nothing; the
-implementer leaves it out of the first plan.
+Open 3, the hard cases of §7.5, was answered by the owner on 21 October 2026: the 50 cases of
+`doc/specs/hard_cases.md`, each with the outcome it must give.

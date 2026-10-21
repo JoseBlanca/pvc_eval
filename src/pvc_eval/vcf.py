@@ -6,8 +6,9 @@ Positions are 0-based and half-open inside pvc_eval. The 1-based POS of a VCF li
 converted here, and nowhere else.
 
 Public: parse_vcf, which gives the VCF records; parse_vcf_samples, which gives the sample
-names; trim_alt, which trims an ALT against its REF; VcfRecord and VcfGenotype; Span, the
-type of VcfRecord.span; the sentinels a genotype is compared with, MISSING, MALFORMED_GT
+names; trim_alt, which trims an ALT against its REF; VcfRecord and VcfGenotype;
+get_written_ref, which gives a record's REF as the file wrote it; Span, the type of
+VcfRecord.span; the sentinels a genotype is compared with, MISSING, MALFORMED_GT
 and OTHER_PLOIDY_GT; and the constants DEFAULT_PLOIDY, DEFAULT_SPAN_LIMIT and
 DEFAULT_NUM_THREADS.
 """
@@ -17,6 +18,7 @@ import heapq
 import logging
 import math
 import re
+import string
 import sys
 import threading
 from collections.abc import Callable, Collection, Generator, Iterable, Iterator, Sequence
@@ -115,7 +117,13 @@ class VcfRecord:
     genotypes: one per sample, in the order of the header; a MALFORMED_GT or OTHER_PLOIDY_GT
         keeps no GQ.
     line_number: the 1-based line of the file, for messages.
-    span: the record's span (§5.2), 0-based and half-open; it always contains the REF.
+    span: the record's span (§5.2), 0-based and half-open; it always contains the REF, and
+        for a record with a `*` allele, its REF as written too.
+    written_ref: the stretch the REF covers as the file wrote it, before trimming, 0-based
+        and half-open, against which a `*` is measured (doc/specs/reconciliation.md §4.2),
+        where it differs from the REF; it always contains the REF. None stands for the REF,
+        so a record built by hand with None equals the one parse_vcf gives for a REF that
+        lost no base. get_written_ref gives the stretch either way.
     """
 
     contig: str
@@ -125,6 +133,7 @@ class VcfRecord:
     genotypes: tuple[VcfGenotype | MALFORMED_GT | OTHER_PLOIDY_GT, ...]
     line_number: int
     span: Span
+    written_ref: Span | None = None
 
     def __post_init__(self) -> None:
         if self.start < 0:
@@ -136,10 +145,25 @@ class VcfRecord:
             raise ValueError(
                 f"span {span_start}-{span_end} must contain the REF, {self.start}-{self.end}"
             )
+        if self.written_ref is not None:
+            written_start, written_end = self.written_ref
+            if written_start > self.start or written_end < self.end:
+                raise ValueError(
+                    f"written REF {written_start}-{written_end} must contain the REF,"
+                    f" {self.start}-{self.end}"
+                )
 
     @property
     def end(self) -> int:
         return self.start + len(self.alleles[0])
+
+
+def get_written_ref(vcf_record: VcfRecord) -> Span:
+    """The stretch the record's REF covers as the file wrote it, before trimming, 0-based
+    and half-open: its written_ref, or its REF where that is None."""
+    if vcf_record.written_ref is None:
+        return vcf_record.start, vcf_record.end
+    return vcf_record.written_ref
 
 
 def parse_vcf_samples(path: Path) -> tuple[str, ...]:
@@ -204,7 +228,8 @@ def parse_vcf(
     is a directory or cannot be read, for a file that is not UTF-8 text once decompressed or
     is a gzip file cut short or damaged, for a file with no #CHROM line after its ## lines, for
     an empty sample name in it, for a line that does not hold a VCF record or has an ALT `.`
-    among other ALTs, and for one whose
+    among other ALTs, for a record with no symbolic allele whose ALT holds a letter outside
+    ASCII, and for one whose
     number of sample columns differs from the number of samples the #CHROM line names. A
     blank line is skipped. A record with a symbolic allele is skipped once its contig and
     its order are checked, and its REF is not; the number skipped is logged as a warning
@@ -394,6 +419,7 @@ class _PlacedLine:
     qual: float | None
     line_number: int
     span: Span
+    written_ref: Span | None
     fields: list[str]
 
 
@@ -454,6 +480,7 @@ def _parse_lines_without_samples(
                 continue
             if pos_1based == 0:
                 raise _make_pos_error(fields[1], path, line_number)
+            _check_alt_letters(fields[4], contig, pos_1based, path, line_number)
             pos = pos_1based - 1
             contig_length = reference.get_length(contig)
             # §5.2: a REF past the end of its contig means the VCF was made on another
@@ -514,6 +541,10 @@ _AGREEING_CODES = frozenset(
     for other_code, other_bases in _IUPAC_BASES.items()
     if set(bases) & set(other_bases)
 )
+# §5.2: only the letters of ASCII are upper-cased for the comparison with the reference.
+# str.upper would make `ß` the two letters `SS` and the long s, U+017F, the code `S`; left as
+# they are, they are no IUPAC code and differ from every base.
+_ASCII_UPPER_CASE = str.maketrans(string.ascii_lowercase, string.ascii_uppercase)
 
 
 def _check_ref(
@@ -527,14 +558,15 @@ def _check_ref(
 ) -> None:
     """§5.2: a REF that differs from the reference means the VCF was made on another
     reference, or is damaged. Two bases agree, whatever their case, when the bases their
-    IUPAC codes stand for overlap; the window gives the reference in upper case.
+    IUPAC codes stand for overlap; only ASCII letters are upper-cased, so a letter outside
+    ASCII agrees with no base. The window gives the reference in upper case.
 
     pos: the 0-based position of POS; the REF lies within the contig.
     num_agreeing: the records read with no symbolic allele before this one, all of which
         agreed with the reference; a record on a contig not read is not compared.
     """
     ref_bases = reference_window.get_bases(contig, pos, pos + len(ref))
-    ref_upper = ref.upper()
+    ref_upper = ref.translate(_ASCII_UPPER_CASE)
     # Equal codes agree, so only a letter that is no code needs the pairs then.
     if ref_upper == ref_bases and _IUPAC_CODES.issuperset(ref_upper):
         return
@@ -572,7 +604,7 @@ def _check_ref(
 
 # A REF of up to this many bases is written whole in its error, beside the reference's
 # bases; a longer one only where it first differs, so that a deletion of 5 kb does not put
-# two strings of 5 kb into the message.
+# two strings of 5 kb into the message. An ALT column outside ASCII follows the same limit.
 _MAX_REF_WRITTEN = 20
 
 
@@ -585,16 +617,31 @@ def _format_ref_difference(
     pos: the 0-based position of POS. first_differing: the index in the REF of the first
     base that does not agree.
     """
-    differing_pair = (ref[first_differing].upper(), ref_bases[first_differing])
+    differing_pair = (ref[first_differing].translate(_ASCII_UPPER_CASE), ref_bases[first_differing])
     no_code = next((base for base in differing_pair if base not in _IUPAC_CODES), None)
-    note = "" if no_code is None else f" ('{no_code}' is no IUPAC code)"
+    note = "" if no_code is None else f" ({_format_letters(no_code)} is no IUPAC code)"
     if len(ref) <= _MAX_REF_WRITTEN:
-        return f"is '{ref}', and the reference, read in upper case, has '{ref_bases}' there{note}."
+        return (
+            f"is {_format_letters(ref)}, and the reference, read in upper case, has"
+            f" '{ref_bases}' there{note}."
+        )
     return (
-        f"({len(ref):,} bases) has '{ref[first_differing]}' at"
+        f"({len(ref):,} bases) has {_format_letters(ref[first_differing])} at"
         f" {contig}:{pos + first_differing + 1}, where the reference, read in upper case, has"
         f" '{ref_bases[first_differing]}'{note}."
     )
+
+
+def _format_letters(text: str) -> str:
+    """The text in quotes, followed by the code points of its characters outside ASCII, each
+    once: `'AßT' (U+00DF)`. A letter that looks like a base, the Kelvin sign like K, or one
+    that shows as nothing, a combining mark or a space, is then not read as what it looks
+    like."""
+    outside_ascii = dict.fromkeys(character for character in text if not character.isascii())
+    if not outside_ascii:
+        return f"'{text}'"
+    code_points = ", ".join(f"U+{ord(character):04X}" for character in outside_ascii)
+    return f"'{text}' ({code_points})"
 
 
 def _log_warnings(path: Path, span_limit: int | None, status: _ReadStatus) -> None:
@@ -847,6 +894,38 @@ def _parse_alts(fields: list[str], path: Path, line_number: int) -> tuple[str, .
     )
 
 
+def _check_alt_letters(
+    alt_field: str, contig: str, pos_1based: int, path: Path, line_number: int
+) -> None:
+    """§5.2: an ALT of bases that holds a character outside ASCII comes from a damaged file.
+    Python would upper-case `ß` to `SS`, which could agree with another file's `SS`. An ALT
+    column of up to _MAX_REF_WRITTEN characters is written whole in the error, as a REF is;
+    a longer one only by the ALT and the place in it of its first such character.
+
+    alt_field: the ALT column of a record with no symbolic allele, as written.
+    """
+    # Most columns are ASCII, which str.isascii tells at the speed of C.
+    if alt_field.isascii():
+        return
+    if len(alt_field) <= _MAX_REF_WRITTEN:
+        found = f"ALT {_format_letters(alt_field)} of {contig}:{pos_1based} holds"
+    else:
+        alt_number, alt, index = next(
+            (alt_number, alt, index)
+            for alt_number, alt in enumerate(alt_field.split(","), start=1)
+            for index, character in enumerate(alt)
+            if not character.isascii()
+        )
+        found = (
+            f"ALT {alt_number} of {contig}:{pos_1based} ({len(alt):,} characters) has"
+            f" {_format_letters(alt[index])} at character {index + 1:,},"
+        )
+    raise PvcEvalInputError(
+        f"{path}, line {line_number}: {found} a character outside ASCII, which is no base, so"
+        " the line looks damaged. Correct it or remove it, and run again."
+    )
+
+
 def _is_dots(alt: str) -> bool:
     """Whether an ALT holds nothing but dots and spaces."""
     return not alt.strip(". ")
@@ -871,18 +950,28 @@ def _parse_line_without_samples(
 ) -> tuple[_PlacedLine, bool, bool]:
     """A line normalised and with its span, its sample columns left to parse; whether its
     QUAL was taken as absent for not being a number; and whether its span was cut to its
-    REF for reaching more than span_limit beyond it.
+    REF, and with a `*` allele to its REF and its REF as written, for reaching more than
+    span_limit beyond it.
 
     pos: the 0-based position of POS; the REF lies within the contig and agrees with the
     reference.
     """
-    # VCF bases are case-insensitive.
+    # VCF bases are case-insensitive. The REF agrees with the reference and the ALTs were
+    # checked, so they hold only ASCII letters, which str.upper upper-cases as _check_ref did.
     alleles = (fields[3].upper(), *(alt.upper() for alt in alts))
     start, trimmed = _trim(pos, alleles)
     span = _find_span_in_window(start, trimmed, reference_window, contig, contig_length, span_limit)
     is_beyond_reach = span is None
     if span is None:
         span = (start, start + len(trimmed[0]))
+    # doc/specs/reconciliation.md §7: None where the REF lost no base to trimming, so that
+    # the field costs nothing on most records.
+    written_ref = None if len(trimmed[0]) == len(fields[3]) else (pos, pos + len(fields[3]))
+    # §5.2: a `*` names the bases of the REF as written, so the deletion that covers it must
+    # fall in its locus, also when the limit cut the span back. The span then starts at pos
+    # at the earliest, so the records held for their order are let go as before.
+    if written_ref is not None and _SPANNING_DELETION in trimmed[1:]:
+        span = (min(span[0], pos), max(span[1], written_ref[1]))
     qual = _parse_qual(fields[5])
     placed_line = _PlacedLine(
         pos=pos,
@@ -892,6 +981,7 @@ def _parse_line_without_samples(
         qual=qual,
         line_number=line_number,
         span=span,
+        written_ref=written_ref,
         fields=fields,
     )
     return placed_line, _is_taken_as_absent(fields[5], qual), is_beyond_reach
@@ -942,6 +1032,7 @@ def _parse_batch(
             genotypes=genotypes,
             line_number=line.line_number,
             span=line.span,
+            written_ref=line.written_ref,
         )
         records.append((line.pos, record))
     return records, num_not_numbers

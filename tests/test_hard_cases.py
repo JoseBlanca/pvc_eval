@@ -1,0 +1,210 @@
+"""The 50 cases of doc/specs/hard_cases.md through the oracle and through compare(), as its
+§5 gives them, and the excerpts of tests/hard_cases.py checked against the references.
+
+test_hard_case writes a case's excerpt and its two files, checks that the oracle of
+tests/haplotype_oracle.py gives each file the case's possible genotypes over the locus, and
+that compare() gives the case's row and no other.
+
+The two excerpt tests need a reference each from the environment, and are skipped, with a
+message that names the variable, when it is unset or its file or the .fai beside it is
+missing: PVC_EVAL_GRCH38 for the 45 cases on GRCh38, PVC_EVAL_TOMATO for the five on SL4.0,
+E12 to E16.
+"""
+
+import dataclasses
+from collections.abc import Sequence
+from pathlib import Path
+
+import pytest
+from tests.compare_case import write_fasta
+from tests.conftest import EnvironmentPath, get_paths_from_environment
+from tests.haplotype_oracle import find_possible_genotypes
+from tests.hard_cases import HARD_CASES, HardCase, Reference, StrRegion1Based
+
+from pvc_eval.compare import compare
+from pvc_eval.fasta import IndexedFasta
+from pvc_eval.outcome import LocusGenotype
+from pvc_eval.segments import GenomeSegment, RegionType, segment_contig
+from pvc_eval.vcf import MISSING
+
+# doc/specs/hard_cases.md §1: the bases the STR regions of an excerpt are compared over,
+# beyond each end of it.
+_WIDENING = 5_000
+
+
+def _write_vcf(path: Path, contig: str, sample: str, lines: Sequence[str]) -> Path:
+    """Writes a case's lines, `POS REF ALT GT`, as a VCF of one sample with QUAL 50, FILTER
+    PASS and INFO `.`; FORMAT is GT:PS for a GT with its PS, GT otherwise."""
+    text_lines = [
+        "##fileformat=VCFv4.3",
+        f"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{sample}",
+    ]
+    for line in lines:
+        pos, ref, alt, sample_field = line.split()
+        vcf_format = "GT:PS" if ":" in sample_field else "GT"
+        text_lines.append(
+            "\t".join((contig, pos, ".", ref, alt, "50", "PASS", ".", vcf_format, sample_field))
+        )
+    path.write_text("".join(f"{text_line}\n" for text_line in text_lines), encoding="utf-8")
+    return path
+
+
+def _make_expected_row(case: HardCase) -> dict[str, object]:
+    """The fields of OutcomeRow the case expects, by name, with its excerpt positions made
+    0-based and half-open, as OutcomeRow holds them. QUAL and GQ are not among them, since
+    the cases set them (doc/specs/hard_cases.md §5)."""
+    start_1based, end = case.locus_1based
+    str_regions = tuple(
+        GenomeSegment(case.contig, region_start_1based - 1, region_end, region_type, motif)
+        for region_start_1based, region_end, region_type, motif in case.str_regions_1based
+    )
+    return {
+        "contig": case.contig,
+        "start": start_1based - 1,
+        "end": end,
+        "kind": case.kind,
+        "str_regions": str_regions,
+        "outcome": case.outcome,
+        "alleles": case.alleles,
+        "genotype_a": case.genotype_a,
+        "genotype_b": case.genotype_b,
+        "possible_a": case.possible_a,
+        "possible_b": case.possible_b,
+        "invalid_reason_a": case.invalid_reason_a,
+        "invalid_reason_b": case.invalid_reason_b,
+        "records_a": case.records_a,
+        "records_b": case.records_b,
+    }
+
+
+def _make_sequences(
+    alleles: Sequence[str], possible_genotypes: frozenset[LocusGenotype] | None
+) -> frozenset[tuple[str, ...]] | None:
+    """Possible genotypes as indices into alleles turned into the sorted tuples of
+    sequences the oracle gives; None stays None."""
+    if possible_genotypes is None:
+        return None
+    sequence_genotypes = set()
+    for genotype in possible_genotypes:
+        sequences = []
+        for index in genotype:
+            assert index is not MISSING, "no case has a missing haplotype"
+            sequences.append(alleles[index])
+        sequence_genotypes.add(tuple(sorted(sequences)))
+    return frozenset(sequence_genotypes)
+
+
+@pytest.mark.parametrize("case", HARD_CASES, ids=[case.name for case in HARD_CASES])
+def test_hard_case(case: HardCase, tmp_path: Path) -> None:
+    reference = tmp_path / "excerpt.fa"
+    write_fasta(reference, {case.contig: case.bases})
+    vcf_a = _write_vcf(tmp_path / "a.vcf", case.contig, case.sample, case.lines_a)
+    vcf_b = _write_vcf(tmp_path / "b.vcf", case.contig, case.sample, case.lines_b)
+    start_1based, end = case.locus_1based
+
+    with IndexedFasta(reference) as indexed_fasta:
+        oracle_genotypes = [
+            find_possible_genotypes(vcf, indexed_fasta, case.contig, start_1based - 1, end, 0)
+            for vcf in (vcf_a, vcf_b)
+        ]
+    rows = list(compare(vcf_a, vcf_b, reference, finder_threads=0))
+
+    assert oracle_genotypes == [
+        _make_sequences(case.alleles, case.possible_genotypes_a),
+        _make_sequences(case.alleles, case.possible_genotypes_b),
+    ]
+    # One row for each of these cases, compared field by field, so that a failure names the
+    # fields that differ.
+    assert len(rows) == 1, rows
+    expected_row = _make_expected_row(case)
+    assert {field: getattr(rows[0], field) for field in expected_row} == expected_row
+
+
+def _find_excerpt_problems(
+    reference_path: Path, reference: Reference, directory: Path
+) -> list[str]:
+    """What differs between the cases of a reference and the reference itself: an
+    excerpt that is not the reference's bases at its stretch, or STR regions of a locus
+    other than those segment_contig finds over the excerpt widened by _WIDENING bases on
+    each side."""
+    problems = []
+    with IndexedFasta(reference_path) as indexed_fasta:
+        for case in HARD_CASES:
+            if case.reference is not reference:
+                continue
+            excerpt_end = case.offset + len(case.bases)
+            bases = indexed_fasta.get_bases(case.contig, case.offset, excerpt_end).upper()
+            if bases != case.bases:
+                problems.append(f"{case.name}: the excerpt is not the reference's bases")
+            widened_start = case.offset - _WIDENING
+            widened = indexed_fasta.get_bases(
+                case.contig, widened_start, excerpt_end + _WIDENING
+            ).upper()
+            str_regions = _find_locus_str_regions(case, widened, widened_start, directory)
+            if str_regions != case.str_regions_1based:
+                problems.append(
+                    f"{case.name}: the widened excerpt gives the STR regions {str_regions}"
+                )
+    return problems
+
+
+def _find_locus_str_regions(
+    case: HardCase, widened: str, widened_start: int, directory: Path
+) -> tuple[StrRegion1Based, ...]:
+    """The STR regions segment_contig finds over the widened bases that overlap or touch a
+    case's locus, so that one that crosses an end of the locus is not missed; in excerpt
+    positions, 1-based and inclusive, as the case gives them. The widened bases start at
+    widened_start of the contig, 0-based."""
+    fasta = directory / f"{case.name}.fa"
+    write_fasta(fasta, {case.contig: widened})
+    # An excerpt position p is the widened sequence's 0-based position p - 1 + shift.
+    shift = case.offset - widened_start
+    start_1based, end = case.locus_1based
+    str_regions = []
+    with IndexedFasta(fasta) as indexed_fasta:
+        for segment in segment_contig(indexed_fasta, case.contig):
+            assert segment.region_type is not None, "segment_contig gives every segment a type"
+            if (
+                segment.region_type is not RegionType.GENERIC
+                and segment.start <= end + shift
+                and start_1based - 1 + shift <= segment.end
+            ):
+                str_regions.append(
+                    (
+                        segment.start - shift + 1,
+                        segment.end - shift,
+                        segment.region_type,
+                        segment.motif,
+                    )
+                )
+    return tuple(str_regions)
+
+
+def test_an_str_region_across_the_locus_end_is_found(tmp_path: Path) -> None:
+    # S1's locus narrowed to 145-160 inside its STR region 146-176, read over the excerpt
+    # alone: the region crosses the locus's end, and is reported, so that the excerpt test
+    # would see that the case gives no STR region.
+    s1 = next(case for case in HARD_CASES if case.name == "S1")
+    narrowed = dataclasses.replace(s1, locus_1based=(145, 160), str_regions_1based=())
+
+    str_regions = _find_locus_str_regions(narrowed, s1.bases, s1.offset, tmp_path)
+
+    assert str_regions == ((146, 176, RegionType.STR_BUNDLE, None),)
+
+
+def test_grch38_excerpts_are_the_references(tmp_path: Path) -> None:
+    (path,) = get_paths_from_environment(
+        EnvironmentPath(
+            "PVC_EVAL_GRCH38", "the GRCh38 FASTA, with its .fai beside it", beside=(".fai",)
+        )
+    )
+    assert _find_excerpt_problems(path, Reference.GRCH38, tmp_path) == []
+
+
+def test_tomato_excerpts_are_the_references(tmp_path: Path) -> None:
+    (path,) = get_paths_from_environment(
+        EnvironmentPath(
+            "PVC_EVAL_TOMATO", "the SL4.0 tomato FASTA, with its .fai beside it", beside=(".fai",)
+        )
+    )
+    assert _find_excerpt_problems(path, Reference.SL4_0, tmp_path) == []

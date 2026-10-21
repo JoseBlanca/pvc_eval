@@ -22,16 +22,15 @@ For each input the test writes a FASTA and its .fai, builds pvc's catalogue besi
 start, end, type, and the motif of an STR segment.
 """
 
-import os
 import random
 import subprocess
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
 import pytest
+from tests.conftest import EnvironmentPath, get_paths_from_environment
 
 from pvc_eval.cli import main
 from pvc_eval.fasta import IndexedFasta
@@ -68,51 +67,12 @@ _GRCH38_SLICES = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class _EnvironmentPath:
-    """A path the test reads from the environment: its variable, what it names, and the
-    suffixes of the files that must be beside it."""
-
-    variable: str
-    what: str
-    beside: tuple[str, ...] = ()
-
-
-_PVC = _EnvironmentPath(
+_PVC = EnvironmentPath(
     "PVC_EVAL_PVC", "a pvc binary built at bbcc9f4, as this module's docstring says"
 )
-_GRCH38 = _EnvironmentPath(
+_GRCH38 = EnvironmentPath(
     "PVC_EVAL_GRCH38", "the GRCh38 FASTA, with its .fai beside it", beside=(".fai",)
 )
-
-
-def _get_paths_from_environment(*needed: _EnvironmentPath) -> list[Path]:
-    """The paths the variables name, in their order. The test is skipped, naming each that
-    is missing, when a variable is unset, or its file or a file beside it does not
-    exist."""
-    paths = []
-    missing = []
-    for environment_path in needed:
-        variable, what = environment_path.variable, environment_path.what
-        value = os.environ.get(variable)
-        if not value:
-            missing.append(f"{variable} is not set; it names {what}")
-            continue
-        path = Path(value)
-        absent = [
-            f"{path.name}{suffix}"
-            for suffix in environment_path.beside
-            if not Path(f"{path}{suffix}").is_file()
-        ]
-        if not path.is_file():
-            missing.append(f"{variable} names {path}, which does not exist; it names {what}")
-        elif absent:
-            missing.append(f"{variable} names {path}, which has no {', '.join(absent)} beside it")
-        else:
-            paths.append(path)
-    if missing:
-        pytest.skip(". ".join(missing))
-    return paths
 
 
 def _write_fasta(path: Path, contigs: dict[str, str]) -> Path:
@@ -255,7 +215,7 @@ class _Input(NamedTuple):
 
 @pytest.fixture(scope="module")
 def generated_input(tmp_path_factory: pytest.TempPathFactory) -> _Input:
-    (pvc,) = _get_paths_from_environment(_PVC)
+    (pvc,) = get_paths_from_environment(_PVC)
     directory = tmp_path_factory.mktemp("generated")
     fasta = _write_fasta(directory / "generated.fa", _make_generated_contigs())
     _make_catalogue(pvc, fasta)
@@ -264,7 +224,7 @@ def generated_input(tmp_path_factory: pytest.TempPathFactory) -> _Input:
 
 @pytest.fixture(scope="module")
 def grch38_input(tmp_path_factory: pytest.TempPathFactory) -> _Input:
-    pvc, grch38 = _get_paths_from_environment(_PVC, _GRCH38)
+    pvc, grch38 = get_paths_from_environment(_PVC, _GRCH38)
     directory = tmp_path_factory.mktemp("grch38")
     fasta = _write_fasta(directory / "slices.fa", _make_grch38_slices(grch38))
     _make_catalogue(pvc, fasta)

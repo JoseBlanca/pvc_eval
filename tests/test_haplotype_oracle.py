@@ -13,7 +13,12 @@ from pathlib import Path
 
 import pytest
 from tests.conftest import CaseFiles, make_chrom_line, write_case_vcf
-from tests.haplotype_oracle import ORACLE_CAP, HaplotypeComparison, check_same_haplotypes
+from tests.haplotype_oracle import (
+    ORACLE_CAP,
+    HaplotypeComparison,
+    check_same_haplotypes,
+    find_possible_genotypes,
+)
 
 from pvc_eval.fasta import IndexedFasta
 
@@ -339,6 +344,73 @@ def test_two_spellings_of_the_same_haplotypes_pass(
     assert _check(tmp_path, reference, lines_a, lines_b) == comparison
 
 
+# doc/specs/reconciliation.md R10: the `*` is covered by the deletion of 16-19, which deletes
+# a position of its record's REF as written, 10-16, and none of its REF once trimmed, 12-14.
+# File B writes the same haplotypes without the `*`.
+def test_a_padded_star_record_is_measured_against_its_ref_as_written(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    reference = case_files.write_reference(10, "TATACACATAGG")
+    lines_a = ["10 TATACAC TATAC,* 1/2", "15 ACATA A 0/1"]
+    lines_b = ["12 TAC T 0|1", "15 ACATA A 1|0"]
+
+    comparison = _check(tmp_path, reference, lines_a, lines_b)
+
+    assert comparison == HaplotypeComparison(num_windows=1, num_linked_pairs=0, num_over_cap=0)
+
+
+# A deletion in the padding on the left of a `*` record's trimmed REF covers the `*`: the A
+# at 11, in the REF as written 10-16 of `10 TATACAC TATAC,*`, trimmed to 12-14; and the A at
+# 2, in the REF as written 2-4 of `2 ACT AGT,*`, trimmed to 3.
+@pytest.mark.parametrize(
+    ("ref_start_1based", "bases", "lines_a", "lines_b"),
+    [
+        pytest.param(
+            9,
+            "GTATACACATAGG",
+            ["10 TA T 0/1", "10 TATACAC TATAC,* 0/2"],
+            ["10 TA T 0|1"],
+            id="a-deletion-at-11",
+        ),
+        pytest.param(
+            1,
+            "GACTGCATCAGGTCAAC",
+            ["1 GA G 0/1", "2 ACT AGT,* 1/2"],
+            ["1 GA G 0|1", "3 C G 1|0"],
+            id="a-deletion-at-2",
+        ),
+    ],
+)
+def test_a_deletion_in_the_left_padding_of_a_star_record_covers_it(
+    case_files: CaseFiles,
+    tmp_path: Path,
+    ref_start_1based: int,
+    bases: str,
+    lines_a: Sequence[str],
+    lines_b: Sequence[str],
+) -> None:
+    reference = case_files.write_reference(ref_start_1based, bases)
+
+    comparison = _check(tmp_path, reference, lines_a, lines_b)
+
+    assert comparison == HaplotypeComparison(num_windows=1, num_linked_pairs=0, num_over_cap=0)
+
+
+# doc/spec.md §5.2: the deletion of the T at 10 lies next to the `*` record's REF as
+# written, 10-16, and a base apart from its trimmed span, 12-17, so only a span that holds
+# the REF as written puts both in one window, where the deletion covers the `*`.
+def test_a_star_record_and_a_deletion_in_its_padding_share_a_window(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    reference = case_files.write_reference(9, "GTATACACATAGG")
+    lines_a = ["9 GT G 0/1", "10 TATACAC TATAC,* 0/2"]
+    lines_b = ["9 GT G 0|1"]
+
+    comparison = _check(tmp_path, reference, lines_a, lines_b)
+
+    assert comparison == HaplotypeComparison(num_windows=1, num_linked_pairs=0, num_over_cap=0)
+
+
 def test_ploidy_1_gives_one_genotype_a_window(case_files: CaseFiles, tmp_path: Path) -> None:
     reference = case_files.write_reference(1, _O_BASES)
     # The records at 2-3 and 4 lie next to each other: one window, 2-4.
@@ -477,6 +549,165 @@ def test_a_file_of_20000_windows_and_20000_records_with_no_alt_takes_under_5_sec
         num_windows=num_windows, num_linked_pairs=0, num_over_cap=0
     )
     assert elapsed < 5, f"{elapsed:.1f} s"
+
+
+# --- find_possible_genotypes (doc/specs/hard_cases.md §5) ---
+
+_R10_BASES = "TATACACATAGG"  # doc/specs/reconciliation.md R10, from position 10
+
+
+def _find(
+    directory: Path,
+    reference: IndexedFasta,
+    lines: Sequence[str],
+    start: int,
+    end: int,
+    *,
+    sample: int = 0,
+) -> frozenset[tuple[str, ...]] | None:
+    vcf = write_case_vcf(directory / "a.vcf", lines, fills_ps=False)
+    return find_possible_genotypes(vcf, reference, "chr1", start, end, sample)
+
+
+def test_find_possible_genotypes_gives_r10s_genotype(case_files: CaseFiles, tmp_path: Path) -> None:
+    # R10: the locus 10-19 has the alleles TATACACATA, TATACATA and TATACA, and the possible
+    # genotypes (1, 2).
+    reference = case_files.write_reference(10, _R10_BASES)
+    lines = ["10 TATACAC TATAC,* 1/2", "15 ACATA A 0/1"]
+
+    possible_genotypes = _find(tmp_path, reference, lines, 9, 19)
+
+    assert possible_genotypes == frozenset({("TATACA", "TATACATA")})
+
+
+def test_find_possible_genotypes_takes_the_windows_of_a_phase_set_together(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    # doc/specs/hard_cases.md S4, file A, from 14722151 at position 1: the SNP at 8 and the
+    # deletion of 12-13, phased with no PS, lie in two windows, 8 and 12-14. Taken
+    # together they give one genotype; taken window by window and joined they would also
+    # give the SNP and the deletion on different haplotypes.
+    reference = case_files.write_reference(1, "AAAAAAAAAAAAGAATAAAAAATAAAAAA")
+    lines = ["8 A T 0|1", "11 AAG A 0|1"]
+
+    possible_genotypes = _find(tmp_path, reference, lines, 0, 29)
+
+    assert possible_genotypes == frozenset(
+        {("AAAAAAAAAAAAGAATAAAAAATAAAAAA", "AAAAAAATAAAAATAAAAAATAAAAAA")}
+    )
+
+
+@pytest.mark.parametrize(
+    ("ref_start_1based", "bases", "lines", "start", "end", "possible_genotypes"),
+    [
+        # The window of the SNP at 11 lies wholly before the stretch 15-19 (1-based), and
+        # adds nothing; the SNP at 17 turns ACATA into ACCTA on both haplotypes.
+        pytest.param(
+            10,
+            _R10_BASES,
+            ["11 A G 0/1", "17 A C 1/1"],
+            14,
+            19,
+            frozenset({("ACCTA", "ACCTA")}),
+            id="a-window-before-the-stretch",
+        ),
+        # The window of the SNP at 16 starts where the stretch 12-15 (1-based), GTAC, ends.
+        pytest.param(
+            1,
+            "TATACACATAGGTACGTACG",
+            ["12 G A 0/1", "16 G T 0/1"],
+            11,
+            15,
+            frozenset({("ATAC", "GTAC")}),
+            id="a-window-next-to-the-stretchs-end",
+        ),
+    ],
+)
+def test_find_possible_genotypes_leaves_out_the_windows_outside_the_stretch(
+    case_files: CaseFiles,
+    tmp_path: Path,
+    ref_start_1based: int,
+    bases: str,
+    lines: Sequence[str],
+    start: int,
+    end: int,
+    possible_genotypes: frozenset[tuple[str, ...]],
+) -> None:
+    reference = case_files.write_reference(ref_start_1based, bases)
+
+    assert _find(tmp_path, reference, lines, start, end) == possible_genotypes
+
+
+def test_find_possible_genotypes_reads_the_sample_it_is_given(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    # Sample 1 carries the SNP at 13 on both haplotypes; sample 0 would give the reference.
+    reference = case_files.write_reference(10, _R10_BASES)
+
+    possible_genotypes = _find(tmp_path, reference, ["13 A G 0/0 1/1"], 9, 19, sample=1)
+
+    assert possible_genotypes == frozenset({("TATGCACATA", "TATGCACATA")})
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        # A `*` on both haplotypes and no deletion to cover it: contradicting records.
+        pytest.param(["10 TATACAC TATAC,* 2/2"], id="contradicting-records"),
+        pytest.param(["13 A G 0/x"], id="a-malformed-gt"),
+        pytest.param(["13 A G 0/1/1"], id="a-gt-of-another-ploidy"),
+    ],
+)
+def test_find_possible_genotypes_gives_none_for_an_invalid_sample(
+    case_files: CaseFiles, tmp_path: Path, lines: Sequence[str]
+) -> None:
+    reference = case_files.write_reference(10, _R10_BASES)
+
+    assert _find(tmp_path, reference, lines, 9, 19) is None
+
+
+@pytest.mark.parametrize(
+    ("bases", "lines", "start", "end", "message"),
+    [
+        pytest.param(
+            _R10_BASES,
+            ["10 TATACAC TATAC,* 1/2", "15 ACATA A 0/1"],
+            9,
+            15,
+            "crosses",
+            id="a-window-across-the-end",
+        ),
+        # The deletion of 13-15 (1-based) starts before the stretch 14-19.
+        pytest.param(
+            _R10_BASES, ["12 TACA T 0/1"], 13, 19, "crosses", id="a-window-across-the-start"
+        ),
+        pytest.param(_R10_BASES, ["13 A G ./1"], 9, 19, "missing", id="a-missing-haplotype"),
+        # Fourteen unphased heterozygous SNPs in one window: 2^13 phase assignments.
+        pytest.param(
+            "TATACACATAGGTACGTACG",
+            [
+                f"{pos} {base} {'C' if base == 'A' else 'A'} 0/1"
+                for pos, base in enumerate("TATACACATAGGTA", start=10)
+            ],
+            9,
+            29,
+            str(ORACLE_CAP),
+            id="over-the-cap",
+        ),
+    ],
+)
+def test_find_possible_genotypes_raises_value_error(
+    case_files: CaseFiles,
+    tmp_path: Path,
+    bases: str,
+    lines: Sequence[str],
+    start: int,
+    end: int,
+    message: str,
+) -> None:
+    reference = case_files.write_reference(10, bases)
+    with pytest.raises(ValueError, match=message):
+        _find(tmp_path, reference, lines, start, end)
 
 
 def test_the_oracle_imports_nothing_of_what_the_check_of_7_4_tests() -> None:
