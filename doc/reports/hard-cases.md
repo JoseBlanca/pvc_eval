@@ -12,8 +12,8 @@ region across a locus's end. pvc_eval measures a `*` against its record's REF as
 span of a record with a `*` holds that REF, as the owner decided on 21 October 2026; `doc/spec.md`
 §5.2, §5.4, §7.5 and §10, `doc/specs/reconciliation.md` and `doc/specs/respell.md` say so.
 
-**Checks at the end**, at a0b9dbc: `ruff format --check`, `ruff check` and `ty check` pass;
-`uv run pytest -q` gives "1974 passed, 11 skipped" (1886 passed, 9 skipped at a050b57); the hard
+**Checks at the end**, at 6ae1f1a: `ruff format --check`, `ruff check` and `ty check` pass;
+`uv run pytest -q` gives "1987 passed, 11 skipped" (1886 passed, 9 skipped at a050b57); the hard
 cases give "51 passed, 2 skipped" without the two variables and "53 passed" with them: the 50
 cases, the test that the excerpt tests catch an STR region across a locus's end, and the two
 excerpt tests, which need the variables. `PVC_EVAL_GRCH38` and `PVC_EVAL_TOMATO` name the FASTA of
@@ -23,9 +23,8 @@ GRCh38 and of SL4.0, the tomato reference of the five tomato cases.
 
 - A REF of letters outside ASCII, `ß` against a reference `G`, stopped the run with a Python
   traceback, and `ſ` was read as the IUPAC code `S`, on `main` too. At the owner's word of 21
-  October 2026 it is fixed on this branch by `doc/plans/non-ascii-ref.md` (below). An ALT of such
-  letters is still upper-cased by Python's rules, `ß` read as `SS`, with no traceback; the plan
-  left it as it is, and it is the owner's to decide whether such an ALT should stop the run.
+  October 2026 it is fixed on this branch by `doc/plans/non-ascii-ref.md` (below). An ALT holding a character outside ASCII, which was read as `SS` for `ß`, now stops the run too,
+  as the owner decided the same day.
 - The warning for a record whose span the span limit cut says it "was given only its REF as its
   span". A reviewer thought it no longer fits a record with a `*`, which keeps its REF as written.
   It does fit: a user reads "its REF" as the REF the file wrote, which is now exactly the span of
@@ -137,3 +136,17 @@ of 21 bases, the Kelvin sign, and a combining mark after a `G`; each failed at 1
 reviewers, errors and tests; the errors reviewer tried 15 characters outside ASCII, every one
 stopped with the error naming the file, line and position, and its finding, the look-alikes, is
 the code points above; the tests reviewer's missing case, the REF of 21 bases, was added.
+
+Its milestone 2, an ALT holding a character outside ASCII, done at 6ae1f1a from f84572f, at the
+owner's decision of 21 October 2026. `doc/spec.md` §5.2 and §3 say such an ALT stops the run, and
+that a record with a symbolic allele is skipped whatever its other ALTs hold. The error names the
+file, the line, the position and each character with its code point; an ALT column over 20
+characters is not quoted, and the message says which ALT holds the character and where.
+`test_alt_holding_a_character_outside_ascii_stops_the_run` has 12 cases, each accepted before.
+Two reviewers, errors and design. Taken: a `str.isascii()` test first, since the check runs on
+every record (19 ms on the 98,149 records of chr20 in Python's loop, about 3 ms so); the message
+capped as the REF's is, after a 100,000-base insertion gave one of 100 kB; "character" for "letter".
+Whole `parse_vcf` on chr20 against GRCh38, best of 5, two runs each: 0.945 s and 0.964 s at
+e839edc, 0.961 s and 0.976 s at 6ae1f1a, within the spread of one run, 0.1 to 0.3 s. Not taken:
+the design reviewer's wish to report a REF that differs before a damaged ALT on the same line; the
+errors reviewer found the order of a line's faults sensible, and such a line is damaged either way.

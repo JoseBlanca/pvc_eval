@@ -1,6 +1,6 @@
 # Plan: a REF letter outside ASCII
 
-*Status: under way, 21 October 2026, on the branch `hard-cases`, which the owner asked for. A
+*Status: done, 21 October 2026, on the branch `hard-cases`, which the owner asked for. A
 small change with no spec of its own; it builds the sentence of `doc/spec.md` §5.2 that says a REF
 letter outside ASCII is no base. The work report is `doc/reports/hard-cases.md`.*
 
@@ -32,7 +32,7 @@ Before it: at 95f100b the checks pass and `uv run pytest -q` gives "1968 passed,
   a REF must be upper-cased the same way in both, or a REF that passes the check is stored
   otherwise.
 
-- [ ] **2. An ALT holding a letter outside ASCII stops the run**
+- [x] **2. An ALT holding a letter outside ASCII stops the run**
 
   The owner decided on 21 October 2026, after milestone 1, that such an ALT stops the run: it was
   upper-cased by Python's rules, `ß` read as `SS`, and could agree with another file's `SS`.
