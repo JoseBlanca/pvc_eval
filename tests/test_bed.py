@@ -288,9 +288,10 @@ def test_parse_bed_reports_a_damaged_gzip_read_as_a_fault_of_a_line_as_damaged(
         list(parse_bed(path, _CONTIGS))
 
     assert str(raised.value) == (
-        f"{path} is a gzip file cut short or damaged: it fails gzip's check when decompressed"
-        " whole, and the damage garbled its text before gzip could find it. Compress or copy"
-        " it again, and run again."
+        f"{path} is damaged: gzip's own check of the whole file fails (`gzip -t {path}` shows"
+        " it), so the fault pvc_eval found at line 2 may come from the damaged bytes rather"
+        " than from the file's content. Copy or compress the file again from its source, and"
+        " run again."
     )
     assert "line 2: the end, 'X0', is not a whole number" in str(raised.value.__cause__)
 

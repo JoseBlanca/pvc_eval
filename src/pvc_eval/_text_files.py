@@ -12,6 +12,7 @@ import io
 import zlib
 from collections.abc import Generator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
@@ -46,7 +47,8 @@ def open_numbered_lines(
     the last line, the file is checked whole, and if gzip finds it cut short or damaged the
     error says so in place of the fault, which is kept as its cause (doc/spec.md §5.2).
     """
-    numbered_lines = _read_numbered_lines(path, file_kind, not_utf8_advice)
+    place = _ReadPlace()
+    numbered_lines = _read_numbered_lines(path, file_kind, not_utf8_advice, place)
     try:
         yield numbered_lines
     except PvcEvalInputError as err:
@@ -55,23 +57,31 @@ def open_numbered_lines(
         # the reader's own, which closes it, have had every byte checked.
         is_suspended = inspect.getgeneratorstate(numbered_lines) == inspect.GEN_SUSPENDED
         if is_suspended and _is_damaged_gzip(path):
-            raise _make_damaged_error(path) from err
+            # The fault is of the line last read.
+            raise _make_damaged_error(path, place.line_number) from err
         raise
     finally:
         numbered_lines.close()
 
 
+@dataclass(slots=True)
+class _ReadPlace:
+    """The number of the last line a reader gave, 0 before the first."""
+
+    line_number: int = 0
+
+
 def _read_numbered_lines(
-    path: Path, file_kind: str, not_utf8_advice: str
+    path: Path, file_kind: str, not_utf8_advice: str, place: _ReadPlace
 ) -> Generator[tuple[int, str]]:
     """The lines of open_numbered_lines, which raises what it says for the file itself,
     and for text that is not UTF-8 checks a gzip file whole."""
     # Text is decoded and decompressed in blocks, so a fault is found somewhere after the
     # last line read, and only that is known.
-    line_number = 0
     try:
         with _open_text(path) as lines:
             for line_number, line in enumerate(lines, start=1):
+                place.line_number = line_number
                 yield line_number, line
     except FileNotFoundError:
         raise PvcEvalInputError(f"{path} does not exist. Check its path and run again.") from None
@@ -84,15 +94,16 @@ def _read_numbered_lines(
             f"{path} cannot be read: permission denied. Allow reading it and run again."
         ) from None
     except UnicodeDecodeError as err:
+        # The byte is somewhere after the last line read, on no line known.
         if _is_damaged_gzip(path):
-            raise _make_damaged_error(path) from err
+            raise _make_damaged_error(path, None) from err
         raise PvcEvalInputError(
-            f"{path} is not UTF-8 text: a byte at or after line {line_number + 1} cannot be read"
+            f"{path} is not UTF-8 text: a byte at or after line {place.line_number + 1} cannot be read"
             f" as UTF-8. {not_utf8_advice}"
         ) from err
     except (EOFError, gzip.BadGzipFile, zlib.error) as err:
         raise PvcEvalInputError(
-            f"{path} is a gzip file cut short or damaged at or after line {line_number + 1}."
+            f"{path} is a gzip file cut short or damaged at or after line {place.line_number + 1}."
             " Compress or copy it again, and run again."
         ) from err
 
@@ -111,12 +122,15 @@ def _is_damaged_gzip(path: Path) -> bool:
     return False
 
 
-def _make_damaged_error(path: Path) -> PvcEvalInputError:
-    """The error of a gzip file whose damage was read as text before gzip found it."""
+def _make_damaged_error(path: Path, line_number: int | None) -> PvcEvalInputError:
+    """The error of a gzip file whose damage was read as text before gzip found it, at the
+    line of the fault the text made, or None when that is not known."""
+    at_line = "" if line_number is None else f" at line {line_number}"
     return PvcEvalInputError(
-        f"{path} is a gzip file cut short or damaged: it fails gzip's check when decompressed"
-        " whole, and the damage garbled its text before gzip could find it. Compress or copy"
-        " it again, and run again."
+        f"{path} is damaged: gzip's own check of the whole file fails (`gzip -t {path}` shows"
+        f" it), so the fault pvc_eval found{at_line} may come from the damaged bytes rather than"
+        " from the file's content. Copy or compress the file again from its source, and run"
+        " again."
     )
 
 

@@ -831,10 +831,11 @@ def _parse_alts(fields: list[str], path: Path, line_number: int) -> tuple[str, .
         )
     # A single breakend, `A.` or `.A`, is an ALT of its own and symbolic.
     if "." in alts:
+        alts_without_dots = ",".join(alt for alt in alts if alt != ".")
         raise PvcEvalInputError(
-            f"{path}, line {line_number}: ALT '{fields[4]}' has `.` among other alleles; `.`"
-            " alone stands for a record with no ALT, and beside other ALTs it means nothing."
-            " Correct the line or remove it, and run again."
+            f"{path}, line {line_number}: ALT '{fields[4]}' holds `.` beside other alleles,"
+            " which VCF does not allow: `.` stands alone, for a record with no ALT. Write the"
+            f" ALT without the `.`, here '{alts_without_dots}', and run again."
         )
     return alts
 

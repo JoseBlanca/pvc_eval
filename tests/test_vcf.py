@@ -592,12 +592,14 @@ def test_gzip_file_with_damaged_compressed_data_stops_the_run(
 # the file's content: the second record out of order, or the first with its two sample
 # columns made one.
 TWO_RECORDS = "chr1\t9\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t12\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n"
+# Each change with the fault it makes, and the line of that fault.
 CONTENT_FAULTS = [
-    (b"chr1\t12\t", b"chr1\t02\t", r"is not sorted: chr1:2 \(line 4\) comes after chr1:9"),
+    (b"chr1\t12\t", b"chr1\t02\t", r"is not sorted: chr1:2 \(line 4\) comes after chr1:9", 4),
     (
         b"0/1\t0/1\nchr1\t12",
         b"0/1 0/1\nchr1\t12",
         r"line 3: the line has 1 sample column, and the #CHROM line names 2 samples",
+        3,
     ),
 ]
 CONTENT_FAULT_IDS = ["not_sorted", "sample_columns"]
@@ -614,31 +616,45 @@ def write_damaged_gzip(path: Path, text: str, old: bytes, new: bytes) -> Path:
     return path
 
 
-def make_damaged_message(path: Path) -> str:
+def make_damaged_message(path: Path, at_line: str) -> str:
+    """The message of a damaged gzip file; at_line is " at line N", or "" with no line."""
     return (
-        f"{path} is a gzip file cut short or damaged: it fails gzip's check when decompressed"
-        " whole, and the damage garbled its text before gzip could find it. Compress or copy"
-        " it again, and run again."
+        f"{path} is damaged: gzip's own check of the whole file fails (`gzip -t {path}` shows"
+        f" it), so the fault pvc_eval found{at_line} may come from the damaged bytes rather than"
+        " from the file's content. Copy or compress the file again from its source, and run"
+        " again."
     )
 
 
 @pytest.mark.parametrize("num_threads", [1, 4])
-@pytest.mark.parametrize(("old", "new", "message"), CONTENT_FAULTS, ids=CONTENT_FAULT_IDS)
+@pytest.mark.parametrize(
+    ("old", "new", "message", "line_number"), CONTENT_FAULTS, ids=CONTENT_FAULT_IDS
+)
 def test_damaged_gzip_read_as_a_fault_of_a_line_is_reported_damaged(
-    tmp_path: Path, reference: IndexedFasta, old: bytes, new: bytes, message: str, num_threads: int
+    tmp_path: Path,
+    reference: IndexedFasta,
+    old: bytes,
+    new: bytes,
+    message: str,
+    line_number: int,
+    num_threads: int,
 ) -> None:
     path = write_damaged_gzip(tmp_path / "a.vcf.gz", HEADER + TWO_RECORDS, old, new)
 
     with pytest.raises(PvcEvalInputError) as raised:
         list(parse_vcf(path, reference, num_threads=num_threads))
 
-    assert str(raised.value) == make_damaged_message(path)
+    assert str(raised.value) == make_damaged_message(path, f" at line {line_number}")
     # The fault of the line the damage made is kept as the cause.
     assert re.search(message, str(raised.value.__cause__))
 
 
 @pytest.mark.parametrize("gzipped", [False, True], ids=["plain", "gzipped_whole"])
-@pytest.mark.parametrize(("old", "new", "message"), CONTENT_FAULTS, ids=CONTENT_FAULT_IDS)
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [(old, new, message) for old, new, message, _ in CONTENT_FAULTS],
+    ids=CONTENT_FAULT_IDS,
+)
 def test_undamaged_file_with_a_fault_of_a_line_keeps_its_message(
     tmp_path: Path, reference: IndexedFasta, old: bytes, new: bytes, message: str, gzipped: bool
 ) -> None:
@@ -662,7 +678,7 @@ def test_damaged_gzip_found_while_threads_parse_samples_is_reported_damaged(
     with pytest.raises(PvcEvalInputError) as raised:
         list(parse_vcf(path, make_reference(*fasta), num_threads=num_threads))
 
-    assert str(raised.value) == make_damaged_message(path)
+    assert str(raised.value) == make_damaged_message(path, " at line 2503")
 
 
 def test_damaged_gzip_read_as_a_fault_of_the_header_is_reported_damaged(
@@ -675,7 +691,7 @@ def test_damaged_gzip_read_as_a_fault_of_the_header_is_reported_damaged(
     with pytest.raises(PvcEvalInputError) as raised:
         parse_vcf_samples(path)
 
-    assert str(raised.value) == make_damaged_message(path)
+    assert str(raised.value) == make_damaged_message(path, " at line 1")
     assert "line 1: a VCF file has a #CHROM line" in str(raised.value.__cause__)
 
 
@@ -687,7 +703,8 @@ def test_damaged_gzip_read_as_text_that_is_not_utf8_is_reported_damaged(
     with pytest.raises(PvcEvalInputError) as raised:
         list(parse_vcf(path, reference))
 
-    assert str(raised.value) == make_damaged_message(path)
+    # A byte that is not UTF-8 is found somewhere after the last line read, on no line known.
+    assert str(raised.value) == make_damaged_message(path, "")
     assert isinstance(raised.value.__cause__, UnicodeDecodeError)
 
 
@@ -715,15 +732,16 @@ def test_every_damaged_byte_of_a_gzip_vcf_that_stops_the_read_is_reported_damage
         try:
             records = list(parse_vcf(path, reference))
         except PvcEvalInputError as err:
-            # The line number of gzip's own message is dropped, so that it counts once.
-            messages.add(re.sub(r"at or after line \d+", "at or after line N", str(err)))
+            # The line numbers are dropped, so that each message counts once.
+            messages.add(re.sub(r"line \d+", "line N", str(err)))
             continue
         # A read with no error has had gzip check every byte, so it gives the records.
         assert len(records) == 60
         num_read_whole += 1
 
     assert messages <= {
-        make_damaged_message(path),
+        make_damaged_message(path, " at line N"),
+        make_damaged_message(path, ""),
         f"{path} is a gzip file cut short or damaged at or after line N. Compress or copy it"
         " again, and run again.",
     }
@@ -880,9 +898,9 @@ def test_alt_dot_among_other_alts_stops_the_run(
         list(parse_vcf(path, reference))
 
     assert str(raised.value) == (
-        f"{path}, line 3: ALT '{alts}' has `.` among other alleles; `.` alone stands for a"
-        " record with no ALT, and beside other ALTs it means nothing. Correct the line or"
-        " remove it, and run again."
+        f"{path}, line 3: ALT '{alts}' holds `.` beside other alleles, which VCF does not"
+        " allow: `.` stands alone, for a record with no ALT. Write the ALT without the `.`,"
+        " here 'T', and run again."
     )
 
 
