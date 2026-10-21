@@ -74,6 +74,15 @@ _MAX_PERIOD = 6  # the longest motif the finder scans, doc/specs/str_finder.md s
 # 2026; doc/reports/perf-str-finder-numpy.md, P3).
 _BLOCK_BASES = 1 << 16
 
+# numpy's functions and threads. Called through the module, numpy's functions contended
+# across threads on CPython 3.15t, and its array methods did not: for 100,000 calls on arrays
+# of 64 uint8 per thread, np.cumsum took 0.18 to 0.20 s on one thread and 0.78 to 1.81 s on
+# each of eight, np.minimum.accumulate 0.04 s and 0.17 to 0.23 s, the same bound once per
+# thread 0.03 to 0.04 s at eight, and a.nonzero() and a.searchsorted() did not contend (21
+# October 2026, Apple M5 Pro, numpy 2.5.4). So the code of step 1 that runs per block uses
+# array methods and operators, and calls a function of the module only a few times per
+# block, each marked "numpy's functions and threads".
+
 # Every byte to its canonical base: A, C, G and T in either case to the upper-case base,
 # anything else to 0, which no base equals (pvc tandem_repeat.rs CANONICAL).
 _CANONICAL = bytes(
@@ -194,8 +203,10 @@ type _Flags = NDArray[np.bool_]
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _CandidateArrays:
-    """Candidates of one period as arrays, in order of start and so of end: the stretches
-    `[starts[i], ends[i])` of the contig, 0-based and half-open, and their scores."""
+    """Candidates of one period as arrays: the stretches `[starts[i], ends[i])` of the
+    contig, 0-based and half-open, and their scores. They are in order of start, and so of
+    end, everywhere but in what _find_grouped_subsequences gives, which
+    _find_final_candidates sorts."""
 
     starts: _Positions
     ends: _Positions
@@ -256,12 +267,15 @@ class _OpenSubsequence:
 
 @dataclass(slots=True, kw_only=True)
 class _ScanState:
-    """Where the scan of one period stands between two blocks. Not frozen: the call of
-    _find_candidates that makes it changes it after each block, and nothing else sees it.
+    """Where the scan of one period stands between two blocks. Not frozen:
+    _find_final_candidates changes it after each block, and _find_grouped_subsequences
+    changes its stack; only the call of _find_candidates that makes it sees it.
 
     position is the index of the first score not taken yet, 0-based; total is the running
     total at the boundary before it, and least the least running total at any boundary up
-    to there. stack holds the subsequences still open, in Ruzzo and Tompa's order.
+    to there, both counted from 0 at the last block's end at which the stack was empty, or
+    at the contig's start. stack holds the subsequences still open, in Ruzzo and Tompa's
+    order.
     """
 
     position: int
@@ -284,33 +298,34 @@ def _find_candidates(
     held for the scores is one block, whatever the scoring. The tests set block_bases to
     make many blocks of a short sequence.
 
-    The candidates made final in a block are tested as main's pure-Python step 1 tests them
-    (tests/pure_python_step_one.py): a candidate is tested against the drop rule once every
-    candidate of the shorter periods that divide its own and that starts before its end is
-    tested; the kept ones are held while a longer period may still need them. What is held
-    beyond one block is the subsequences still open and the candidates that wait for them,
-    as in main.
+    The candidates made final in a block are tested as the oracle, the pure-Python step 1 of
+    tests/pure_python_step_one.py, tests them: a candidate is tested against the drop rule
+    once every candidate of the shorter periods that divide its own and that starts before
+    its end is tested; the kept ones are held while a longer period may still need them.
+    What is held beyond one block is the subsequences still open and the candidates that
+    wait for them, as in the oracle.
 
-    It departs from pvc's tandem_repeat.rs, and from main's pure Python, in these places,
-    and gives the same candidates as both:
+    It departs from pvc's tandem_repeat.rs, and from the oracle, in these places, and gives
+    the same candidates as both:
 
-    - pvc scores the whole contig at once; here, as in main, a block at a time.
-    - pvc runs Ruzzo and Tompa one score at a time, and main one run of matches at a time.
-      A subsequence never starts or ends inside a run of matches or of mismatches, since no
+    - pvc scores the whole contig at once; here, as in the oracle, a block at a time.
+    - pvc runs Ruzzo and Tompa one score at a time, and the oracle one run of matches at a
+      time. A subsequence never starts or ends inside a run of matches or of mismatches, since no
       score is 0. Here a run that starts on an empty stack, and whose next run also does, is
       a maximal scoring subsequence on its own: the mismatches before that next run bring
       the total to or under its total before, which makes it final as it is, and no later
       run can reach back past an empty stack. Those are found on arrays. Only the other runs
       go through Ruzzo and Tompa's rules 2 to 4 in Python, pvc's loop with its links.
     - pvc's drop rule scans the kept candidates of each shorter period for every candidate,
-      and main's scans from a binary search. Here a kept candidate that overlaps at least
-      half of a candidate contains its middle, and then covers it by half exactly when it
-      is at least half as long; the kept candidates that contain a middle are found by
+      and the oracle's scans from a binary search. Here a kept candidate that overlaps at
+      least half of a candidate contains its middle, and then covers it by half exactly when
+      it is at least half as long; the kept candidates that contain a middle are found by
       binary search, for all the candidates of a block at once.
-    - pvc and main test the motifs one by one; here every motif of a block at once.
+    - pvc and the oracle test the motifs one by one; here every motif of a block at once.
 
     <NUMBERS>
     """
+    # A function of the module once per contig (numpy's functions and threads).
     canonical = np.frombuffer(bases.encode("ascii").translate(_CANONICAL), np.uint8)
     periods = [
         period
@@ -335,15 +350,14 @@ def _find_candidates(
             state = states[period]
             final = _find_final_candidates(canonical, state, end, period, parameters)
             final = _drop_short_or_repeated(canonical, final, period, parameters)
-            queue = _join_candidates(untested[period], final)
+            queue = _make_joined_candidates(untested[period], final)
+            # A candidate is tested once every candidate of its divisors that starts before
+            # its end is tested.
             testable_to = min((tested_to[q] for q in divisors[period]), default=len(canonical))
-            testable = int(queue.ends.searchsorted(testable_to, side="right"))
-            kept_now = queue.get_slice(0, testable)
-            untested[period] = queue.get_slice(testable)
-            for shorter in divisors[period]:
-                kept_now = kept_now.get_where(~_find_covered(kept_now, kept[shorter]))
+            kept_shorter = [kept[q] for q in divisors[period]]
+            kept_now, untested[period] = _drop_covered(queue, testable_to, kept_shorter)
             if multiples[period]:
-                kept[period] = _join_candidates(kept[period], kept_now)
+                kept[period] = _make_joined_candidates(kept[period], kept_now)
             floored = _drop_under_copy_floor(kept_now, period, parameters)
             over_floor[period].extend(_make_candidate_objects(floored, period))
             # After the last block nothing is open and no candidate starts later; the length
@@ -357,22 +371,43 @@ def _find_candidates(
         for period in periods:
             if multiples[period]:
                 still_needed_from = min(tested_to[p] for p in multiples[period])
-                unneeded = int(kept[period].ends.searchsorted(still_needed_from, side="right"))
-                kept[period] = kept[period].get_slice(unneeded)
+                kept[period] = _evict_unneeded(kept[period], still_needed_from)
     return [candidate for period in periods for candidate in over_floor[period]]
+
+
+def _drop_covered(
+    queue: _CandidateArrays, testable_to: int, kept_shorter: Sequence[_CandidateArrays]
+) -> tuple[_CandidateArrays, _CandidateArrays]:
+    """Take from the queue, in order, the candidates that end at or before testable_to, and
+    drop those that a kept candidate of kept_shorter overlaps by at least half (step 1's
+    drop rule). kept_shorter holds the kept candidates of each shorter period that divides
+    theirs. Gives the candidates kept, and those left in the queue. Positions are 0-based
+    and half-open."""
+    testable = int(queue.ends.searchsorted(testable_to, side="right"))
+    kept_now = queue.get_slice(0, testable)
+    for kept in kept_shorter:
+        kept_now = kept_now.get_where(~_find_covered(kept_now, kept))
+    return kept_now, queue.get_slice(testable)
+
+
+def _evict_unneeded(kept: _CandidateArrays, still_needed_from: int) -> _CandidateArrays:
+    """The kept candidates of one period without those that end at or before
+    still_needed_from, where every candidate of a longer period still to be tested starts.
+    Positions are 0-based and half-open."""
+    return kept.get_slice(int(kept.ends.searchsorted(still_needed_from, side="right")))
 
 
 def _make_no_candidates() -> _CandidateArrays:
     """Candidate arrays that hold none."""
-    # np.zeros is a function of the module, called once per contig.
+    # Once per contig (numpy's functions and threads).
     return _CandidateArrays(
         starts=np.zeros(0, np.intp), ends=np.zeros(0, np.intp), scores=np.zeros(0, np.int64)
     )
 
 
-def _join_candidates(first: _CandidateArrays, second: _CandidateArrays) -> _CandidateArrays:
+def _make_joined_candidates(first: _CandidateArrays, second: _CandidateArrays) -> _CandidateArrays:
     """The candidates of first, then those of second, as one set of arrays."""
-    # np.concatenate is a function of the module, and the only way to join two arrays.
+    # The only way to join two arrays; a few times per block (numpy's functions and threads).
     return _CandidateArrays(
         starts=np.concatenate((first.starts, second.starts)),
         ends=np.concatenate((first.ends, second.ends)),
@@ -414,13 +449,19 @@ def _find_final_candidates(
     empty stack, absorbs the first by rule 4 in the next block.
     """
     scores = _make_block_scores(
-        canonical, state.position, max(end - period, state.position), period, state, parameters
+        canonical,
+        state.position,
+        max(end - period, state.position),
+        period,
+        state.total,
+        parameters,
     )
     befores = scores.befores
     # Whether the stack is empty at each run's start, and at the end of the scores: whether
     # the total there is the least so far. Between two runs the total is least just before
     # the second starts, so the least so far is that of the runs' starts and of the blocks
     # before.
+    # A ufunc's method, once per block (numpy's functions and threads).
     opens = (befores == np.minimum.accumulate(befores)) & (befores <= state.least)
     least = min(state.least, int(befores.min(initial=scores.end_total)))
     closes = end == len(canonical) or scores.end_total <= least
@@ -443,7 +484,14 @@ def _find_final_candidates(
     state.position = scores.first + scores.score_count
     state.total = scores.end_total
     state.least = least
-    final = _join_candidates(
+    if closes:
+        # On an empty stack only differences of later totals count, so the totals start
+        # again from 0, and what they must hold is the span since the stack was last empty,
+        # not the contig: from base 0 a random contig's total falls by about 0.75 times the
+        # penalty per base, and at a penalty of 2**44 it overflowed 64 bits within 1 Mb.
+        state.total = 0
+        state.least = 0
+    final = _make_joined_candidates(
         _CandidateArrays(
             starts=run_starts[on_its_own] + scores.first,
             ends=run_ends[on_its_own] + scores.first,
@@ -462,17 +510,17 @@ def _make_block_scores(
     first: int,
     stop: int,
     period: int,
-    state: _ScanState,
+    total: int,
     parameters: StrFinderParameters,
 ) -> _BlockScores:
     """The scores `[first, stop)` of one period, 0-based and half-open: score k is the match
     reward when the canonical bases at k + period and at k are the same A, C, G or T, and
-    minus the mismatch penalty otherwise. The running total at first is state.total, and
-    the totals are kept at the runs' boundaries only."""
+    minus the mismatch penalty otherwise. The running total at first is total, and the
+    totals are kept at the runs' boundaries only."""
     later = canonical[first + period : stop + period]
     # A flag per score, with a mismatch before the first and after the last, so that the
-    # changes of flag pair up as the starts and ends of the runs of matches. np.zeros is a
-    # function of the module, and the only way here to make the array.
+    # changes of flag pair up as the starts and ends of the runs of matches. Once per block
+    # (numpy's functions and threads).
     matches = np.zeros(stop - first + 2, np.bool_)
     matches[1:-1] = (later == canonical[first:stop]) & (later != 0)
     changes = (matches[1:] != matches[:-1]).nonzero()[0]
@@ -485,7 +533,7 @@ def _make_block_scores(
     matched_through = lengths.cumsum()
     reward = parameters.match_reward
     penalty = parameters.mismatch_penalty
-    befores = state.total + (reward + penalty) * (matched_through - lengths) - penalty * run_starts
+    befores = total + (reward + penalty) * (matched_through - lengths) - penalty * run_starts
     matched = int(matched_through[-1]) if matched_through.size else 0
     return _BlockScores(
         first=first,
@@ -494,7 +542,7 @@ def _make_block_scores(
         run_ends=run_ends,
         befores=befores,
         throughs=befores + reward * lengths,
-        end_total=state.total + (reward + penalty) * matched - penalty * (stop - first),
+        end_total=total + (reward + penalty) * matched - penalty * (stop - first),
     )
 
 
@@ -527,7 +575,7 @@ def _find_grouped_subsequences(
     if closes:
         final.extend(stack)
         stack.clear()
-    # np.array is a function of the module, and the only way to make an array of a list.
+    # The only way to make an array of a list; once per block (numpy's functions and threads).
     return _CandidateArrays(
         starts=np.array([one.start for one in final], np.intp),
         ends=np.array([one.end for one in final], np.intp),
@@ -589,7 +637,7 @@ def _find_primitive(canonical: NDArray[np.uint8], starts: _Positions, period: in
     shorter period before it. Two bytes that are not A, C, G or T are both 0, and so equal.
     pvc tandem_repeat.rs, is_primitive_motif."""
     motif = [canonical[starts + offset] for offset in range(period)]
-    repeated = np.zeros(len(starts), np.bool_)  # a function of the module, as in _make_block_scores
+    repeated = np.zeros(len(starts), np.bool_)  # once per block (numpy's functions and threads)
     for shorter in range(1, period):
         if period % shorter == 0:
             tiles = motif[shorter] == motif[0]
@@ -615,7 +663,7 @@ def _find_covered(candidates: _CandidateArrays, kept: _CandidateArrays) -> _Flag
     stop = (kept.starts * 2).searchsorted(middles, side="right")
     lengths = candidates.ends - candidates.starts
     kept_lengths = kept.ends - kept.starts
-    covered = np.zeros(len(middles), np.bool_)  # a function of the module, as in _make_block_scores
+    covered = np.zeros(len(middles), np.bool_)  # once per block (numpy's functions and threads)
     for offset in range(int((stop - first).max(initial=0))):
         holds = first + offset < stop
         covered[holds] |= 2 * kept_lengths[first[holds] + offset] >= lengths[holds]

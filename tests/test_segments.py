@@ -45,7 +45,6 @@ from pvc_eval.segments import (
     _make_runs,
     _make_satellites_absorbing,
     _Rejection,
-    _ScanState,
     _Segment,
     _StrSegment,
     segment_contig,
@@ -427,8 +426,7 @@ def test_the_runs_of_a_block_are_its_matching_scores_and_its_totals_go_on(
 ) -> None:
     canonical = np.frombuffer(bases.encode("ascii").translate(_CANONICAL), np.uint8)
     # The scan carried 10 as its running total to the block's first score.
-    state = _ScanState(position=first, total=10, least=0, stack=[])
-    scores = _make_block_scores(canonical, first, stop, period, state, StrFinderParameters())
+    scores = _make_block_scores(canonical, first, stop, period, 10, StrFinderParameters())
     got_runs = [
         (start + first, end + first)
         for start, end in zip(scores.run_starts.tolist(), scores.run_ends.tolist(), strict=True)
@@ -871,10 +869,8 @@ def _make_bases_with_repeats(draw: st.DrawFn) -> str:
     return "".join(stretches)
 
 
-# On 21 October 2026, of 500 examples, 305 carried a stack of open subsequences past a
-# block's end, 298 cut a run of matches at one, 185 at two or more in a row, and 69 left a
-# candidate waiting for a shorter period that divides its own. The full range of periods is
-# drawn half of the time, since a range without divisors never waits.
+# The full range of periods is drawn half of the time, since a range without divisors never
+# leaves a candidate waiting for a shorter period that divides its own.
 @settings(max_examples=500, deadline=None)
 @given(
     bases=_make_bases_with_repeats(),
@@ -970,6 +966,42 @@ _SMALL_SCORING_CASES = [
         (1, 3, 5, 8),
         [(1, 3, 1, 5), (5, 7, 1, 5), (3, 6, 2, 5)],
     ),
+    (
+        # Two kept period-1 candidates hold the middle of the period-5 candidate [0, 6):
+        # (0, 3) covers half of it and drops it, and (3, 5), too short, must not undo that.
+        "a_kept_candidate_too_short_to_cover_undoes_nothing",
+        "AAACCA",
+        (1, 6, 2, 7),
+        [(0, 3, 1, 4), (3, 5, 1, 2), (1, 6, 4, 2)],
+    ),
+    (
+        # (2, 14) of period 2, final only at the contig's end, drops (0, 9) of period 6,
+        # which must wait for every divisor, not period 1 alone.
+        "a_period_waits_for_every_divisor",
+        "AAACACAAAACACA",
+        (1, 6, 1, 1),
+        [(0, 3, 1, 2), (6, 10, 1, 3), (2, 14, 2, 6), (1, 12, 5, 4), (8, 14, 5, 1)],
+    ),
+    (
+        # (0, 4) of period 2 drops (1, 7) of period 4: it must stay until period 4, and not
+        # only period 6, has passed it.
+        "a_kept_candidate_stays_until_every_multiple_has_passed_it",
+        "ACACGCAAGGAGA",
+        (1, 6, 1, 1),
+        [
+            (6, 8, 1, 1),
+            (8, 10, 1, 1),
+            (0, 4, 2, 2),
+            (3, 6, 2, 1),
+            (9, 13, 2, 2),
+            (7, 12, 3, 2),
+            (4, 9, 4, 1),
+            (6, 11, 4, 1),
+            (2, 8, 5, 1),
+            (4, 10, 5, 1),
+            (7, 13, 5, 1),
+        ],
+    ),
 ]
 
 
@@ -990,7 +1022,7 @@ def test_step_one_gives_the_oracles_candidates_on_small_cases(
         scan_min_copies=1,
         copy_floors=_ZERO_FLOORS,
     )
-    for block_bases in (1, 2, 3, 5, 65_536):
+    for block_bases in [*range(1, len(bases) + 2), 65_536]:
         got = _find_candidates(bases, parameters, block_bases=block_bases)
         found = [(c.start, c.end, c.period, c.score) for c in got]
         assert found == expected, block_bases
@@ -1028,7 +1060,8 @@ def test_step_one_holds_far_fewer_than_every_candidate_of_four_million_bases() -
     # pure-Python step 1 in blocks of 4,096 bases: a peak of 8.0 MB, 4 MB of it the bases as
     # bytes. The same run in one block of the whole sequence, which holds every candidate
     # and every subsequence of the scores until the end, peaked at 965.6 MB. The array step
-    # 1, in blocks of 65,536 bases, peaked at 11.8 MiB on 4 Mb of chr1 on 21 October 2026.
+    # 1, in blocks of 65,536 bases, peaked at 8.2 MB here, and at 10.9 MiB on 4 Mb of chr1,
+    # on 21 October 2026.
     bases = _make_random_bases(seed=19, length=4_000_000, alphabet="ACGT")
     tracemalloc.start()
     try:
@@ -1044,9 +1077,10 @@ def test_step_one_holds_little_when_the_stack_is_never_empty() -> None:
     # With a reward of 7 and a penalty of 1 the running total climbs, the stack of Ruzzo and
     # Tompa is never empty, and no candidate is final before the end. What is held is then
     # 1 MB of canonical bases, 1 MB of encoded bases while they are translated, the arrays
-    # of one period's block, about 49 bytes per base of the block, 3.1 MiB, and a short
-    # stack. Measured on 21 October 2026: a peak of 5.5 MB, and 4 s. Step 1 in chunks
-    # split where every stack is empty held about 170 bytes per base here.
+    # of one period's block, and a short stack. On 21 October 2026 the peak was 4.5 MB, in
+    # 3.5 s; 1.9 MiB with blocks of 4,096 bases and 14.2 MiB with 262,144, so the arrays of
+    # a block take about 50 bytes per base. Step 1 in chunks split where every stack is
+    # empty held about 170 bytes per base here.
     bases = _make_random_bases(seed=23, length=1_000_000, alphabet="ACGT")
     parameters = StrFinderParameters(match_reward=7, mismatch_penalty=1)
     tracemalloc.start()
@@ -1058,11 +1092,24 @@ def test_step_one_holds_little_when_the_stack_is_never_empty() -> None:
     assert peak < 8_000_000
 
 
+@pytest.mark.slow
+def test_a_large_penalty_over_a_long_contig_gives_the_oracles_candidates() -> None:
+    # Over 1 Mb of random bases the running total from the contig's start falls by about
+    # 0.75 * penalty per base, past what 64 bits hold at a penalty of 2**44; only the span
+    # since the stack was last empty need fit. Found by a reviewer on 21 October 2026: step 1
+    # at 9cc05d4 raised OverflowError here.
+    bases = _make_random_bases(seed=31, length=1_000_000, alphabet="ACGT")
+    parameters = StrFinderParameters(match_reward=2, mismatch_penalty=2**44)
+    expected = pure_python_step_one.find_candidates(bases, parameters)
+    assert _find_candidates(bases, parameters) == expected
+
+
 # ---- Steps 3 to 6, ported from pvc's segment_criteria.rs at bbcc9f4 ------------------------
 # pvc's classify is _find_str_segments, steps 4 to 6; its prefilter is step 3, which
 # _drop_under_copy_floor gives on the arrays of one period, and which the tests reach through
 # _drop_under_copy_floor_of, one candidate at a time. pvc's RepeatInterval is 0-based and
-# half-open, as a candidate is, so its numbers carry over; pvc's SsrSegment is 1-based and inclusive, so its [s, e] is [s - 1, e) here.
+# half-open, as a candidate is, so its numbers carry over; pvc's SsrSegment is 1-based and
+# inclusive, so its [s, e] is [s - 1, e) here.
 
 # pvc's params() (segment_criteria.rs 1516), matched_params(0.8, 0, 5): the catalogue's
 # periods and copy floors, with a bundle distance of 5 so that the fixtures can be small.
