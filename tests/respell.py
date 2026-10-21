@@ -577,7 +577,7 @@ class _ContigEdits:
     for the stretches that touch another stops where none before reaches it."""
 
     record_edits: tuple[_RecordEdits, ...]
-    refs: tuple[Span, ...]
+    record_stretches: tuple[Span, ...]
     starts: tuple[int, ...]
     furthest_ends: tuple[int, ...]
 
@@ -630,12 +630,14 @@ def _make_contig_edits(
     contig_edits = {}
     for contig, contig_records in by_contig.items():
         contig_records.sort(key=lambda record_edits: get_stretch(record_edits.vcf_record)[0])
-        refs = tuple(get_stretch(record_edits.vcf_record) for record_edits in contig_records)
+        record_stretches = tuple(
+            get_stretch(record_edits.vcf_record) for record_edits in contig_records
+        )
         contig_edits[contig] = _ContigEdits(
             record_edits=tuple(contig_records),
-            refs=refs,
-            starts=tuple(start for start, _ in refs),
-            furthest_ends=tuple(itertools.accumulate((end for _, end in refs), max)),
+            record_stretches=record_stretches,
+            starts=tuple(start for start, _ in record_stretches),
+            furthest_ends=tuple(itertools.accumulate((end for _, end in record_stretches), max)),
         )
     return contig_edits
 
@@ -651,8 +653,8 @@ def _find_ref_touching_records(contig_edits: _ContigEdits, stretch: Span) -> Ite
     stretch_start, stretch_end = stretch
     index = bisect.bisect_right(contig_edits.starts, stretch_end) - 1
     while index >= 0 and contig_edits.furthest_ends[index] >= stretch_start:
-        _, ref_end = contig_edits.refs[index]
-        if ref_end >= stretch_start:
+        _, record_end = contig_edits.record_stretches[index]
+        if record_end >= stretch_start:
             yield contig_edits.record_edits[index]
         index -= 1
 
@@ -1297,7 +1299,7 @@ def _make_merged_record(
     all A, C, G or T; a sample's heterozygous VCF
     genotypes in it are in two phase units; a sample with a heterozygous VCF genotype in it
     would get one merged allele on every haplotype; every haplotype gets REF; or the reach
-    of the record touches the REF of a record with a `*` ALT (§2.2)."""
+    of the record touches the REF as written of a record with a `*` ALT (§2.2)."""
     contig = run[0].vcf_record.contig
     stretch = (
         min(record_edits.vcf_record.start for record_edits in run),
