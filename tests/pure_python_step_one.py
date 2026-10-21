@@ -2,12 +2,15 @@
 the array version in src/pvc_eval/segments.py, as pvc keeps its fixed point for absorption as
 the oracle of its sweep.
 
-It is segments.py's step 1 and step 3 of doc/specs/str_finder.md moved here unchanged: the
-contig is scored a block of _BLOCK_BASES bases at a time, every period side by side, and
-Ruzzo and Tompa's loop takes one step per run of matches or mismatches. Its _find_candidates
-gives what the array version's gives, list for list; the tests of segments.py compare the two,
-and keep testing the pure functions here (pvc's Ruzzo-Tompa cases, the comparisons, the copy
-floor of step 3). Positions are 0-based and half-open.
+It is segments.py's step 1 and step 3 of doc/specs/str_finder.md moved here unchanged, with
+the names the tests call made public: the contig is scored a block of _BLOCK_BASES bases at a
+time, every period side by side, and Ruzzo and Tompa's loop takes one step per run of matches
+or mismatches. Positions are 0-based and half-open.
+
+Public: find_candidates, step 1 and step 3, which gives what segments.py's _find_candidates
+gives, list for list; find_maximal_scoring_subsequences, Ruzzo and Tompa's loop over blocks of
+comparisons, which pvc's crafted cases test; make_comparisons, the comparisons of one period
+in blocks.
 """
 
 import bisect
@@ -63,7 +66,7 @@ class _OpenSubsequence:
         return (self.start, self.end, self.through - self.before)
 
 
-def _find_maximal_scoring_subsequences(
+def find_maximal_scoring_subsequences(
     comparisons: Iterator[bytes], period: int, parameters: StrFinderParameters
 ) -> Iterator[tuple[list[_Subsequence], int | None]]:
     """Find the maximal scoring subsequences of one period's scores (Ruzzo and Tompa, 1999),
@@ -210,7 +213,7 @@ def _find_smaller_before(stack: Sequence[_OpenSubsequence], before: int, top: in
     return -1
 
 
-def _make_comparisons(canonical: bytes, period: int, block_bases: int) -> Iterator[bytes]:
+def make_comparisons(canonical: bytes, period: int, block_bases: int) -> Iterator[bytes]:
     """The comparisons of one period, in blocks that end where the blocks of block_bases
     bases end, so that every period gives the same number of blocks. Byte k of the blocks
     together is 0, a match, when the bases at k + period and at k are the same A, C, G or T,
@@ -291,7 +294,7 @@ def _evict_unneeded(kept: list[_Candidate], still_needed_from: int) -> None:
     del kept[: bisect.bisect_right(kept, still_needed_from, key=lambda candidate: candidate.end)]
 
 
-def _find_candidates(
+def find_candidates(
     bases: str, parameters: StrFinderParameters, *, block_bases: int = _BLOCK_BASES
 ) -> list[_Candidate]:
     """Step 1 and step 3 of doc/specs/str_finder.md: the candidates of a sequence that
@@ -320,8 +323,8 @@ def _find_candidates(
     tested_to = dict.fromkeys(periods, 0)
     found: dict[int, list[_Candidate]] = {period: [] for period in periods}
     streams = [
-        _find_maximal_scoring_subsequences(
-            _make_comparisons(canonical, period, block_bases), period, parameters
+        find_maximal_scoring_subsequences(
+            make_comparisons(canonical, period, block_bases), period, parameters
         )
         for period in periods
     ]

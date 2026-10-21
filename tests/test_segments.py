@@ -9,15 +9,11 @@ from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 
+import numpy as np
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from tests import pure_python_step_one
-from tests.pure_python_step_one import (
-    _drop_under_copy_floor,
-    _find_maximal_scoring_subsequences,
-    _make_comparisons,
-)
 
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
@@ -28,7 +24,9 @@ from pvc_eval.segments import (
     StrFinderParameters,
     _BundleMember,
     _Candidate,
+    _CandidateArrays,
     _drop_near_contig_ends,
+    _drop_under_copy_floor,
     _find_bundles,
     _find_candidates,
     _find_cut,
@@ -39,6 +37,7 @@ from pvc_eval.segments import (
     _get_purity,
     _is_compound,
     _is_in_cluster,
+    _make_block_scores,
     _make_bundle_member,
     _make_clusters,
     _make_grown_satellites,
@@ -46,6 +45,7 @@ from pvc_eval.segments import (
     _make_runs,
     _make_satellites_absorbing,
     _Rejection,
+    _ScanState,
     _Segment,
     _StrSegment,
     segment_contig,
@@ -202,16 +202,18 @@ def _find_rt_subsequences(scores: list[int], block_length: int) -> list[tuple[in
     ]
     subsequences = [
         subsequence
-        for found, _ in _find_maximal_scoring_subsequences(iter(comparisons), 1, parameters)
+        for found, _ in pure_python_step_one.find_maximal_scoring_subsequences(
+            iter(comparisons), 1, parameters
+        )
         for subsequence in found
     ]
     return sorted(subsequences)
 
 
 def _find_rt_subsequences_on_arrays(
-    scores: list[int], chunk_bases: int
+    scores: list[int], block_bases: int
 ) -> list[tuple[int, int, int]]:
-    """pvc's rt_segments through _find_candidates, in chunks of chunk_bases bases. The
+    """pvc's rt_segments through _find_candidates, in blocks of block_bases bases. The
     scores, two values as in _find_rt_subsequences, are the period-1 comparisons of bases
     made for them: each base is the one before it for a match, and the other of A and C for
     a mismatch. With period 1 alone, a scan_min_copies of 1 and no copy floor, the
@@ -229,7 +231,7 @@ def _find_rt_subsequences_on_arrays(
         scan_min_copies=1,
         copy_floors=_ZERO_FLOORS,
     )
-    got = _find_candidates("".join(letters), parameters, chunk_bases=chunk_bases)
+    got = _find_candidates("".join(letters), parameters, block_bases=block_bases)
     return [(candidate.start, candidate.end - 1, candidate.score) for candidate in got]
 
 
@@ -346,8 +348,8 @@ def test_ruzzo_tompa_matches_brute_force_on_crafted_cases(scores: list[int]) -> 
     expected = _find_brute_subsequences(scores)
     assert _find_rt_subsequences(scores, block_length=max(len(scores), 1)) == expected
     assert _find_rt_subsequences(scores, block_length=1) == expected
-    for chunk_bases in range(1, len(scores) + 2):
-        assert _find_rt_subsequences_on_arrays(scores, chunk_bases) == expected, chunk_bases
+    for block_bases in range(1, len(scores) + 2):
+        assert _find_rt_subsequences_on_arrays(scores, block_bases) == expected, block_bases
 
 
 def test_ruzzo_tompa_matches_brute_force_on_pseudo_random() -> None:
@@ -365,8 +367,8 @@ def test_ruzzo_tompa_matches_brute_force_on_pseudo_random() -> None:
         expected = _find_brute_subsequences(scores)
         assert _find_rt_subsequences(scores, block_length=max(length, 1)) == expected, scores
         assert _find_rt_subsequences(scores, block_length=7) == expected, scores
-        assert _find_rt_subsequences_on_arrays(scores, chunk_bases=length + 1) == expected
-        assert _find_rt_subsequences_on_arrays(scores, chunk_bases=7) == expected, scores
+        assert _find_rt_subsequences_on_arrays(scores, block_bases=length + 1) == expected
+        assert _find_rt_subsequences_on_arrays(scores, block_bases=7) == expected, scores
 
 
 # Compared by hand: score k compares the base at k + period with the base at k, a match True.
@@ -388,9 +390,45 @@ _COMPARISON_CASES = [
 def test_the_comparisons_are_zero_for_a_match_and_cut_at_the_blocks(
     bases: str, period: int, block_bases: int, expected: list[list[bool]]
 ) -> None:
+    # The comparisons of the pure-Python step 1, the oracle; the runs of matches of
+    # segments.py are tested below.
     canonical = bases.encode("ascii").translate(_CANONICAL)
-    got = _make_comparisons(canonical, period, block_bases)
+    got = pure_python_step_one.make_comparisons(canonical, period, block_bases)
     assert [[compared == 0 for compared in block] for block in got] == expected
+
+
+# Worked by hand: score k compares the base at k + period with the base at k, and the runs
+# of matches are `[start, end)` of the scores, 0-based and half-open.
+_RUN_CASES = [
+    # A=A, then N against A, N against N twice, A against N, then A=A.
+    ("n_never_matches_n", "AANNNAA", 1, 0, 6, [(0, 1), (5, 6)]),
+    # c=C, a=A, C=c, then T against a.
+    ("lower_case_matches_upper_case", "CAcaCT", 2, 0, 4, [(0, 3)]),
+    # The scores 3 to 6 of eight A's, all matches.
+    ("scores_from_a_later_position", "AAAAAAAA", 1, 3, 7, [(3, 7)]),
+]
+
+
+@pytest.mark.parametrize(
+    ("bases", "period", "first", "stop", "expected"),
+    [case[1:] for case in _RUN_CASES],
+    ids=[case[0] for case in _RUN_CASES],
+)
+def test_the_runs_of_a_block_are_its_matching_scores_and_its_totals_go_on(
+    bases: str, period: int, first: int, stop: int, expected: list[tuple[int, int]]
+) -> None:
+    canonical = np.frombuffer(bases.encode("ascii").translate(_CANONICAL), np.uint8)
+    # The scan carried 10 as its running total to the block's first score.
+    state = _ScanState(position=first, total=10, least=0, stack=[])
+    scores = _make_block_scores(canonical, first, stop, period, state, StrFinderParameters())
+    runs = [
+        (start + first, end + first)
+        for start, end in zip(scores.run_starts.tolist(), scores.run_ends.tolist(), strict=True)
+    ]
+    assert runs == expected
+    matches = sum(end - start for start, end in expected)
+    assert scores.totals[0] == 10
+    assert scores.totals[-1] == 10 + 2 * matches - 7 * (stop - first - matches)
 
 
 def test_finds_a_clean_perfect_tract() -> None:
@@ -650,14 +688,14 @@ _DROP_RULE_CASES: list[tuple[str, str, list[tuple[int, int, int, int]]]] = [
     [(bases, expected) for _, bases, expected in _DROP_RULE_CASES],
     ids=[name for name, _, _ in _DROP_RULE_CASES],
 )
-def test_the_drop_rule_gives_pvcs_candidates_in_any_chunks(
+def test_the_drop_rule_gives_pvcs_candidates_in_any_blocks(
     bases: str, expected: list[tuple[int, int, int, int]]
 ) -> None:
     parameters = StrFinderParameters(copy_floors=_ZERO_FLOORS)
-    for chunk_bases in range(1, 61):
-        got = _find_candidates(bases, parameters, chunk_bases=chunk_bases)
+    for block_bases in range(1, 61):
+        got = _find_candidates(bases, parameters, block_bases=block_bases)
         found = [(c.start, c.end, c.period, c.score) for c in got]
-        assert found == expected, chunk_bases
+        assert found == expected, block_bases
 
 
 def test_a_candidate_under_its_copy_floor_is_not_returned() -> None:
@@ -677,10 +715,10 @@ def _make_random_bases(seed: int, length: int, alphabet: str) -> str:
 @given(
     bases=st.text(alphabet="ACGTN", max_size=300) | st.text(alphabet="AC", max_size=300),
     floors=st.tuples(*[st.integers(min_value=0, max_value=6)] * 6),
-    chunk_bases=st.integers(min_value=1, max_value=40),
+    block_bases=st.integers(min_value=1, max_value=40),
 )
-def test_the_copy_floors_and_the_chunks_change_nothing_but_what_is_under_the_floor(
-    bases: str, floors: tuple[int, int, int, int, int, int], chunk_bases: int
+def test_the_copy_floors_and_the_blocks_change_nothing_but_what_is_under_the_floor(
+    bases: str, floors: tuple[int, int, int, int, int, int], block_bases: int
 ) -> None:
     every = _find_candidates(bases, StrFinderParameters(copy_floors=_ZERO_FLOORS))
     over_floors = [
@@ -689,15 +727,32 @@ def test_the_copy_floors_and_the_chunks_change_nothing_but_what_is_under_the_flo
         if (candidate.end - candidate.start) // candidate.period >= floors[candidate.period - 1]
     ]
     parameters = StrFinderParameters(copy_floors=floors)
-    assert _find_candidates(bases, parameters, chunk_bases=chunk_bases) == over_floors
+    assert _find_candidates(bases, parameters, block_bases=block_bases) == over_floors
 
 
 def test_the_candidates_come_by_period_then_start() -> None:
     bases = _make_random_bases(seed=7, length=3000, alphabet="ACGT")
-    got = _find_candidates(bases, StrFinderParameters(copy_floors=_ZERO_FLOORS), chunk_bases=50)
+    got = _find_candidates(bases, StrFinderParameters(copy_floors=_ZERO_FLOORS), block_bases=50)
     keys = [(candidate.period, candidate.start) for candidate in got]
     assert keys == sorted(keys)
     assert {candidate.period for candidate in got} == {1, 2, 3, 4, 5, 6}
+
+
+def _drop_under_copy_floor_of(
+    candidates: Iterable[_Candidate], parameters: StrFinderParameters
+) -> list[_Candidate]:
+    """Step 3 by _drop_under_copy_floor, which takes the candidates of one period as arrays,
+    given the candidates one at a time, so that those of several periods keep their order."""
+    left = []
+    for candidate in candidates:
+        arrays = _CandidateArrays(
+            starts=np.array([candidate.start], np.intp),
+            ends=np.array([candidate.end], np.intp),
+            scores=np.array([candidate.score], np.int64),
+        )
+        if _drop_under_copy_floor(arrays, candidate.period, parameters).starts.size:
+            left.append(candidate)
+    return left
 
 
 def _find_rt_by_score(scores: list[int]) -> list[tuple[int, int, int]]:
@@ -767,7 +822,7 @@ def _find_candidates_by_score(
     penalty=st.integers(1, 20),
     scan_min_copies=st.integers(1, 8),
     floors=st.tuples(*[st.integers(min_value=0, max_value=6)] * 6),
-    chunk_bases=st.integers(min_value=1, max_value=40),
+    block_bases=st.integers(min_value=1, max_value=40),
 )
 def test_step_one_gives_the_candidates_of_one_score_at_a_time(
     bases: str,
@@ -776,7 +831,7 @@ def test_step_one_gives_the_candidates_of_one_score_at_a_time(
     penalty: int,
     scan_min_copies: int,
     floors: tuple[int, int, int, int, int, int],
-    chunk_bases: int,
+    block_bases: int,
 ) -> None:
     parameters = StrFinderParameters(
         scan_min_period=periods[0],
@@ -786,7 +841,7 @@ def test_step_one_gives_the_candidates_of_one_score_at_a_time(
         scan_min_copies=scan_min_copies,
         copy_floors=floors,
     )
-    got = _find_candidates(bases, parameters, chunk_bases=chunk_bases)
+    got = _find_candidates(bases, parameters, block_bases=block_bases)
     found = [(c.start, c.end, c.period, c.score) for c in got]
     assert found == _find_candidates_by_score(bases, parameters)
 
@@ -809,15 +864,19 @@ def _make_bases_with_repeats(draw: st.DrawFn) -> str:
     return "".join(stretches)
 
 
+# On 21 October 2026, of 500 examples, 305 carried a stack of open subsequences past a
+# block's end, 298 cut a run of matches at one, 185 at two or more in a row, and 69 left a
+# candidate waiting for a shorter period that divides its own. The full range of periods is
+# drawn half of the time, since a range without divisors never waits.
 @settings(max_examples=500, deadline=None)
 @given(
     bases=_make_bases_with_repeats(),
-    periods=st.tuples(st.integers(1, 6), st.integers(1, 6)).map(sorted),
+    periods=st.just([1, 6]) | st.tuples(st.integers(1, 6), st.integers(1, 6)).map(sorted),
     reward=st.integers(1, 10),
     penalty=st.integers(1, 20),
     scan_min_copies=st.integers(1, 8),
     floors=st.tuples(*[st.integers(min_value=0, max_value=6)] * 6),
-    chunk_bases=st.integers(min_value=1, max_value=64),
+    block_bases=st.integers(min_value=1, max_value=64),
 )
 def test_step_one_gives_the_candidates_of_the_pure_python_step_one(
     bases: str,
@@ -826,7 +885,7 @@ def test_step_one_gives_the_candidates_of_the_pure_python_step_one(
     penalty: int,
     scan_min_copies: int,
     floors: tuple[int, int, int, int, int, int],
-    chunk_bases: int,
+    block_bases: int,
 ) -> None:
     parameters = StrFinderParameters(
         scan_min_period=periods[0],
@@ -836,17 +895,18 @@ def test_step_one_gives_the_candidates_of_the_pure_python_step_one(
         scan_min_copies=scan_min_copies,
         copy_floors=floors,
     )
-    expected = pure_python_step_one._find_candidates(bases, parameters)
-    assert _find_candidates(bases, parameters, chunk_bases=chunk_bases) == expected
+    expected = pure_python_step_one.find_candidates(bases, parameters)
+    assert _find_candidates(bases, parameters, block_bases=block_bases) == expected
 
 
-# Each chunk of step 1 ends where no candidate crosses. The expected candidates, (start,
-# end, period, score) with no copy floor, are those of the pure-Python step 1 of main at
-# 96b3938 (tests/pure_python_step_one.py), run on 21 October 2026.
+# The expected candidates below, (start, end, period, score) with no copy floor, are those of
+# the pure-Python step 1 of main at 96b3938 (tests/pure_python_step_one.py), run on 21
+# October 2026.
 
 
-def test_a_repeat_longer_than_the_chunk_doubles_it_until_the_repeat_ends() -> None:
-    # 200 bases of (CA) with no place to end a chunk, from chunks of 1 base up.
+def test_a_run_longer_than_a_block_is_taken_in_pieces_and_joined() -> None:
+    # 200 bases of (CA): in blocks of up to 199 bases its run of matches of period 2 is cut
+    # at every block's end, and each piece absorbs the one before by rule 4.
     bases = "TTGA" + "CA" * 100 + "GTTG"
     parameters = StrFinderParameters(copy_floors=_ZERO_FLOORS)
     expected = [
@@ -854,15 +914,13 @@ def test_a_repeat_longer_than_the_chunk_doubles_it_until_the_repeat_ends() -> No
         _Candidate(start=205, end=207, period=1, score=2),
         _Candidate(start=3, end=204, period=2, score=398),
     ]
-    for chunk_bases in (1, 16, 64, 199, 200, 201, 207, 208):
-        assert _find_candidates(bases, parameters, chunk_bases=chunk_bases) == expected
+    for block_bases in (1, 16, 64, 199, 200, 201, 207, 208):
+        assert _find_candidates(bases, parameters, block_bases=block_bases) == expected
 
 
-def test_candidates_beside_the_end_of_a_chunk_are_found_whole() -> None:
-    # In chunks that start at 1 base, the first chunk ends at 6, the first place where every
-    # period's stack is empty with its period of mismatches before it: (TT) of period 1 ends
-    # at 5 and (CCC) starts at 6. Found by a search of random sequences for a chunk's end one
-    # base after a candidate's.
+def test_candidates_beside_the_end_of_a_block_are_found_whole() -> None:
+    # Blocks of every size from 1 base put a block's end at every base, beside the end and
+    # the start of every candidate: (TT) of period 1 ends at 5 and (CCC) starts at 6.
     bases = "ATATTGCCCACCTGCACACACACGACCATGGCAACAGCTCGAAAAGAC"
     parameters = StrFinderParameters(copy_floors=_ZERO_FLOORS)
     expected = [
@@ -876,8 +934,59 @@ def test_candidates_beside_the_end_of_a_chunk_are_found_whole() -> None:
         _Candidate(start=0, end=4, period=2, score=4),
         _Candidate(start=14, end=23, period=2, score=14),
     ]
-    for chunk_bases in range(1, len(bases) + 2):
-        assert _find_candidates(bases, parameters, chunk_bases=chunk_bases) == expected
+    for block_bases in range(1, len(bases) + 2):
+        assert _find_candidates(bases, parameters, block_bases=block_bases) == expected
+
+
+# Cases where a slip in the drop rule's middle test, the primitive test or Ruzzo and
+# Tompa's rules changes the output, from the review of 21 October 2026. Each gives
+# (scan_min_period, scan_max_period, match_reward, mismatch_penalty), a scan_min_copies of 1.
+_SMALL_SCORING_CASES = [
+    (
+        # Two kept period-1 candidates hold the middle of the period-5 candidate [0, 6): the
+        # first is too short to cover half of it, the second covers it.
+        "the_second_kept_candidate_holding_the_middle_drops",
+        "ACCAAAA",
+        (1, 5, 2, 3),
+        [(1, 3, 1, 2), (3, 7, 1, 6), (0, 5, 4, 2)],
+    ),
+    (
+        # ANAN is AN repeated, an N equal to an N, so not primitive; ANANA of period 5 is.
+        "a_motif_of_an_n_repeated_is_not_primitive",
+        "NNNANANAAN",
+        (4, 6, 4, 2),
+        [(3, 9, 5, 4)],
+    ),
+    (
+        "a_period_two_candidate_between_two_of_period_one",
+        "ACCGAGGCA",
+        (1, 3, 5, 8),
+        [(1, 3, 1, 5), (5, 7, 1, 5), (3, 6, 2, 5)],
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("bases", "scoring", "expected"),
+    [case[1:] for case in _SMALL_SCORING_CASES],
+    ids=[case[0] for case in _SMALL_SCORING_CASES],
+)
+def test_step_one_gives_the_oracles_candidates_on_small_cases(
+    bases: str, scoring: tuple[int, int, int, int], expected: list[tuple[int, int, int, int]]
+) -> None:
+    min_period, max_period, reward, penalty = scoring
+    parameters = StrFinderParameters(
+        scan_min_period=min_period,
+        scan_max_period=max_period,
+        match_reward=reward,
+        mismatch_penalty=penalty,
+        scan_min_copies=1,
+        copy_floors=_ZERO_FLOORS,
+    )
+    for block_bases in (1, 2, 3, 5, 65_536):
+        got = _find_candidates(bases, parameters, block_bases=block_bases)
+        found = [(c.start, c.end, c.period, c.score) for c in got]
+        assert found == expected, block_bases
 
 
 @pytest.mark.parametrize(
@@ -895,15 +1004,15 @@ def test_only_the_periods_shorter_than_the_sequence_are_scanned(
     bases: str, scan_min_period: int, expected: list[_Candidate]
 ) -> None:
     parameters = StrFinderParameters(scan_min_period=scan_min_period, copy_floors=_ZERO_FLOORS)
-    for chunk_bases in (1, 2, 3, 65_536):
-        assert _find_candidates(bases, parameters, chunk_bases=chunk_bases) == expected
+    for block_bases in (1, 2, 3, 65_536):
+        assert _find_candidates(bases, parameters, block_bases=block_bases) == expected
 
 
 @pytest.mark.parametrize("bases", ["N" * 300, "n" * 300, "NRY" * 100], ids=["N", "n", "NRY"])
 def test_a_contig_of_no_a_c_g_or_t_has_no_candidates(bases: str) -> None:
     parameters = StrFinderParameters(copy_floors=_ZERO_FLOORS)
-    for chunk_bases in (1, 7, 64, 65_536):
-        assert _find_candidates(bases, parameters, chunk_bases=chunk_bases) == []
+    for block_bases in (1, 7, 64, 65_536):
+        assert _find_candidates(bases, parameters, block_bases=block_bases) == []
 
 
 @pytest.mark.slow
@@ -912,8 +1021,7 @@ def test_step_one_holds_far_fewer_than_every_candidate_of_four_million_bases() -
     # pure-Python step 1 in blocks of 4,096 bases: a peak of 8.0 MB, 4 MB of it the bases as
     # bytes. The same run in one block of the whole sequence, which holds every candidate
     # and every subsequence of the scores until the end, peaked at 965.6 MB. The array step
-    # 1, in chunks of 65,536 bases or more, peaked at 15.4 MB on 21 October 2026, 4 MB of it
-    # the canonical bases.
+    # 1, in blocks of 65,536 bases, peaked at 11.8 MiB on 4 Mb of chr1 on 21 October 2026.
     bases = _make_random_bases(seed=19, length=4_000_000, alphabet="ACGT")
     tracemalloc.start()
     try:
@@ -924,10 +1032,30 @@ def test_step_one_holds_far_fewer_than_every_candidate_of_four_million_bases() -
     assert peak < 30_000_000
 
 
+@pytest.mark.slow
+def test_step_one_holds_little_when_the_stack_is_never_empty() -> None:
+    # With a reward of 7 and a penalty of 1 the running total climbs, the stack of Ruzzo and
+    # Tompa is never empty, and no candidate is final before the end. What is held is then
+    # 1 MB of canonical bases, 1 MB of encoded bases while they are translated, the arrays
+    # of one period's block, about 49 bytes per base of the block, 3.1 MiB, and a short
+    # stack. Measured on 21 October 2026: a peak of 5.5 MB, and 4 s. Step 1 in chunks
+    # split where every stack is empty held about 170 bytes per base here.
+    bases = _make_random_bases(seed=23, length=1_000_000, alphabet="ACGT")
+    parameters = StrFinderParameters(match_reward=7, mismatch_penalty=1)
+    tracemalloc.start()
+    try:
+        _find_candidates(bases, parameters)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 8_000_000
+
+
 # ---- Steps 3 to 6, ported from pvc's segment_criteria.rs at bbcc9f4 ------------------------
-# pvc's classify is _find_str_segments, steps 4 to 6; its prefilter is _drop_under_copy_floor,
-# step 3. pvc's RepeatInterval is 0-based and half-open, as a candidate is, so its numbers
-# carry over; pvc's SsrSegment is 1-based and inclusive, so its [s, e] is [s - 1, e) here.
+# pvc's classify is _find_str_segments, steps 4 to 6; its prefilter is step 3, which
+# _drop_under_copy_floor gives on the arrays of one period, and which the tests reach through
+# _drop_under_copy_floor_of, one candidate at a time. pvc's RepeatInterval is 0-based and
+# half-open, as a candidate is, so its numbers carry over; pvc's SsrSegment is 1-based and inclusive, so its [s, e] is [s - 1, e) here.
 
 # pvc's params() (segment_criteria.rs 1516), matched_params(0.8, 0, 5): the catalogue's
 # periods and copy floors, with a bundle distance of 5 so that the fixtures can be small.
@@ -1117,7 +1245,7 @@ def test_each_rejection_reason_names_the_gate_that_fired() -> None:
 
 def test_the_walk_reaches_only_one_of_classifications_five_gates() -> None:
     # Step 3 applies the copy floor before step 6 can.
-    assert list(_drop_under_copy_floor([_make_candidate(20, 26, 2, 100)], _PARAMS)) == []
+    assert _drop_under_copy_floor_of([_make_candidate(20, 26, 2, 100)], _PARAMS) == []
 
     # A compound motif still fires the gate when it is given directly; step 1 never gives one.
     contig = "CGCGCGCGCGCGCGCGCGCGAAAAAAAAAAAAAAAAAAAACGCGCGCGCGCGCGCGCGCG"
@@ -1149,13 +1277,13 @@ def test_classify_drops_period_one_homopolymer_and_spares_the_neighbour_ssr() ->
 def test_prefilter_drops_low_copy_noise() -> None:
     real = _make_candidate(100, 120, 2, 100)
     noise = _make_candidate(500, 504, 2, 10)
-    assert list(_drop_under_copy_floor([real, noise], _PARAMS)) == [real]
+    assert _drop_under_copy_floor_of([real, noise], _PARAMS) == [real]
 
 
 def test_prefilter_keeps_a_higher_period_tract_that_is_not_a_multiple() -> None:
     two = _make_candidate(100, 120, 2, 100)
     three = _make_candidate(100, 121, 3, 100)
-    assert list(_drop_under_copy_floor([two, three], _PARAMS)) == [two, three]
+    assert _drop_under_copy_floor_of([two, three], _PARAMS) == [two, three]
 
 
 def test_classify_upper_cases_a_soft_masked_tracts_motif() -> None:
@@ -1292,8 +1420,8 @@ def test_the_minimum_is_looked_up_by_the_tracts_own_period() -> None:
     assert len(segments) == 1
     assert segments[0].motif == "AT"
 
-    assert list(_drop_under_copy_floor([dinucleotide, trinucleotide], picky)) == [trinucleotide]
-    assert list(_drop_under_copy_floor([dinucleotide, trinucleotide], mirrored)) == [dinucleotide]
+    assert _drop_under_copy_floor_of([dinucleotide, trinucleotide], picky) == [trinucleotide]
+    assert _drop_under_copy_floor_of([dinucleotide, trinucleotide], mirrored) == [dinucleotide]
 
 
 def test_min_copies_uses_the_fallback_only_beyond_the_table() -> None:
@@ -1326,8 +1454,8 @@ def test_raising_the_copy_floor_changes_what_is_admitted() -> None:
     strict = replace(_PARAMS, copy_floors=(9, 9, 9, 9, 9, 9))
     assert _find_whole_contig([candidate], _CLEAN_AT, strict) == ()
 
-    assert list(_drop_under_copy_floor([candidate], _PARAMS)) == [candidate]
-    assert list(_drop_under_copy_floor([candidate], strict)) == []
+    assert _drop_under_copy_floor_of([candidate], _PARAMS) == [candidate]
+    assert _drop_under_copy_floor_of([candidate], strict) == []
 
 
 def test_joins_cluster_is_strict_at_the_threshold() -> None:
@@ -1356,8 +1484,8 @@ def test_a_member_spanning_past_its_neighbour_keeps_the_cluster_open() -> None:
 def test_prefilter_drops_an_inverted_interval_instead_of_underflowing() -> None:
     inverted = _make_candidate(120, 100, 2, 100)
     good = _make_candidate(100, 120, 2, 100)
-    assert list(_drop_under_copy_floor([inverted, good], _PARAMS)) == [good]
-    assert list(_drop_under_copy_floor([_make_candidate(100, 100, 2, 100)], _PARAMS)) == []
+    assert _drop_under_copy_floor_of([inverted, good], _PARAMS) == [good]
+    assert _drop_under_copy_floor_of([_make_candidate(100, 100, 2, 100)], _PARAMS) == []
 
 
 _SYNTHETIC_REF = Path(__file__).parent / "data" / "tandem_repeat" / "synthetic_ref.fa"
@@ -1377,7 +1505,7 @@ def test_differential_vs_production_build_loci_on_scanner_output() -> None:
             bases = reference.get_bases(contig, 0, reference.get_length(contig))
             # pvc's find_tandem_repeats over periods 1 to 6, then its prefilter.
             scanned = StrFinderParameters(copy_floors=_ZERO_FLOORS)
-            candidates = _drop_under_copy_floor(_find_candidates(bases, scanned), _PARAMS)
+            candidates = _drop_under_copy_floor_of(_find_candidates(bases, scanned), _PARAMS)
             classification = _find_str_segments(candidates, bases, _PARAMS)
             counts[contig] = (
                 len(classification.str_segments),
@@ -1615,14 +1743,8 @@ def test_a_contig_end_flank_of_zero_drops_nothing(bases: str, candidate: _Candid
 # its prefilter and classify.
 def test_an_empty_candidate_is_dropped_even_at_a_copy_floor_of_zero() -> None:
     no_floors = replace(_PARAMS, copy_floors=_ZERO_FLOORS)
-    assert (
-        list(
-            _drop_under_copy_floor(
-                [_make_candidate(5, 5, 2, 1), _make_candidate(9, 7, 2, 1)], no_floors
-            )
-        )
-        == []
-    )
+    empty_and_inverted = [_make_candidate(5, 5, 2, 1), _make_candidate(9, 7, 2, 1)]
+    assert _drop_under_copy_floor_of(empty_and_inverted, no_floors) == []
 
 
 def test_an_empty_candidate_is_passed_over_by_step_four_without_a_reason() -> None:
@@ -2122,7 +2244,7 @@ def test_the_satellite_cap_applies_to_the_cleaned_coverage_not_the_raw() -> None
     bases = _put(_make_windowing_fixture(), 5200, "CGCG")
     scanned = replace(_PVC_DEFAULT_CONFIG, copy_floors=_ZERO_FLOORS)
     raw = _find_candidates(bases, scanned)
-    cleaned = list(_drop_under_copy_floor(raw, _PVC_DEFAULT_CONFIG))
+    cleaned = _drop_under_copy_floor_of(raw, _PVC_DEFAULT_CONFIG)
 
     def find_over_cap(candidates: list[_Candidate]) -> list[tuple[int, int]]:
         return [
