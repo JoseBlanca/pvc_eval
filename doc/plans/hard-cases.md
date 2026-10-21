@@ -80,12 +80,13 @@ They run in order: milestone 2's cases S11 and E5 stand on milestone 1.
   - `tests/hard_cases.py`: one literal per case, made from §4.5 of the spec, which is the source of
     every value: the records, written in excerpt positions with the line of §4.5 beside each as a
     comment; the sample; the locus, kind and STR regions; the locus alleles; the possible
-    genotypes of each file, as sequences made from §4.5's indices and alleles; and the reported
+    genotypes of each file, as §4.5's indices with its line beside them, turned into sequences
+    through the locus alleles by the test; and the reported
     genotypes, counts and reasons. The excerpt's 301 bases are read once from GRCh38 or SL4.0 at
     the stretch §4.5 gives, by a script in the session's scratchpad that is not committed; the
     module's docstring says how they were read, and the two excerpt tests below check them against
     the references.
-  - `find_possible_haplotypes` in `tests/haplotype_oracle.py`, as §5 of the spec gives it, with a
+  - `find_possible_genotypes` in `tests/haplotype_oracle.py`, as §5 of the spec gives it, with a
     test on R10 and on S4's file A, whose two phased records lie in two windows of one phase set:
     taken together they give one possible genotype, where windows taken one by one and joined
     would give a second.

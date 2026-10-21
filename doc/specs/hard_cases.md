@@ -1116,12 +1116,14 @@ row  A 1/1  B 1/1  possible 1, 1  records 1, 1  -> same genotype
 named by its case, S1 to O5, in pytest's report. The cases themselves are literals in
 `tests/hard_cases.py`, one value per case: the excerpt's contig, offset and bases; the records of
 each file as VCF lines in excerpt positions, each with its original line beside it as a comment; the
-sample's name; and the expected row. Each test:
+sample's name; the possible genotypes of each file, as indices into the locus alleles with the line
+of §4.5 that gives them beside them as a comment; and the expected row, with §4.5's row line beside
+it. Each test:
 
 1. writes the excerpt as a FASTA with its `.fai`, and the two VCF files, to `tmp_path`;
 2. checks the haplotypes with the oracle: the possible genotypes `tests/haplotype_oracle.py` gives
-   each file over the locus are the case's, as sequences, or none for a file whose sample is
-   invalid;
+   each file over the locus are the case's, its indices turned into sequences through the case's
+   locus alleles, or none for a file whose sample is invalid;
 3. runs `compare()` with the default `CompareConfig` and `finder_threads=0`, and checks that it
    yields the case's rows, one for these cases, field by field: the locus (0-based and half-open in
    `OutcomeRow`), the kind, the STR regions with their types and motifs, the outcome, the locus
@@ -1132,7 +1134,7 @@ Step 2 needs the oracle to give its possible genotypes, which it now uses only i
 `check_same_haplotypes`. It gains one public function, in the tests and not in `pvc_eval`:
 
 ```python
-def find_possible_haplotypes(vcf: Path, reference: IndexedFasta, contig: str, start: int,
+def find_possible_genotypes(vcf: Path, reference: IndexedFasta, contig: str, start: int,
                              end: int, sample: int, *, ploidy: int = DEFAULT_PLOIDY
                              ) -> frozenset[tuple[str, ...]] | None: ...
 ```
@@ -1159,8 +1161,8 @@ finder gives over the excerpt widened by 5,000 bases on each side.
 `PVC_EVAL_GRCH38` names, and `test_tomato_excerpts_are_the_references` for the five tomato cases,
 E12 to E16, from the FASTA that `PVC_EVAL_TOMATO` names, the SL4.0 chromosomes at
 `/Users/jose/genomes/s_lycopersicum/4.00/S_lycopersicum_chromosomes.4.00.fa` on this machine. Each
-is skipped on its own, with a message naming its variable, when the variable is not set or names no
-file, as `tests/test_compare_real.py` is. The 50 tests of the cases need neither.
+is skipped on its own, with a message naming its variable, when the variable is not set, names no file, or names a file with no `.fai` beside it, as
+`tests/test_compare_real.py` is. The 50 tests of the cases need neither.
 
 ## 6. A `*` is measured against its record's REF as written
 
