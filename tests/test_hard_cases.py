@@ -112,7 +112,10 @@ def test_hard_case(case: HardCase, tmp_path: Path) -> None:
     rows = list(compare(vcf_a, vcf_b, reference, finder_threads=0))
 
     assert oracle_genotypes == [case.oracle_genotypes_a, case.oracle_genotypes_b]
-    assert [_get_checked_fields(row) for row in rows] == [_make_expected_row(case)]
+    # One row for each of these cases, compared field by field, so that a failure names the
+    # fields that differ.
+    assert len(rows) == 1, rows
+    assert _get_checked_fields(rows[0]) == _make_expected_row(case)
 
 
 def _get_reference(variable: str, what: str) -> Path:
