@@ -1190,8 +1190,8 @@ In this order, each in a commit of its own, the specs before the code:
    S11's records over their own few bases.
 2. `doc/specs/respell.md`: where it judges which records a re-spelling keeps whole by "the REF of a
    record with a `*` ALT", that REF is the REF as written, so that no re-spelling changes whether a
-   padded `*` is covered. The `*` records it adds under deletions are written unpadded, so their
-   REF as written is their REF trimmed.
+   padded `*` is covered. The `*` re-spelling keeps adding a `*` only where a deletion reaches the
+   trimmed REF, which the REF as written holds.
 3. The code: `VcfRecord` keeps the stretch its REF covered as written, which it does not now, and
    `pvc_eval.reconcile`, `tests/haplotype_oracle.py` and the re-spelling program measure a `*`
    against it. The tests of R1 and R2 pass unchanged, and the new case of `reconciliation.md` is
