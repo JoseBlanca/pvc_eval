@@ -472,10 +472,16 @@ class VcfRecord:
     written_ref: Span | None = None    # 0-based and half-open; None stands for (start, end)
 ```
 
-`parse_vcf` sets it on every record to the stretch the file's REF covers, from POS to POS plus
-the length of REF, before trimming. A record built by hand may leave it `None`, which stands for
-its normalised REF. `VcfRecord` raises `ValueError` when it is given one that does not contain its
-normalised REF.
+`parse_vcf` sets it to the stretch the file's REF covers, from POS to POS plus the length of REF,
+before trimming, on every record where that stretch differs from the normalised REF, and leaves
+it `None` on the others, where `None` stands for the normalised REF. So a record built by hand
+with `None` equals the record `parse_vcf` gives for the same line, and the field costs no memory
+on the records whose REF lost no base: on 100,000 records of one SNP and one sample, held by
+`parse_vcf`, 610 bytes per record against 721 when every record holds it (measured by the review
+of milestone 1 of `doc/plans/hard-cases.md`, 21 October 2026, with tracemalloc; 601 before the
+field). The owner chose it on 21 October 2026. `VcfRecord` raises `ValueError` when it is given one
+that does not contain its normalised REF. A record with a `*` allele has it in its span
+(`doc/spec.md` §5.2).
 
 The types every evaluator shares are in a module that holds only them, as `pvc_eval.locus` holds
 `Locus`:
