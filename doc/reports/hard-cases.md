@@ -14,12 +14,21 @@ span of a record with a `*` holds that REF, as the owner decided on 21 October 2
 
 **Checks at the end**, at 2e7e3f3: `ruff format --check`, `ruff check` and `ty check` pass;
 `uv run pytest -q` gives "1968 passed, 11 skipped" (1886 passed, 9 skipped at a050b57); the hard
-cases give "51 passed, 2 skipped" without the two variables and "53 passed" with them.
+cases give "51 passed, 2 skipped" without the two variables and "53 passed" with them: the 50
+cases, the test that the excerpt tests catch an STR region across a locus's end, and the two
+excerpt tests, which need the variables. `PVC_EVAL_GRCH38` and `PVC_EVAL_TOMATO` name the FASTA of
+GRCh38 and of SL4.0, the tomato reference of the five tomato cases.
 
-**What is asked of the owner.** The merge of `hard-cases` into `main`, and nothing is pushed. Two
-things found on the way are not fixed here: a REF of non-ASCII letters stops the run with a
-traceback (milestone 1, below), and the span-limit warning's text, which no longer fits a record
-with a `*`.
+**What is asked of the owner.** The merge of `hard-cases` into `main`; nothing is pushed. Two
+things found on the way are not fixed here, and neither blocks the merge:
+
+- A REF of non-ASCII letters, `ß` against a reference `G`, stops the run with a Python traceback
+  from `_check_ref` in `pvc_eval.vcf` instead of an error naming the line, and `ſ` is read as the
+  IUPAC code `S`. It is on `main` already. It would be a small plan of one milestone, or an issue.
+- The warning for a record whose span the span limit cut says it "was given only its REF as its
+  span"; a cut record with a `*` now keeps its REF as written too. A user reading it about such a
+  record would think the span narrower by the padding. A change of one sentence of text pvc_eval
+  prints, which is the owner's to approve.
 
 ## Milestone 1: a `*` measured against its record's REF as written
 
@@ -44,10 +53,12 @@ check` pass.
 - Two reviewers, correctness and spec, found apart that a deletion in the padding of a `*` record
   could fall in another locus, since spans were built from the trimmed REF; the owner decided on
   21 October 2026 that the span of a record with a `*` holds its REF as written (`doc/spec.md`
-  §5.2). It moved R10's locus to 10–19, a case this branch added, and the loci of E3, E15 and E16
+  §5.2). It moved the locus of R10, the padded `*` case this branch added to `reconciliation.md`, to 10–19,
+  with the same genotype, and the loci of E3, E15 and E16
   by one or two bases, with no outcome changed; the specs were corrected first.
 - The design reviewer measured the field on every record at 721 bytes per record against 601
-  before, on 100,000 one-sample SNPs; the owner decided it is set only where it differs, 610.
+  before, on 100,000 one-sample SNPs; the owner decided it is set only where it differs, 610 bytes per record, as tracemalloc measured
+  the records `parse_vcf` held.
 - Three reviewers found no test of the padding on the left of the trimmed REF; the tests above
   were added.
 - Not taken: the errors reviewer's question whether a `written_ref` with a negative start should
