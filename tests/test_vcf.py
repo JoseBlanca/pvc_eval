@@ -1214,8 +1214,19 @@ LONG_S = "\N{LATIN SMALL LETTER LONG S}"
             "is 'AßT', and the reference, read in upper case, has 'AGT' there"
             " ('ß' is no IUPAC code).",
         ),
+        (
+            "ACGTACGTACGTACGTACGTG",
+            "ACGTACGTACGTACGTACGTß",
+            "(21 bases) has 'ß' at chr1:23, where the reference, read in upper case, has 'G'"
+            " ('ß' is no IUPAC code).",
+        ),
     ],
-    ids=["sharp_s_against_g", "long_s_against_g", "sharp_s_inside_a_longer_ref"],
+    ids=[
+        "sharp_s_against_g",
+        "long_s_against_g",
+        "sharp_s_inside_a_longer_ref",
+        "sharp_s_ending_a_ref_of_21_bases",
+    ],
 )
 def test_ref_letter_outside_ascii_differs_from_the_reference(
     tmp_path: Path, make_reference: MakeReference, reference_bases: str, ref: str, found: str
