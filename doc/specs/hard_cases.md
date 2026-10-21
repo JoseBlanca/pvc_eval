@@ -6,25 +6,24 @@ it exists yet. It answers `doc/spec.md` Open 3 and replaces the text of its §7.
 `doc/specs/compare.md`, and on the oracle of `doc/specs/respell.md` §8,
 `tests/haplotype_oracle.py`.*
 
-pvc's work on tandem repeats met, in its reports, the disagreements between VCF files that
-pvc_eval was made to judge: GIAB writing one haplotype as an indel and a SNP where pvc writes one
-record over the repeat, deletions across the edge of a repeat written as overlapping records with
-a `*` allele, and HipSTR writing the whole repeat in one record. This spec takes 50 of them, each
-with the VCF records of two real files at one locus. They are numbered by kind: S1 to S14 for
-GIAB's split records against pvc's repeat record, E1 to E16 for deletions at a repeat's edge, H1
-to H15 for HipSTR's whole-repeat records, and O1 to O5 for other spellings. Each case gives the
-row of the table that `compare()` must give for it: the outcome, the locus, its locus alleles and
-the genotype of each file. Each becomes a test that runs `compare()` on a few hundred bases of the
-real reference.
+pvc's work on tandem repeats met, in its reports, the disagreements between VCF files that pvc_eval
+was made to judge: GIAB writing one haplotype as an indel and a SNP where pvc writes one record over
+the repeat, deletions across the edge of a repeat written as overlapping records with a `*` allele,
+and HipSTR writing the whole repeat in one record. This spec takes 50 of them, each with the VCF
+records of two real files at one locus. They are numbered by kind: S1 to S14 for GIAB's split
+records against pvc's repeat record, E1 to E16 for deletions at a repeat's edge, H1 to H15 for
+HipSTR's whole-repeat records, and O1 to O5 for other spellings. Each case gives the row of the
+table that `compare()` must give for it: the outcome, the locus, its locus alleles and the genotype
+of each file. Each becomes a test that runs `compare()` on a few hundred bases of the real
+reference.
 
-What is asked of the owner is to approve each expected outcome, since the check stands on them,
-and to answer Open 1 (§6). 32 of the 50 are *same genotype*: the files spell one haplotype
-differently and pvc_eval must see through it. 11 are *different* and 4 *same alleles, other
-genotype*, where the files truly disagree. 3 are *invalid in B*, file B being pvc's: pvc wrote
-what it meant to be the same haplotypes as file A, and a rule of `doc/spec.md` §5.4 makes them
-impossible. Two of these three, S11 and E5, follow from the rule Open 1 asks about; the third,
-E11, from the collision rule the owner chose on 19 October 2026. pvc_eval at commit 96b3938 gives
-every one of the 50 rows below.
+What is asked of the owner is to approve each expected outcome, since the check stands on them, and
+to answer Open 1 (§6). 32 of the 50 are *same genotype*: the files spell one haplotype differently
+and pvc_eval must see through it. 11 are *different* and 4 *same alleles, other genotype*, where the
+files truly disagree. 3 are *invalid in B*, file B being pvc's: pvc wrote what it meant to be the
+same haplotypes as file A, and a rule of `doc/spec.md` §5.4 makes them impossible. Two of these
+three, S11 and E5, follow from the rule Open 1 asks about; the third, E11, from the collision rule
+the owner chose on 19 October 2026. pvc_eval at commit 96b3938 gives every one of the 50 rows below.
 
 Positions are 1-based and inclusive, as in a VCF, unless they are called excerpt positions.
 
@@ -32,16 +31,15 @@ Positions are 1-based and inclusive, as in a VCF, unless they are called excerpt
 
 A case holds:
 
-- **The excerpt**: 301 bases of the reference, from 150 bases before a position of the locus to
-  150 after, upper case, written into the test as a literal. The test writes it as a FASTA of one
-  contig, named as the reference's contig, so that it needs no download. An excerpt position is
-  the position minus the offset each case gives. The excerpts are GRCh38's, from the analysis set
-  that `PVC_EVAL_GRCH38` names, and for five cases SL4.0, the tomato reference of pvc's tomato
-  runs.
-- **The records of file A and of file B**, each as its file wrote it, with its file and line:
-  POS, REF, ALT and the sample's GT, with its PS where the file gives one. The test writes them
-  shifted to excerpt positions, QUAL 50, FILTER PASS, INFO `.`, for one sample named as in the
-  file. Every other field is left out, since none changes an outcome.
+- **The excerpt**: 301 bases of the reference, from 150 bases before a position of the locus to 150
+  after, upper case, written into the test as a literal. The test writes it as a FASTA of one
+  contig, named as the reference's contig, so that it needs no download. An excerpt position is the
+  position minus the offset each case gives. The excerpts are GRCh38's, from the analysis set that
+  `PVC_EVAL_GRCH38` names, and for five cases SL4.0, the tomato reference of pvc's tomato runs.
+- **The records of file A and of file B**, each as its file wrote it, with its file and line: POS,
+  REF, ALT and the sample's GT, with its PS where the file gives one. The test writes them shifted
+  to excerpt positions, QUAL 50, FILTER PASS, INFO `.`, for one sample named as in the file. Every
+  other field is left out, since none changes an outcome.
 - **The haplotypes each file says**, as the locus alleles of the row and the genotype each file is
   given, and, for a file with more than one possible genotype, how many.
 - **The expected row**: the locus, its kind and STR regions, the outcome, the locus alleles and the
@@ -55,22 +53,20 @@ the caller. A case with no GIAB file takes the files in the order the case names
 Each expected row was worked out twice, and the two agree on all 50:
 
 1. **From the haplotypes.** For each file, the oracle of `doc/specs/respell.md` §8, which rebuilds
-   haplotypes from the records without pvc_eval's reconciliation, gave the sample's possible
-   genotypes over the stretches its records span. Joined with the reference between them, these
-   are the possible genotypes over the locus. The outcome came from them by the rules of
-   `doc/spec.md` §5.5, in a script written for this and apart from `pvc_eval.evaluate`.
-2. **From `compare()`**, on the excerpt and the two VCF files, with the default `CompareConfig` and
-   `finder_threads=0`.
+haplotypes from the records without pvc_eval's reconciliation, gave the sample's possible genotypes
+over the stretches its records span. Joined with the reference between them, these are the possible
+genotypes over the locus. The outcome came from them by the rules of `doc/spec.md` §5.5, in a script
+written for this and apart from `pvc_eval.evaluate`. 2. **From `compare()`**, on the excerpt and the
+two VCF files, with the default `CompareConfig` and `finder_threads=0`.
 
-The oracle and pvc_eval read records by the rules of §5.4, with one difference: the oracle counts
-a `*` as covered only by an edit as written, where pvc_eval also counts every placement of a
-deletion. No case here turns on it: with coverage as written only, all 50 rows are the same (worked
-by the spec's reviewer). So the oracle checks the reconciliation's code, not its rules. Where a rule
-gives a result that the file's caller did not mean, both give it, and the case says so (S11, E5,
-E11).
+The oracle and pvc_eval read records by the rules of §5.4, with one difference: the oracle counts a
+`*` as covered only by an edit as written, where pvc_eval also counts every placement of a deletion.
+No case here turns on it: with coverage as written only, all 50 rows are the same (worked by the
+spec's reviewer). So the oracle checks the reconciliation's code, not its rules. Where a rule gives
+a result that the file's caller did not mean, both give it, and the case says so (S11, E5, E11).
 
-Every record was read back from its file at the line named and compared with the case: POS, REF,
-ALT and the sample's GT, all 50 cases, no difference. An excerpt is a contig of its own, and the STR
+Every record was read back from its file at the line named and compared with the case: POS, REF, ALT
+and the sample's GT, all 50 cases, no difference. An excerpt is a contig of its own, and the STR
 finder drops a repeat within 15 bases of a contig's end (`doc/spec.md` §5.1), so an excerpt could
 give other STR regions than the whole reference. The STR regions of each excerpt were compared with
 those the finder gives on the excerpt widened by 5,000 bases on each side. Over every locus they are
@@ -94,8 +90,8 @@ from any locus.
 | freebayes30 | `pop_var_caller/benchmarks/ssr_hg002/results/freebayes/HG002_30x.fb.vcf.gz` | freebayes on HG002 at 30x |
 | GATK-tomato, pvc-tomato | `pop_var_caller-ref-reads-in-repeats/tmp/tomato/{gatk_N40,main40}.vcf` | GATK HaplotypeCaller and pvc, jointly on 40 tomato samples, SL4.0 |
 
-The paths are under `/Users/jose/devel/`. Line numbers count the lines of the file decompressed,
-its header included. These files stay in pvc's directories and the tests do not read them.
+The paths are under `/Users/jose/devel/`. Line numbers count the lines of the file decompressed, its
+header included. These files stay in pvc's directories and the tests do not read them.
 
 No human GATK call set on this machine has a `*` allele or two overlapping records: GATK's are
 slices of 29 to 78 records, and the runs behind the edge-deletion report were deleted. The
@@ -103,84 +99,81 @@ overlapping records of humans here are pvc's own. Since 10 October 2026, when a 
 edge of a repeat, pvc widens its record of the repeat over the deleted flank bases, the **widened
 repeat record**, and writes a `*` for that haplotype in its record of those flank bases, the **flank
 record**, "how GATK writes it" (`doc/devel/ng/spec/str_edge_deletion_alleles.md` §6). GATK's own are
-the tomato cases, E12 to
-E16, which have no GIAB file.
+the tomato cases, E12 to E16, which have no GIAB file.
 
 ## 3. What the cases show
 
-**Spellings that agree.** pvc_eval gives *same genotype* where the two files write one haplotype
-in these ways, each against the other:
+**Spellings that agree.** pvc_eval gives *same genotype* where the two files write one haplotype in
+these ways, each against the other:
 
-- an indel and a SNP as two records against one record over the repeat whose ALT carries both
-  (S7 to S10, S13, H3, H5);
-- two indels at one position, phased on different haplotypes, against one record of two ALTs
-  (S1, H10);
+- an indel and a SNP as two records against one record over the repeat whose ALT carries both (S7 to
+  S10, S13, H3, H5);
+- two indels at one position, phased on different haplotypes, against one record of two ALTs (S1,
+  H10);
 - an indel anchored before the repeat against a record that starts on its first base (S6), or an
   indel at another place in the repeat (E1, H1, H2);
-- a record whose REF reaches into the flank to carry a SNP against the SNP written apart (S12,
-  H7, H9, H10);
-- a deletion across a repeat's edge, written in a widened repeat record beside a flank record with
-  a `*` allele, against the deletion written plainly (E2, E3, E6);
+- a record whose REF reaches into the flank to carry a SNP against the SNP written apart (S12, H7,
+  H9, H10);
+- a deletion across a repeat's edge, written in a widened repeat record beside a flank record with a
+  `*` allele, against the deletion written plainly (E2, E3, E6);
 - four heterozygous phased records that give one sequence on both haplotypes, against one record
   `1/1` (O1);
 - one insertion placed at three points of a compound repeat (O3 to O5).
 
-Where a file leaves the phase open, one of its possible genotypes is enough (S7, S8, S10, E4,
-E9, H6, H8, H11).
+Where a file leaves the phase open, one of its possible genotypes is enough (S7, S8, S10, E4, E9,
+H6, H8, H11).
 
-**The locus takes the whole stretch.** In S3 the two files give the same repeat, A×22, and pvc
-adds a SNP on the base after it. The SNP lies next to the STR region, which it therefore touches,
-and in the span of file A's insertion, every position the insertion could be written at
-(`doc/spec.md` §5.2), which ends on the base after the repeat. So the locus holds it, and the row is
-*different*: pvc_eval compares what each file says over the whole locus, not over the repeat alone
-(`doc/spec.md` §5.3). pvc's tract scorer, which compares the repeat alone, counts it right.
+**The locus takes the whole stretch.** In S3 the two files give the same repeat, A×22, and pvc adds
+a SNP on the base after it. The SNP lies next to the STR region, which it therefore touches, and in
+the span of file A's insertion, every position the insertion could be written at (`doc/spec.md`
+§5.2), which ends on the base after the repeat. So the locus holds it, and the row is *different*:
+pvc_eval compares what each file says over the whole locus, not over the repeat alone (`doc/spec.md`
+§5.3). pvc's tract scorer, which compares the repeat alone, counts it right.
 
 **Three cases are invalid in pvc's file, B, where pvc meant file A's haplotypes.**
 
-- S11 and E5: pvc writes a flank record with a `*` allele and with REF and ALT padded over
-  bases they share. Normalising trims those bases (§5.2), and the `*` is then measured against the
-  trimmed REF (§5.4): in S11 the REF shrinks from 24760292–24760298 to 24760294–24760296, in E5
-  to the anchor base 104588961, and the deletion pvc meant to cover the `*` reaches neither. The
-  sample is *invalid in B*, with the reason `contradicting records`. Measured against the REF as
-  written, both would be *same genotype*; that is Open 1.
-- E11: pvc's two records, trimmed from the left first, give edits that collide as written. pvc
-  meant TR's haplotypes. The collision rule is the owner's of 19 October 2026 (`doc/spec.md` §7.4),
-  and this case stands on it.
+- S11 and E5: pvc writes a flank record with a `*` allele and with REF and ALT padded over bases
+  they share. Normalising trims those bases (§5.2), and the `*` is then measured against the trimmed
+  REF (§5.4): in S11 the REF shrinks from 24760292–24760298 to 24760294–24760296, in E5 to the
+  anchor base 104588961, and the deletion pvc meant to cover the `*` reaches neither. The sample is
+  *invalid in B*, with the reason `contradicting records`. Measured against the REF as written, both
+  would be *same genotype*; that is Open 1.
+- E11: pvc's two records, trimmed from the left first, give edits that collide as written. pvc meant
+  TR's haplotypes. The collision rule is the owner's of 19 October 2026 (`doc/spec.md` §7.4), and
+  this case stands on it.
 
 Of pvc-touch30's 53 records with a `*` allele, compared with TR over the same excerpts, these two
 (E5 and E11) are the only ones that make the sample invalid.
 
 **Where the files truly disagree.** pvc's old repeat record keeps the wrong base (S4) or puts an
-insertion on one haplotype (S14); the touching-deletion change put a `*` on the wrong haplotype
-(E8) or a deletion twice (E10); HipSTR carries a flank base no other file has (H12) or calls a
+insertion on one haplotype (S14); the touching-deletion change put a `*` on the wrong haplotype (E8)
+or a deletion twice (E10); HipSTR carries a flank base no other file has (H12) or calls a
 heterozygote homozygous (H13). Where the two of GIAB's files disagree with each other, the cases
-show both against the same caller: E6 and E7, H14 and H15. A haplotype on one copy in one file
-and on both in the other is *same alleles, other genotype* (E13, E14, H13, H15).
+show both against the same caller: E6 and E7, H14 and H15. A haplotype on one copy in one file and
+on both in the other is *same alleles, other genotype* (E13, E14, H13, H15).
 
 **HipSTR's phase.** HipSTR writes every GT with `|` and no PS, yet it phases no record with another:
 its FORMAT field PQ, the probability it gives the phase, is 0.50 on every heterozygote, and DSNP,
-the reads it phased by SNPs, is 0 everywhere. pvc_eval reads them as one phase set per
-sample and contig (§5.4), so a locus holding two HipSTR records would be compared under a phase
-HipSTR never claimed. None of the 15 HipSTR cases holds two HipSTR records; the files hold one
-record per repeat.
+the reads it phased by SNPs, is 0 everywhere. pvc_eval reads them as one phase set per sample and
+contig (§5.4), so a locus holding two HipSTR records would be compared under a phase HipSTR never
+claimed. None of the 15 HipSTR cases holds two HipSTR records; the files hold one record per repeat.
 
 ## 4. The cases
 
-Each table gives a case's locus, its two files, the outcome and the genotype each file is given,
-as indices into the locus alleles, which §4.5 lists with each case's records and source. A case's
-locus is its only row: no case here gives more than one locus. The kind of every locus is STR
-but in S13, S14, H5, H6 and H9, where the STR finder admits no repeat that the records touch, and
-the kind is complex.
+Each table gives a case's locus, its two files, the outcome and the genotype each file is given, as
+indices into the locus alleles, which §4.5 lists with each case's records and source. A case's locus
+is its only row: no case here gives more than one locus. The kind of every locus is STR but in S13,
+S14, H5, H6 and H9, where the STR finder admits no repeat that the records touch, and the kind is
+complex.
 
 ### 4.1 GIAB's split records against pvc's repeat record
 
 The kind `doc/spec.md` §7.5 names first. Sources:
-`doc/devel/ng/research/tract_genotype_accuracy_2026-09-03.md`
-§3 "The genotype-coding trap", §3.1, §3.4b and §3.4c (S1 to S6); `giab_unexplained_fn_2026-10-03.md`
-§4, "The 'same variant written another way' cases" (S7 to S11);
-`doc/devel/ng/spec/str_bundle_loci.md`
-§10 step 4 (S12); `doc/devel/reports/reviews/ng_indel_genotypes_vs_giab_2026-09-11.md`, "Two
-things it cost" (S13, S14). All in `/Users/jose/devel/pop_var_caller/`.
+`doc/devel/ng/research/tract_genotype_accuracy_2026-09-03.md` §3 "The genotype-coding trap", §3.1,
+§3.4b and §3.4c (S1 to S6); `giab_unexplained_fn_2026-10-03.md` §4, "The 'same variant written
+another way' cases" (S7 to S11); `doc/devel/ng/spec/str_bundle_loci.md` §10 step 4 (S12);
+`doc/devel/reports/reviews/ng_indel_genotypes_vs_giab_2026-09-11.md`, "Two things it cost" (S13,
+S14). All in `/Users/jose/devel/pop_var_caller/`.
 
 | case | locus | file A | file B | outcome | A, B |
 |---|---|---|---|---|---|
@@ -202,10 +195,10 @@ things it cost" (S13, S14). All in `/Users/jose/devel/pop_var_caller/`.
 ### 4.2 Deletions at a repeat's edge, written with overlapping records
 
 `doc/spec.md` §7.5's "GATK's overlapping records at STR edge deletions". E1 is the locus
-`doc/devel/reports/ng_str_edge_touching_2026-10-18.md` names in "What it does". E2 to E11 were
-found among pvc-touch30's 53 records with a `*` allele, which `str_edge_deletion_alleles.md` §6
-makes; no report names them. E12 to E16 were found among GATK's 642 `*` records in GATK-tomato,
-which has no GIAB file: file A is GATK, file B pvc.
+`doc/devel/reports/ng_str_edge_touching_2026-10-18.md` names in "What it does". E2 to E11 were found
+among pvc-touch30's 53 records with a `*` allele, which `str_edge_deletion_alleles.md` §6 makes; no
+report names them. E12 to E16 were found among GATK's 642 `*` records in GATK-tomato, which has no
+GIAB file: file A is GATK, file B pvc.
 
 | case | locus | file A | file B | outcome | A, B |
 |---|---|---|---|---|---|
@@ -230,11 +223,11 @@ which has no GIAB file: file A is GATK, file B pvc.
 
 No report of pvc names a locus where HipSTR and another file spell one haplotype differently:
 `doc/devel/reports/ssr_hipstr_concordance_2026-06-25.md` is on tomato, with no GIAB file, and
-`tract_genotype_investigation/hipstr.md` gives HipSTR's scores and its traits (records reaching
-into the flank, `|` without phasing). These cases were found by comparing HipSTR30's 3,163 records
-with an ALT against TR, GIAB-HG002 and pvc-m07-30, by the haplotypes each gives over the repeat;
-2,447 of the 3,163 give the same as all three files. File A is GIAB's where the case has one, so
-HipSTR is file B but in H2 and H11.
+`tract_genotype_investigation/hipstr.md` gives HipSTR's scores and its traits (records reaching into
+the flank, `|` without phasing). These cases were found by comparing HipSTR30's 3,163 records with
+an ALT against TR, GIAB-HG002 and pvc-m07-30, by the haplotypes each gives over the repeat; 2,447 of
+the 3,163 give the same as all three files. File A is GIAB's where the case has one, so HipSTR is
+file B but in H2 and H11.
 
 | case | locus | file A | file B | outcome | A, B |
 |---|---|---|---|---|---|
@@ -269,11 +262,11 @@ rotation disagreements at the same length"; O3 to O5 in its §(b).
 
 ### 4.5 The cases in full
 
-Each case gives its excerpt and offset; its records, each with the short name of its file and
-its line (§2) and as the file wrote it; the locus with its kind and STR regions; the locus
-alleles, numbered, which are the haplotypes the two files say; and the genotype of each file,
-the number of possible genotypes of each, and the outcome. A sample with more than one possible
-genotype has its others among the alleles listed.
+Each case gives its excerpt and offset; its records, each with the short name of its file and its
+line (§2) and as the file wrote it; the locus with its kind and STR regions; the locus alleles,
+numbered, which are the haplotypes the two files say; and the genotype of each file, the number of
+possible genotypes of each, and the outcome. A sample with more than one possible genotype has its
+others among the alleles listed.
 
 **S1.** TR writes a heterozygote of two insertions as two phased records at one position; pvc one
 record of two ALTs over the repeat. Two insertions at one point on different haplotypes do not
@@ -443,8 +436,7 @@ row  A 3/4  B 3/4  possible 2, 1  records 2, 1  -> same genotype
 repeat as a record of its own. Trimmed, the `*` record is `24760294 TAC → T,*`, whose REF is
 24760294–24760296, and no placement of the 4-base deletion (24760297–24760301 at most) deletes a
 position of it, so the `*` is not covered and the sample is invalid. pvc meant GIAB's second
-possible
-genotype (Open 1).
+possible genotype (Open 1).
 
 ```
 excerpt  chr8:24760150-24760450, 301 bases; excerpt position = position - 24760149; sample HG004
@@ -1108,20 +1100,19 @@ row  A 1/1  B 1/1  possible 1, 1  records 1, 1  -> same genotype
 ## 5. How it is verified
 
 `tests/test_hard_cases.py` holds one test, `test_hard_case`, parametrized by the 50 cases, each
-named by its case, S1 to O5, in pytest's report. The cases themselves are literals in `tests/hard_cases.py`, one value per case: the
-excerpt's contig, offset and bases; the records of each file as VCF lines in excerpt positions,
-each with its original line beside it as a comment; the sample's name; and the expected row. Each
-test:
+named by its case, S1 to O5, in pytest's report. The cases themselves are literals in
+`tests/hard_cases.py`, one value per case: the excerpt's contig, offset and bases; the records of
+each file as VCF lines in excerpt positions, each with its original line beside it as a comment; the
+sample's name; and the expected row. Each test:
 
-1. writes the excerpt as a FASTA with its `.fai`, and the two VCF files, to `tmp_path`;
-2. checks the haplotypes with the oracle: the possible genotypes `tests/haplotype_oracle.py` gives
-   each file over the locus are the case's, as sequences, or none for a file whose sample is
-   invalid;
-3. runs `compare()` with the default `CompareConfig` and `finder_threads=0`, and checks that it
-   yields the case's rows, one for these cases, field by field: the locus (0-based and half-open
-   in `OutcomeRow`), the kind, the STR regions with their types and motifs, the outcome, the locus
-   alleles, both reported genotypes, both counts of possible genotypes, both invalid reasons and
-   both counts of records. QUAL and GQ are not checked, since the cases set them.
+1. writes the excerpt as a FASTA with its `.fai`, and the two VCF files, to `tmp_path`; 2. checks
+the haplotypes with the oracle: the possible genotypes `tests/haplotype_oracle.py` gives each file
+over the locus are the case's, as sequences, or none for a file whose sample is invalid; 3. runs
+`compare()` with the default `CompareConfig` and `finder_threads=0`, and checks that it yields the
+case's rows, one for these cases, field by field: the locus (0-based and half-open in `OutcomeRow`),
+the kind, the STR regions with their types and motifs, the outcome, the locus alleles, both reported
+genotypes, both counts of possible genotypes, both invalid reasons and both counts of records. QUAL
+and GQ are not checked, since the cases set them.
 
 Step 2 needs the oracle to give its possible genotypes, which it now uses only inside
 `check_same_haplotypes`. It gains one public function, in the tests and not in `pvc_eval`:
@@ -1134,14 +1125,13 @@ def find_possible_haplotypes(vcf: Path, reference: IndexedFasta, contig: str, st
 
 It reads the records of one file with `parse_vcf`, takes those of its windows
 (`doc/specs/respell.md` §8) inside the stretch from `start` to `end`, 0-based and half-open, and
-gives the sample's possible genotypes over that stretch, with the phase assignments of the blocks
-of all those windows taken together, as the oracle's check of a pair of windows takes them. Taken
-window by window and joined, they would give genotypes no assignment gives: in S4, a second one
-for TR, whose two windows hold one phase set. Each genotype is a sorted tuple of sequences, one per
-haplotype, with
-the reference's bases between the windows. It gives `None` when the sample is invalid, and raises
-`ValueError` when a window crosses the stretch's ends or the sample is over `ORACLE_CAP`. No case
-here has a missing haplotype, so a missing one raises `ValueError` too.
+gives the sample's possible genotypes over that stretch, with the phase assignments of the blocks of
+all those windows taken together, as the oracle's check of a pair of windows takes them. Taken
+window by window and joined, they would give genotypes no assignment gives: in S4, a second one for
+TR, whose two windows hold one phase set. Each genotype is a sorted tuple of sequences, one per
+haplotype, with the reference's bases between the windows. It gives `None` when the sample is
+invalid, and raises `ValueError` when a window crosses the stretch's ends or the sample is over
+`ORACLE_CAP`. No case here has a missing haplotype, so a missing one raises `ValueError` too.
 
 **Each test can fail.** The plan shows the test failing before it is trusted, at each of its two
 checks: the oracle's, with an ALT of file B changed by one base in a case that is *same genotype*;
@@ -1149,79 +1139,77 @@ and `compare()`'s, with the oracle's literal left as it is and one field of the 
 changed, the outcome of one case and one locus allele of another. The `*` of S11 replaced by `0`
 gives *same genotype* and fails both.
 
-**The excerpts against the reference.** Two more tests read each excerpt's stretch from a
-reference and check that it is the case's bases, and that the STR regions of each locus are those
-the STR finder gives over the excerpt widened by 5,000 bases on each side.
+**The excerpts against the reference.** Two more tests read each excerpt's stretch from a reference
+and check that it is the case's bases, and that the STR regions of each locus are those the STR
+finder gives over the excerpt widened by 5,000 bases on each side.
 `test_grch38_excerpts_are_the_references` does it for the 45 GRCh38 cases, from the FASTA that
 `PVC_EVAL_GRCH38` names, and `test_tomato_excerpts_are_the_references` for the five tomato cases,
 E12 to E16, from the FASTA that `PVC_EVAL_TOMATO` names, the SL4.0 chromosomes at
 `/Users/jose/genomes/s_lycopersicum/4.00/S_lycopersicum_chromosomes.4.00.fa` on this machine. Each
-is skipped on its own, with a message naming its variable, when the variable is not set or names
-no file, as `tests/test_compare_real.py` is. The 50 tests of the cases need neither.
+is skipped on its own, with a message naming its variable, when the variable is not set or names no
+file, as `tests/test_compare_real.py` is. The 50 tests of the cases need neither.
 
 ## 6. Open points
 
-**Open 1. Whether a `*` is measured against the REF as written.** pvc writes a flank record
-padded over bases its REF and ALTs share, and a `*` in it means "the haplotype's bases of this
-REF, as written, are deleted by another record". pvc_eval trims the record before it asks whether
-a deletion covers the `*` (`doc/spec.md` §5.2, §5.4; `doc/specs/reconciliation.md` §4.2), and in S11
-and E5 trimming removes exactly the bases the deletion reaches. The sample is invalid where pvc
-meant the other file's haplotypes. In pvc-touch30, E5 is the one record of 53 with a `*` allele that
-trimming leaves uncovered; S11
-is pvc-300x-HG004's one `*` record. Three answers:
+**Open 1. Whether a `*` is measured against the REF as written.** pvc writes a flank record padded
+over bases its REF and ALTs share, and a `*` in it means "the haplotype's bases of this REF, as
+written, are deleted by another record". pvc_eval trims the record before it asks whether a deletion
+covers the `*` (`doc/spec.md` §5.2, §5.4; `doc/specs/reconciliation.md` §4.2), and in S11 and E5
+trimming removes exactly the bases the deletion reaches. The sample is invalid where pvc meant the
+other file's haplotypes. In pvc-touch30, E5 is the one record of 53 with a `*` allele that trimming
+leaves uncovered; S11 is pvc-300x-HG004's one `*` record. Three answers:
 
 - **Keep the rule.** S11 and E5 stay *invalid in B*, with B's genotype `.` and its reason
-  `contradicting records`. A caller's padded `*` record is judged by its trimmed REF, as every
-  other record is judged by its trimmed alleles. Nothing changes in pvc_eval. A pvc file is then
-  read as pvc means it only where its `*` record, trimmed, still shares a position with a
-  placement of the deletion; in S11 no spelling of the 2-base deletion does, so pvc would have to
-  write the two haplotypes in one record.
+  `contradicting records`. A caller's padded `*` record is judged by its trimmed REF, as every other
+  record is judged by its trimmed alleles. Nothing changes in pvc_eval. A pvc file is then read as
+  pvc means it only where its `*` record, trimmed, still shares a position with a placement of the
+  deletion; in S11 no spelling of the 2-base deletion does, so pvc would have to write the two
+  haplotypes in one record.
 - **Measure a `*` against the REF as written.** A deletion covers a `*` when one of its placements
   deletes a position of the `*` record's REF as the file wrote it, before trimming. S11 and E5
   become *same genotype*, with the same locus alleles: S11 reports `2/3` and `2/3`, B with one
   possible genotype, and E5 `1/2` and `1/2`. Every other case here keeps its row, and so do
   `doc/specs/reconciliation.md` R1 and R2, whose `*` records are not padded (worked with a copy of
   the oracle changed so, on S11, E5, E2, E3, E6 and S1). It costs a change to `doc/spec.md` §5.4 and
-  to `doc/specs/reconciliation.md` §4.2, a field of
-`VcfRecord` for the stretch its REF covered as written, which it does not keep now, and the same
-change in `pvc_eval.reconcile` and in the oracle; and in `doc/specs/respell.md`, whose rule for
-which records a re-spelling keeps whole, "touches the REF of a record with a `*` ALT", and whose
-`*` records added under deletions both use the trimmed REF, so that a re-spelling could otherwise
-change whether a padded `*` is covered. A file could then cover a `*` with a deletion of a flank
-base it padded the REF over,
-  which no caller here does.
+  to `doc/specs/reconciliation.md` §4.2, a field of `VcfRecord` for the stretch its REF covered as
+  written, which it does not keep now, and the same change in `pvc_eval.reconcile` and in the
+  oracle; and in `doc/specs/respell.md`, whose rule for which records a re-spelling keeps whole,
+  "touches the REF of a record with a `*` ALT", and whose `*` records added under deletions both use
+  the trimmed REF, so that a re-spelling could otherwise change whether a padded `*` is covered. A
+  file could then cover a `*` with a deletion of a flank base it padded the REF over, which no
+  caller here does.
 - **Trim a `*` record from the left first**, as an edit is trimmed (§5.4), and measure the `*`
   against what is left. S11's REF becomes 24760296–24760298 and E5's the base 104588970, which the
   deletions reach: both become *same genotype*, with the rows of the second answer, and no other
   case changes (run by the spec's reviewer). It costs the same changes as the second answer, since
   `VcfRecord` keeps the alleles trimmed from the right first and the left trimming needs them as
-  written. It does not count the bases a caller padded on the left as part of the REF, but it
-  works here only because pvc pads on the left: a record padded on the right would still lose
-  the bases the deletion reaches.
+  written. It does not count the bases a caller padded on the left as part of the REF, but it works
+  here only because pvc pads on the left: a record padded on the right would still lose the bases
+  the deletion reaches.
 
 The recommendation is the second answer, to measure against the REF as written: a `*` names the
 bases of the REF its caller wrote, whichever side the caller padded, and pvc writes such records on
 purpose (`str_edge_deletion_alleles.md` §6). Meanwhile the tests expect *invalid in B* for S11 and
-E5, as the spec says now; the other answer changes their
-expected rows in this spec first, then the code.
+E5, as the spec says now; the other answer changes their expected rows in this spec first, then the
+code.
 
 ## 7. Changes to `doc/spec.md`
 
-Once the owner approves the cases, in a commit of its own: §7.5 becomes a pointer to this spec,
-and §10 marks Open 3 answered, with the date. The answer to Open 1, if it changes the rule, is a
-change to §5.4 in a commit of its own before any code.
+Once the owner approves the cases, in a commit of its own: §7.5 becomes a pointer to this spec, and
+§10 marks Open 3 answered, with the date. The answer to Open 1, if it changes the rule, is a change
+to §5.4 in a commit of its own before any code.
 
 ## 8. Not in this spec
 
 - **Cases reconstructed from a report's words.** Every case has its records on disk. One report
-  describes a record that is no longer there: `giab_unexplained_fn_2026-10-03.md` §4 gives S11's
-  pvc record as `TATACAC → TATAC` `1/1` from a run whose worktree is gone. With that record the row
-  would be *different*, since the 2-base deletion would then be on both haplotypes. The later run
-  of pvc-300x-HG004 is used instead.
+  describes a record that is no longer there: `giab_unexplained_fn_2026-10-03.md` §4 gives S11's pvc
+  record as `TATACAC → TATAC` `1/1` from a run whose worktree is gone. With that record the row
+  would be *different*, since the 2-base deletion would then be on both haplotypes. The later run of
+  pvc-300x-HG004 is used instead.
 - **Two HipSTR records in one locus** (§3): a test of it would be made up, and belongs with the
   owner's decision on how to read `|` without PS, if they take one.
 - **vcfeval's verdicts** on the same records, which pvc's reports quote: the comparison of
   evaluators is `doc/spec.md` §8.
-- **pvc's own errors** that the cases show, S4, S14, E8 and E10: they are pvc's to fix, and
-  pvc_eval reports them as *different*, as it should.
+- **pvc's own errors** that the cases show, S4, S14, E8 and E10: they are pvc's to fix, and pvc_eval
+  reports them as *different*, as it should.
 
