@@ -100,8 +100,8 @@ def _make_pairs_by_name(
             " --sample-map and run again."
         )
         # doc/spec.md §5.2: a header garbled by a damaged gzip can name other samples.
-        check_gzip_whole(error, path_a, None)
-        check_gzip_whole(error, path_b, None)
+        check_gzip_whole(error, path_a, "VCF", None)
+        check_gzip_whole(error, path_b, "VCF", None)
         raise error
     return sample_pairs
 
@@ -125,7 +125,7 @@ def _make_pairs_from_map(
         for name, path, columns in ((name_a, path_a, columns_a), (name_b, path_b, columns_b)):
             if name not in columns:
                 error = _make_absent_error(sample_map, line_number, name, path, columns)
-                check_gzip_whole(error, path, None)
+                check_gzip_whole(error, path, "VCF", None)
                 raise error
         sample_pair = SamplePair(
             name_a=name_a,
@@ -207,7 +207,7 @@ def _find_column(path: Path, columns_by_name: Mapping[str, Sequence[int]], name:
         f" {', '.join(vcf_columns[:-1])} and {vcf_columns[-1]}. Rename one of them and"
         " run again."
     )
-    check_gzip_whole(error, path, None)
+    check_gzip_whole(error, path, "VCF", None)
     raise error
 
 

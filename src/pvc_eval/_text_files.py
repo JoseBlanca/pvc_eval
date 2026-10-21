@@ -58,13 +58,13 @@ def open_numbered_lines(
         # the reader's own, which closes it, have had every byte checked.
         if inspect.getgeneratorstate(numbered_lines) == inspect.GEN_SUSPENDED:
             # The fault is of the line last read.
-            check_gzip_whole(err, path, place.line_number)
+            check_gzip_whole(err, path, file_kind, place.line_number)
         raise
     finally:
         numbered_lines.close()
 
 
-def check_gzip_whole(fault: Exception, path: Path, line_number: int | None) -> None:
+def check_gzip_whole(fault: Exception, path: Path, file_kind: str, line_number: int | None) -> None:
     """Raise PvcEvalInputError, with fault as its cause, when path is a gzip file that gzip,
     decompressing it whole, finds cut short or damaged; return otherwise.
 
@@ -72,10 +72,35 @@ def check_gzip_whole(fault: Exception, path: Path, line_number: int | None) -> N
     or by a caller in a line the reader gave: gzip checks its data only at the end of each
     member, so damaged bytes reach the reader as text first (doc/spec.md §5.2).
 
+    file_kind: what the file is, "VCF" or "BED", for the message of a path that has become a
+        directory since it was read.
     line_number: the line of the fault, or None when it is not known.
+
+    A file that has gone since it was read, or cannot be read now, gets the message its
+    reader gives.
     """
-    if _is_damaged_gzip(path):
+    try:
+        is_damaged = _is_damaged_gzip(path)
+    except (FileNotFoundError, IsADirectoryError, PermissionError) as err:
+        raise _make_open_error(path, file_kind, err) from fault
+    if is_damaged:
         raise _make_damaged_error(path, line_number) from fault
+
+
+def _make_open_error(
+    path: Path, file_kind: str, err: FileNotFoundError | IsADirectoryError | PermissionError
+) -> PvcEvalInputError:
+    """The error of a file that cannot be opened, for not existing, being a directory or
+    being refused."""
+    if isinstance(err, FileNotFoundError):
+        return PvcEvalInputError(f"{path} does not exist. Check its path and run again.")
+    if isinstance(err, IsADirectoryError):
+        return PvcEvalInputError(
+            f"{path} is a directory, not a {file_kind} file. Check its path and run again."
+        )
+    return PvcEvalInputError(
+        f"{path} cannot be read: permission denied. Allow reading it and run again."
+    )
 
 
 @dataclass(slots=True)
@@ -97,19 +122,11 @@ def _read_numbered_lines(
             for line_number, line in enumerate(lines, start=1):
                 place.line_number = line_number
                 yield line_number, line
-    except FileNotFoundError:
-        raise PvcEvalInputError(f"{path} does not exist. Check its path and run again.") from None
-    except IsADirectoryError:
-        raise PvcEvalInputError(
-            f"{path} is a directory, not a {file_kind} file. Check its path and run again."
-        ) from None
-    except PermissionError:
-        raise PvcEvalInputError(
-            f"{path} cannot be read: permission denied. Allow reading it and run again."
-        ) from None
+    except (FileNotFoundError, IsADirectoryError, PermissionError) as err:
+        raise _make_open_error(path, file_kind, err) from None
     except UnicodeDecodeError as err:
         # The byte is somewhere after the last line read, on no line known.
-        check_gzip_whole(err, path, None)
+        check_gzip_whole(err, path, file_kind, None)
         raise PvcEvalInputError(
             f"{path} is not UTF-8 text: a byte at or after line {place.line_number + 1} cannot be read"
             f" as UTF-8. {not_utf8_advice}"

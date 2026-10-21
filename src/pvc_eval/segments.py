@@ -1247,7 +1247,7 @@ def _find_requested_spans(path: Path, reference: IndexedFasta) -> dict[str, list
             error = PvcEvalInputError(
                 _make_past_contig_end_message(where, bed_line.end, bed_line.contig, length)
             )
-            check_gzip_whole(error, path, bed_line.line_number)
+            check_gzip_whole(error, path, "BED", bed_line.line_number)
             raise error
         requested.setdefault(bed_line.contig, []).append((bed_line.start, bed_line.end))
     return requested

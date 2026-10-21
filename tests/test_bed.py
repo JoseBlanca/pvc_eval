@@ -312,6 +312,32 @@ def test_parse_bed_keeps_the_message_of_a_line_of_an_undamaged_file(
     )
 
 
+@pytest.mark.parametrize("replacement", ["none", "directory"])
+def test_parse_bed_gives_the_message_of_a_bed_gone_before_the_whole_check(
+    tmp_path: Path, replacement: str
+) -> None:
+    compressed = gzip.compress(_TWO_BED_LINES, compresslevel=0, mtime=0)
+    path = write_compressed_bed(tmp_path, compressed.replace(*_END_NOT_A_NUMBER))
+    bed_lines = parse_bed(path, _CONTIGS)
+    next(bed_lines)
+    # Removed, or replaced by a directory, while the reader holds it open, so that the
+    # fault of line 2 is read and the whole check cannot open the file.
+    path.unlink()
+    if replacement == "directory":
+        path.mkdir()
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        next(bed_lines)
+
+    assert (
+        str(raised.value)
+        == {
+            "none": f"{path} does not exist. Check its path and run again.",
+            "directory": f"{path} is a directory, not a BED file. Check its path and run again.",
+        }[replacement]
+    )
+
+
 def test_parse_bed_refuses_a_line_separated_by_spaces(tmp_path: Path) -> None:
     path = write_bed(tmp_path, ["chr1\t0\t10", "chr1 100  200"])
 

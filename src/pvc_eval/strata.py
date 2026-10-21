@@ -92,7 +92,7 @@ def read_strata(path: Path, contigs: Sequence[str]) -> Strata:
         try:
             name = _parse_class(bed_line, path)
         except PvcEvalInputError as err:
-            check_gzip_whole(err, path, bed_line.line_number)
+            check_gzip_whole(err, path, "BED", bed_line.line_number)
             raise
         spans_by_class[name][bed_line.contig].append((bed_line.start, bed_line.end))
     return Strata({name: Regions(spans) for name, spans in spans_by_class.items()})
