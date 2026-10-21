@@ -223,7 +223,7 @@ reproduced for its tests.
 |---|---|---|
 | `scan_min_period`, `scan_max_period` | 1, 6 | 1 ≤ `scan_min_period` ≤ `scan_max_period` ≤ 6 |
 | `min_period`, `max_period` | 1, 6 | 1 ≤ `min_period` ≤ `max_period` ≤ 6 |
-| `match_reward`, `mismatch_penalty` | 2, 7 | 1 or more |
+| `match_reward`, `mismatch_penalty` | 2, 7 | 1 to 2,147,483,647 (2^31 − 1) |
 | `scan_min_copies` | 2 | 1 or more |
 | `copy_floors` | (5, 5, 4, 4, 4, 3), for periods 1 to 6 | six whole numbers, 0 or more |
 | `min_purity` | 0.8 | a finite number from 0 to 1 |
@@ -235,9 +235,12 @@ reproduced for its tests.
 
 The limits on the periods, `min_purity`, `bundle_distance` and `max_str_len` are pvc's, from
 `classify`'s asserts and `cli/typed_regions.rs` `walk_config`. A `bundle_distance` of 0 makes every
-candidate fail step 6 and bundles nothing, so pvc refuses it. The others are pvc_eval's own: pvc
-leaves the reward and the penalty unbounded and allows `scan_min_copies` of 0, values under which
-the scores no longer find repeats.
+candidate fail step 6 and bundles nothing, so pvc refuses it. The upper limit of the reward and the
+penalty is pvc's too: pvc holds them as `i32` (`tandem_repeat.rs`, `ScanParams`) and its running
+totals as `i64`, and pvc_eval's step 1 holds its running totals as 64-bit integers, which at these
+limits cannot overflow on a contig shorter than 2^31 bases (decided by the owner on 21 October
+2026). The others are pvc_eval's own: pvc allows `scan_min_copies` of 0, a value under which the
+scores no longer find repeats.
 
 ## The Python interface
 
