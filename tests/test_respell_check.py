@@ -432,7 +432,8 @@ def test_each_respelling_of_hg002_chr20_passes_the_oracle_and_gives_the_outcomes
         length = reference.get_length(_GIAB_CONTIG)
         contig_bed.write_text(f"{_GIAB_CONTIG}\t0\t{length}\n", encoding="utf-8")
         str_regions = tmp_path / "str_regions.bed"
-        write_str_regions(reference, str_regions, StrFinderParameters(), contig_bed)
+        # One contig, so one thread is all the STR finder can use.
+        write_str_regions(reference, str_regions, StrFinderParameters(), contig_bed, 1)
         output = tmp_path / "b.vcf"
         respelling.respell(vcf, reference, output, 2, _GIAB_SEED)
 
