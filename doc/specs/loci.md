@@ -308,7 +308,7 @@ indel at once. Such a locus is invalid for every sample that carries the `*` (§
 it gets.
 
 ```python
-class Kind(Enum):
+class Kind(StrEnum):
     SNP = "SNP"
     INDEL = "indel"
     STR = "STR"

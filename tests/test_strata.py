@@ -6,6 +6,7 @@ The spec's cases give positions 1-based and inclusive; loci and STR regions are 
 is (99, 120) and an interval at 90 to 101 is the BED line `chr1 89 101`.
 """
 
+import gzip
 import tracemalloc
 from pathlib import Path
 
@@ -196,6 +197,35 @@ def test_read_strata_refuses_a_class_holding_a_comma(tmp_path: Path) -> None:
         " the classes of a locus. Replace the commas in the fourth column of the --strata"
         " BED, for instance with `_`, and run again."
     )
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "fault"),
+    [
+        (b"\tlowmap\n", b"\tlow,ap\n", "holds a comma"),
+        (b"\tlowmap\n", b"\t      \n", "has no class"),
+    ],
+    ids=["comma", "no_class"],
+)
+def test_read_strata_reports_a_damaged_gzip_read_as_a_fault_of_a_class_as_damaged(
+    tmp_path: Path, old: bytes, new: bytes, fault: str
+) -> None:
+    # Stored deflate blocks hold the text as it is, so the change, made after gzip took its
+    # CRC-32, reaches the reader as text, and gzip finds the damage only at the end.
+    text = b"chr1\t0\t10\tsegdup\nchr1\t100\t200\tlowmap\n"
+    path = tmp_path / "strata.bed.gz"
+    path.write_bytes(gzip.compress(text, compresslevel=0, mtime=0).replace(old, new))
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        read_strata(path, _CONTIGS)
+
+    assert str(raised.value) == (
+        f"{path} is damaged: gzip's own check of the whole file fails (`gzip -t {path}` shows"
+        " it), so the fault pvc_eval found at line 2 may come from the damaged bytes rather"
+        " than from the file's content. Copy or compress the file again from its source, and"
+        " run again."
+    )
+    assert fault in str(raised.value.__cause__)
 
 
 def test_strata_removes_the_spaces_at_the_ends_of_a_class(tmp_path: Path) -> None:

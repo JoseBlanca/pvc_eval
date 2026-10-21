@@ -7,24 +7,27 @@ VcfRecord.span are.
 Public: RegionType, the four types of a segment; GenomeSegment, one segment of a contig;
 StrFinderParameters, the parameters of the finder; segment_contig, the segmented genome of
 one contig; read_str_regions, the STR regions of a --str-regions BED; write_str_regions,
-the BED of the `pvc_eval str-regions` command.
+the BED of the `pvc_eval str-regions` command; DEFAULT_NUM_THREADS and MAX_NUM_THREADS,
+how many contigs it segments at once when not told and the most it takes.
 """
 
 import bisect
+import sys
 from collections import deque
-from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields
-from enum import Enum
+from enum import Enum, StrEnum
 from importlib.metadata import version
 from pathlib import Path
-from typing import TextIO
 
+from pvc_eval._text_files import check_gzip_whole, open_temporary_output
 from pvc_eval.bed import parse_bed
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
 
 
-class RegionType(Enum):
+class RegionType(StrEnum):
     """The type of a segment of the segmented genome (doc/spec.md §5.1)."""
 
     GENERIC = "generic"
@@ -70,6 +73,17 @@ _BLOCK_BASES = 1 << 12
 _CANONICAL = bytes(
     ord(letter.upper()) if letter in "ACGTacgt" else 0 for letter in map(chr, range(256))
 )
+
+# Step 1 compares each canonical base with the one period before it by an XOR, which is 0
+# when the two bytes are equal. The earlier base is read through this table, which turns 0,
+# a byte that is not A, C, G or T, into 1, and the later one keeps its 0. Read the same way,
+# two N would both be 0 and match; read this way they never do, as doc/specs/str_finder.md
+# step 1 says, while two equal A, C, G or T still XOR to 0.
+_EARLIER_BASES = bytes([1, *range(1, 256)])
+
+# Step 1 reads the XOR of the bases through this table, which turns a mismatch, any byte but
+# 0, into 0, and a match into 1: a run of matches ends at the next 0 of what it gives.
+_MISMATCHES_AS_ZEROS = bytes([1, *[0] * 255])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -179,6 +193,10 @@ class _Candidate:
 # A maximal scoring subsequence: the indices of its scores, `[start, end)`, and its score.
 type _Subsequence = tuple[int, int, int]
 
+# A run of positive scores held over an empty stack: the running totals before and after
+# it, and the indices of its scores, `[start, end)`.
+type _HeldRun = tuple[int, int, int, int]
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _OpenSubsequence:
@@ -201,58 +219,127 @@ class _OpenSubsequence:
 
 
 def _find_maximal_scoring_subsequences(
-    score_blocks: Iterator[Iterable[int]],
+    comparisons: Iterator[bytes], period: int, parameters: StrFinderParameters
 ) -> Iterator[tuple[list[_Subsequence], int | None]]:
-    """Find the maximal scoring subsequences of a score sequence (Ruzzo and Tompa, 1999),
-    given as consecutive blocks. pvc tandem_repeat.rs, maximal_scoring_subsequences.
+    """Find the maximal scoring subsequences of one period's scores (Ruzzo and Tompa, 1999),
+    given as consecutive blocks of comparisons: score k is the match reward where byte k of
+    the blocks together is 0, a match, and minus the mismatch penalty elsewhere. pvc
+    tandem_repeat.rs, maximal_scoring_subsequences.
 
     A subsequence is (start, end, score), `[start, end)` the indices of its scores in the
     whole sequence, 0-based and half-open. After each block it yields the subsequences that
     no later score can change, in order of start, and the index at which the first
     subsequence still open starts, or the next index when none is open: every subsequence
     yielded later starts there or after. After the last block it yields the subsequences
-    left and None.
+    left and None. A subsequence that cannot be a candidate of step 1 may be left out.
+
+    A maximal scoring subsequence never starts or ends inside a run of matches or of
+    mismatches, since no score is 0: a run of matches is taken whole or not at all, and a
+    run of mismatches only lowers the total, which is lowest at the run's end. So the loop
+    takes one step per run, and gives what one step per score gives.
 
     pvc holds every open subsequence to the end. Here, when the running total falls to or
     under the total before every open subsequence, those are final and are yielded: a later
     subsequence starts from a total that low, so it can never reach back into them.
+
+    A run of matches that comes to an empty stack is held as plain numbers, and only while
+    one is held is the stack empty. On the stack it would have no subsequence to reach, so
+    it would be open as it is, with link 0, and the least total before would be its own. So
+    the mismatches that bring the total to or under its total before make it final, as the
+    stack would, without an open subsequence being made; any other mismatches, or the end
+    of the block, put it on the stack as it would have been. On 4 Mb of chr1 this leaves
+    112,962 open subsequences made instead of 4.6 million, and str-regions takes 2.31 s
+    instead of 4.48 s (doc/reports/perf-str-finder.md, P2).
+
+    On an empty stack, a run of matches shorter than both (scan_min_copies - 1) * period and
+    mismatch_penalty // match_reward + 1, with a mismatch after it in its block, changes
+    nothing that is a candidate: that one mismatch brings the total to or under the total
+    before the run, which then is final on its own, with the period + its length bases,
+    under scan_min_copies copies, and the stack is empty again. So on an empty stack the
+    loop goes straight to the next run of matches at least that long, or to the run that
+    reaches the block's end, which may go on in the next block. The running total is not
+    kept over what it skips: on an empty stack, what is yielded later depends only on the
+    differences of later totals. On 4 Mb of chr1 the loop takes 1.19 million steps, each a
+    run of mismatches and the run of matches after it, instead of 9.2 million runs, and
+    str-regions takes 1.23 s instead of 2.06 s (doc/reports/perf-str-finder.md, P8).
     """
+    reward = parameters.match_reward
+    penalty = parameters.mismatch_penalty
+    # The fewest matches of a run that is not skipped on an empty stack, as zero bytes.
+    least_run = bytes(min((parameters.scan_min_copies - 1) * period, penalty // reward + 1))
     stack: list[_OpenSubsequence] = []
+    held: _HeldRun | None = None  # a run of matches over an empty stack
     lowest_before = 0  # the least total before any open subsequence, when there is one
     total = 0
-    index = 0
-    for block in score_blocks:
+    block_start = 0  # the index of the block's first score
+    for compared in comparisons:
+        length = len(compared)
+        # Past the block's end the comparisons read as matches, and the mismatches as one
+        # mismatch, so that each search below stops at the end at the latest, and a run of
+        # matches that reaches the end is never skipped.
+        mismatches = compared.translate(_MISMATCHES_AS_ZEROS) + b"\0"
+        compared += least_run + b"\0"
         final: list[_Subsequence] = []
-        for score in block:
+        position = 0  # the block's comparisons before it are taken
+        while position < length:
+            start = compared.find(0, position)
+            total -= penalty * (start - position)
+            if held is not None and total <= held[0]:
+                held_before, through, held_start, held_end = held
+                final.append((held_start, held_end, through - held_before))
+                held = None
+            elif held is not None:
+                stack.append(_make_held_open(held))
+                lowest_before = held[0]
+                held = None
+            elif stack and total <= lowest_before:
+                final.extend(open_one.get_subsequence() for open_one in stack)
+                stack.clear()
+            if not stack:  # and nothing is held
+                start = compared.find(least_run, start)
+            if start == length:
+                break
+            end = mismatches.find(0, start)
             before = total
-            total += score
-            index += 1
-            if score > 0:
-                open_one, staying = _make_open_subsequence(stack, before, total, index - 1)
+            total += reward * (end - start)
+            if not stack:
+                held = (before, total, block_start + start, block_start + end)
+            else:
+                open_one, staying = _make_open_subsequence(
+                    stack, before, total, block_start + start, block_start + end
+                )
                 del stack[staying:]
                 stack.append(open_one)
                 # It takes the total before of a subsequence it absorbs, and absorbs none lower.
                 lowest_before = (
                     open_one.before if staying == 0 else min(lowest_before, open_one.before)
                 )
-            elif stack and total <= lowest_before:
-                final.extend(open_one.get_subsequence() for open_one in stack)
-                stack.clear()
-        yield final, (stack[0].start if stack else index)
+            position = end
+        if held is not None:  # the next block and the index yielded see it on the stack
+            stack.append(_make_held_open(held))
+            lowest_before = held[0]
+            held = None
+        block_start += length
+        yield final, (stack[0].start if stack else block_start)
     yield [open_one.get_subsequence() for open_one in stack], None
 
 
+def _make_held_open(held: _HeldRun) -> _OpenSubsequence:
+    """The open subsequence of a held run, as the empty stack it is held over makes it."""
+    before, through, start, end = held
+    return _OpenSubsequence(before=before, through=through, start=start, end=end, link=0)
+
+
 def _make_open_subsequence(
-    stack: Sequence[_OpenSubsequence], before: int, through: int, index: int
+    stack: Sequence[_OpenSubsequence], before: int, through: int, start: int, end: int
 ) -> tuple[_OpenSubsequence, int]:
-    """The open subsequence that a positive score at index makes, and how many of the open
-    subsequences under it stay on the stack: the ones above those it absorbs. Rules 2 to 4
-    of Ruzzo and Tompa, as pvc's maximal_scoring_subsequences gives them."""
-    start = index
+    """The open subsequence that a run of positive scores at the indices `[start, end)`,
+    0-based and half-open, makes, and how many of the open subsequences under it stay on
+    the stack: the ones above those it absorbs. Rules 2 to 4 of Ruzzo and Tompa, as pvc's
+    maximal_scoring_subsequences gives them."""
     staying = len(stack)
     while True:
         found = _find_smaller_before(stack, before, staying)
-        end = index + 1
         if found < 0:  # rule 2: no subsequence to reach
             link = 0
             break
@@ -278,27 +365,22 @@ def _find_smaller_before(stack: Sequence[_OpenSubsequence], before: int, top: in
     return -1
 
 
-def _make_score_blocks(
-    canonical: bytes, period: int, parameters: StrFinderParameters, block_bases: int
-) -> Iterator[Iterator[int]]:
-    """The scores of one period, in blocks that end where the blocks of block_bases bases
-    end, so that every period gives the same number of blocks.
-
-    The base at j >= period scores the match reward when it and the base period before it
-    are the same A, C, G or T, and minus the mismatch penalty otherwise. Score k is the base
-    at k + period.
+def _make_comparisons(canonical: bytes, period: int, block_bases: int) -> Iterator[bytes]:
+    """The comparisons of one period, in blocks that end where the blocks of block_bases
+    bases end, so that every period gives the same number of blocks. Byte k of the blocks
+    together is 0, a match, when the bases at k + period and at k are the same A, C, G or T,
+    and not 0 otherwise; score k is the match reward or minus the mismatch penalty. Each
+    block is made on its own, so what is held is one block.
     """
-    reward = parameters.match_reward
-    penalty = -parameters.mismatch_penalty
     for block_start in range(0, len(canonical), block_bases):
         first = max(block_start - period, 0)
         last = max(min(block_start + block_bases, len(canonical)) - period, first)
-        back = canonical[first:last]
-        here = canonical[first + period : last + period]
-        yield (
-            reward if base and base == earlier else penalty
-            for earlier, base in zip(back, here, strict=True)
-        )
+        earlier = canonical[first:last].translate(_EARLIER_BASES)
+        later = canonical[first + period : last + period]
+        # A 0 byte where the two bases match, from one XOR of two ints, not a loop per base.
+        # With the runs, step 1 takes 9.2 million steps on 4 Mb of chr1 instead of 24 million,
+        # and str-regions 4.49 s instead of 5.73 s (doc/reports/perf-str-finder.md, P1).
+        yield (int.from_bytes(earlier) ^ int.from_bytes(later)).to_bytes(last - first)
 
 
 def _is_primitive_motif(motif: bytes) -> bool:
@@ -394,7 +476,7 @@ def _find_candidates(
     found: dict[int, list[_Candidate]] = {period: [] for period in periods}
     streams = [
         _find_maximal_scoring_subsequences(
-            _make_score_blocks(canonical, period, parameters, block_bases)
+            _make_comparisons(canonical, period, block_bases), period, parameters
         )
         for period in periods
     ]
@@ -435,7 +517,12 @@ def _get_span_bases(candidate: _Candidate, bases: str) -> str:
 
 def _get_motif(candidate: _Candidate, bases: str) -> str:
     """A candidate's motif: the first period bases of its detected span, in upper case."""
-    return bases[candidate.start : candidate.start + candidate.period].upper()
+    # Interned, so that the STR segments and bundle members of a motif share one string;
+    # there are at most 5,460 motifs of periods 1 to 6, held for the life of the process.
+    # Threads share the table safely: whichever interns a motif first, all get equal strings.
+    # On chr1 it lowers the peak RSS from 362.0 to 333.5 MB on 64 Mb and from 128.1 to
+    # 122.8 MB on 16 Mb, at the same wall time.
+    return sys.intern(bases[candidate.start : candidate.start + candidate.period].upper())
 
 
 def _find_cut_or_span(candidate: _Candidate, bases: str) -> _Span:
@@ -716,10 +803,11 @@ def segment_contig(
     )
 
 
-def _find_segments(bases: str, parameters: StrFinderParameters) -> list[_Segment]:
+def _find_segments(bases: str, parameters: StrFinderParameters) -> Iterator[_Segment]:
     """Steps 1 to 8 of doc/specs/str_finder.md over the bases of a whole contig: its
     segments, consecutive from 0 to its length, 0-based and half-open (pvc
-    region_typing/mod.rs, partition_resident_in, over the whole contig)."""
+    region_typing/mod.rs, partition_resident_in, over the whole contig). Steps 1 to 7 run
+    before it returns; step 8 makes the segments as they are read."""
     candidates = list(
         _drop_near_contig_ends(_find_candidates(bases, parameters), bases, parameters)
     )
@@ -802,20 +890,23 @@ def _make_satellites_absorbing(
     it: one overlapping it, or with fewer than bundle_distance bases between them. The
     span and the satellites it reaches become one satellite over all of them, which is then
     joined with any it overlaps or abuts (pvc region_typing/mod.rs, absorb_into).
-    Positions are 0-based and half-open."""
+    Positions are 0-based and half-open.
+
+    The satellites are sorted, disjoint and not abutting, as _make_runs gives them, so both
+    their starts and their ends ascend. A satellite reaches the span when its end is past
+    start - bundle_distance and its start is before end + bundle_distance. The first
+    condition holds from some satellite to the last, the second from the first satellite to
+    some satellite, so the satellites that meet both are one slice of the list, found by
+    two binary searches instead of a scan of every satellite."""
     start, end = span
-    reached = [
-        satellite
-        for satellite in satellites
-        if start - satellite[1] < bundle_distance and satellite[0] - end < bundle_distance
-    ]
-    if not reached:
-        return None
-    grown = (
-        min(start, *(satellite[0] for satellite in reached)),
-        max(end, *(satellite[1] for satellite in reached)),
+    first = bisect.bisect_right(
+        satellites, start - bundle_distance, key=lambda satellite: satellite[1]
     )
-    return _make_runs([*(satellite for satellite in satellites if satellite not in reached), grown])
+    stop = bisect.bisect_left(satellites, end + bundle_distance, key=lambda satellite: satellite[0])
+    if first >= stop:
+        return None
+    grown = (min(start, satellites[first][0]), max(end, satellites[stop - 1][1]))
+    return _make_runs([*satellites[:first], grown, *satellites[stop:]])
 
 
 def _make_grown_satellites(
@@ -828,7 +919,12 @@ def _make_grown_satellites(
     member, by its detected span, and every STR segment, by its cut, that one reaches,
     repeated until a pass absorbs nothing; and the members and STR segments left, in their
     order (pvc's plain fixed point, its test helper absorb_by_iteration). Positions are
-    0-based and half-open."""
+    0-based and half-open.
+
+    The satellites are taken sorted, disjoint and not abutting, as _make_runs gives them,
+    and each absorption gives them back so, since it goes through _make_runs again:
+    _make_satellites_absorbing finds the satellites a span reaches by bisection, which
+    relies on it."""
     grown = list(satellites)
     members_left = list(members)
     str_segments_left = list(str_segments)
@@ -853,23 +949,19 @@ def _make_grown_satellites(
             return grown, members_left, str_segments_left
 
 
-def _make_segments(features: Iterable[_Segment], length: int) -> list[_Segment]:
+def _make_segments(features: Iterable[_Segment], length: int) -> Iterator[_Segment]:
     """Step 8 of doc/specs/str_finder.md: the features, sorted by start and not
     overlapping, with one generic region over each stretch between them and before the
     first and after the last, up to the contig's length (pvc region_typing/mod.rs,
     fill_generic_gaps). Positions are 0-based and half-open."""
-    segments: list[_Segment] = []
     covered_to = 0
     for feature in features:
         if feature.start > covered_to:
-            segments.append(
-                _Segment(start=covered_to, end=feature.start, region_type=RegionType.GENERIC)
-            )
-        segments.append(feature)
+            yield _Segment(start=covered_to, end=feature.start, region_type=RegionType.GENERIC)
+        yield feature
         covered_to = feature.end
     if covered_to < length:
-        segments.append(_Segment(start=covered_to, end=length, region_type=RegionType.GENERIC))
-    return segments
+        yield _Segment(start=covered_to, end=length, region_type=RegionType.GENERIC)
 
 
 def _find_requested_str_regions(
@@ -1143,7 +1235,8 @@ def _find_requested_spans(path: Path, reference: IndexedFasta) -> dict[str, list
     sorted (doc/specs/str_finder.md, "The str-regions command").
 
     Raises PvcEvalInputError for what parse_bed refuses, and, naming the file and the line,
-    for an end past its contig's length.
+    for an end past its contig's length, or for a damaged gzip BED in its place (doc/spec.md
+    §5.2).
     """
     contig_lengths = _get_contig_lengths(reference)
     requested: dict[str, list[_Span]] = {}
@@ -1151,11 +1244,21 @@ def _find_requested_spans(path: Path, reference: IndexedFasta) -> dict[str, list
         length = contig_lengths[bed_line.contig]
         if bed_line.end > length:
             where = f"{path}, line {bed_line.line_number}"
-            raise PvcEvalInputError(
+            error = PvcEvalInputError(
                 _make_past_contig_end_message(where, bed_line.end, bed_line.contig, length)
             )
+            check_gzip_whole(error, path, "BED", bed_line.line_number)
+            raise error
         requested.setdefault(bed_line.contig, []).append((bed_line.start, bed_line.end))
     return requested
+
+
+# How many contigs write_str_regions segments at once when not told, and the most it takes:
+# the VCF reader's default and limit, DEFAULT_NUM_THREADS and _MAX_NUM_THREADS of
+# pvc_eval.vcf (doc/spec.md, "Threads"), as doc/specs/str_finder.md, "The str-regions
+# command", gives them.
+DEFAULT_NUM_THREADS = 4
+MAX_NUM_THREADS = 256
 
 
 def write_str_regions(
@@ -1163,6 +1266,7 @@ def write_str_regions(
     output: Path,
     parameters: StrFinderParameters,
     regions: Path | None,
+    num_threads: int,
 ) -> None:
     """Write the BED of `pvc_eval str-regions` (doc/specs/str_finder.md, "The str-regions
     command"): a ## line for pvc_eval's version and one for each parameter, a #chrom line,
@@ -1175,10 +1279,23 @@ def write_str_regions(
     output when complete. A run stopped by an error or by Ctrl-C removes the `.tmp` and leaves
     output as it was; one killed by a signal leaves the `.tmp` behind.
 
-    Raises PvcEvalInputError for a --regions BED that pvc_eval.bed.parse_bed refuses, an
-    empty one among them, and for one with an end past its contig's length; for a byte of the FASTA that is not a letter; and, before any contig is
-    segmented, for an output that is a directory or whose `.tmp` cannot be made.
+    Up to num_threads contigs are segmented at once, each on a thread of its own, or one
+    after another in this thread when num_threads is 1; the BED is the same at any number.
+    With more than one, an error in a contig, or Ctrl-C, stops the run once the contigs being
+    segmented have finished.
+
+    Raises ValueError, before anything is read or written, for a num_threads that is not a
+    whole number from 1 to 256. Raises PvcEvalInputError for a --regions BED that
+    pvc_eval.bed.parse_bed refuses, an empty one among them, and for one with an end past
+    its contig's length; for a byte of the FASTA that is not a letter, the first in the
+    order of the `.fai`; and, before any contig is segmented, for an output that is a
+    directory or whose `.tmp` cannot be made.
     """
+    _check_whole_number("num_threads", num_threads)
+    if not 1 <= num_threads <= MAX_NUM_THREADS:
+        raise ValueError(
+            f"num_threads is {num_threads!r}; it must be a whole number from 1 to {MAX_NUM_THREADS}"
+        )
     if regions is None:
         # Without --regions, each whole contig is the one span requested of it.
         requested = {
@@ -1187,53 +1304,50 @@ def write_str_regions(
     else:
         requested = _find_requested_spans(regions, reference)
     temporary = Path(f"{output}.tmp")
-    bed = _open_temporary_output(output, temporary)
+    bed = open_temporary_output(output, temporary, "--output", compress=False)
     try:
         with bed:
             bed.writelines(_format_str_regions_header(parameters))
-            for contig in [contig for contig in reference.contigs if contig in requested]:
-                segments = segment_contig(reference, contig, parameters)
-                str_regions = _find_requested_str_regions(segments, requested[contig])
-                bed.writelines(_format_str_region(segment) for segment in str_regions)
+            contigs = [contig for contig in reference.contigs if contig in requested]
+
+            def make_rows(contig: str) -> list[str]:
+                return _make_str_region_rows(reference, contig, parameters, requested[contig])
+
+            for rows in _map_in_order(make_rows, contigs, num_threads):
+                bed.writelines(rows)
         temporary.replace(output)
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
 
 
-def _open_temporary_output(output: Path, temporary: Path) -> TextIO:
-    """Open the file the BED is written to before it is renamed to output.
+def _make_str_region_rows(
+    reference: IndexedFasta,
+    contig: str,
+    parameters: StrFinderParameters,
+    requested: Iterable[_Span],
+) -> list[str]:
+    """The rows of the `str-regions` BED for one contig, segmented whole: its STR regions
+    that overlap one of the requested spans, 0-based and half-open, each row with its line
+    end. A thread hands back these rows and not the segments, so that a contig that waits
+    for the ones before it to be written holds its rows only."""
+    segments = segment_contig(reference, contig, parameters)
+    str_regions = _find_requested_str_regions(segments, requested)
+    return [_format_str_region(segment) for segment in str_regions]
 
-    Raises PvcEvalInputError, naming --output, when output is a directory or temporary
-    cannot be made.
-    """
-    if output.is_dir():
-        raise PvcEvalInputError(
-            f"--output {output} is a directory. Give the path of a file to write, and run again."
-        )
-    cannot = f"--output {output} cannot be written:"
-    try:
-        return temporary.open("w", encoding="utf-8")
-    except FileNotFoundError:
-        raise PvcEvalInputError(
-            f"{cannot} its directory, {output.parent}, does not exist. Make it, or give another"
-            " --output, and run again."
-        ) from None
-    except NotADirectoryError:
-        raise PvcEvalInputError(
-            f"{cannot} its path goes through a file as if it were a directory. Correct the"
-            " path, and run again."
-        ) from None
-    except PermissionError:
-        raise PvcEvalInputError(
-            f"{cannot} permission denied to write in {output.parent}. Allow writing there, or"
-            " give another --output, and run again."
-        ) from None
-    except IsADirectoryError:
-        raise PvcEvalInputError(
-            f"{cannot} {temporary}, where it is written first, is a directory. Move it away,"
-            " and run again."
-        ) from None
+
+def _map_in_order[T, R](
+    function: Callable[[T], R], items: Iterable[T], num_threads: int
+) -> Iterator[R]:
+    """function over items, its results in the order of the items: in this thread when
+    num_threads is 1, or else on a pool of num_threads threads, with at most two items each
+    submitted ahead of the result given (doc/specs/str_finder.md, "Threads"). The same as
+    pvc_eval.vcf's, which is private there."""
+    if num_threads == 1:
+        yield from map(function, items)
+        return
+    with ThreadPoolExecutor(max_workers=num_threads) as pool:
+        yield from pool.map(function, items, buffersize=2 * num_threads)
 
 
 def _format_str_regions_header(parameters: StrFinderParameters) -> list[str]:

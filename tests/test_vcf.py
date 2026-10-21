@@ -1,9 +1,16 @@
 import gzip
+import io
 import itertools
 import logging
 import random
+import re
+import struct
+import subprocess
+import sys
 import threading
-from collections.abc import Callable, Iterator
+import time
+import zlib
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import ExitStack
 from pathlib import Path
 from typing import TypedDict
@@ -314,13 +321,15 @@ def test_contig_missing_from_the_reference_stops_the_run(
 
 @pytest.mark.parametrize(
     "alt",
-    ["<DEL>", "A]chr2:20]", "[chr2:20[A", "A.", ".A"],
+    ["<DEL>", "A]chr2:20]", "[chr2:20[A", "A.", ".A", "T,A.", ".A,T"],
     ids=[
         "symbolic",
         "breakend_right",
         "breakend_left",
         "single_breakend_right",
         "single_breakend_left",
+        "single_breakend_among_other_alts",
+        "single_breakend_before_other_alts",
     ],
 )
 def test_symbolic_alleles_are_skipped_and_counted(
@@ -372,7 +381,7 @@ def test_after_symbolic_records_the_first_plain_record_that_differs_stops_the_ru
 
     assert str(raised.value) == (
         f"{path}, line 5: the REF of chr1:7 is 'C', and the reference, read in upper case, has"
-        " 'A' there. It is the file's first record with no symbolic allele, so the VCF looks"
+        " 'A' there. It is the first record read with no symbolic allele, so the VCF looks"
         " made on another reference: compare against the reference it was called on, and"
         " run again."
     )
@@ -582,6 +591,255 @@ def test_gzip_file_with_damaged_compressed_data_stops_the_run(
     )
 
 
+# Two records of the reference above, and a change to each that makes one of them a fault of
+# the file's content: the second record out of order, or the first with its two sample
+# columns made one.
+TWO_RECORDS = "chr1\t9\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t12\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n"
+# Each change with the fault it makes, and the line of that fault.
+CONTENT_FAULTS = [
+    (b"chr1\t12\t", b"chr1\t02\t", r"is not sorted: chr1:2 \(line 4\) comes after chr1:9", 4),
+    (
+        b"0/1\t0/1\nchr1\t12",
+        b"0/1 0/1\nchr1\t12",
+        r"line 3: the line has 1 sample column, and the #CHROM line names 2 samples",
+        3,
+    ),
+]
+CONTENT_FAULT_IDS = ["not_sorted", "sample_columns"]
+
+
+def write_damaged_gzip(path: Path, text: str, old: bytes, new: bytes) -> Path:
+    """Write text gzipped in stored deflate blocks, which hold the text as it is, with old,
+    found once, replaced by new of the same length after gzip has taken its CRC-32: gzip
+    gives the changed text, and finds the damage only at the end of the file."""
+    compressed = gzip.compress(text.encode(), compresslevel=0, mtime=0)
+    assert compressed.count(old) == 1
+    assert len(old) == len(new)
+    path.write_bytes(compressed.replace(old, new))
+    return path
+
+
+def make_damaged_message(path: Path, at_line: str) -> str:
+    """The message of a damaged gzip file; at_line is " at line N", or "" with no line."""
+    return (
+        f"{path} is damaged: gzip's own check of the whole file fails (`gzip -t {path}` shows"
+        f" it), so the fault pvc_eval found{at_line} may come from the damaged bytes rather than"
+        " from the file's content. Copy or compress the file again from its source, and run"
+        " again."
+    )
+
+
+@pytest.mark.parametrize("num_threads", [1, 4])
+@pytest.mark.parametrize(
+    ("old", "new", "message", "line_number"), CONTENT_FAULTS, ids=CONTENT_FAULT_IDS
+)
+def test_damaged_gzip_read_as_a_fault_of_a_line_is_reported_damaged(
+    tmp_path: Path,
+    reference: IndexedFasta,
+    old: bytes,
+    new: bytes,
+    message: str,
+    line_number: int,
+    num_threads: int,
+) -> None:
+    path = write_damaged_gzip(tmp_path / "a.vcf.gz", HEADER + TWO_RECORDS, old, new)
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference, num_threads=num_threads))
+
+    assert str(raised.value) == make_damaged_message(path, f" at line {line_number}")
+    # The fault of the line the damage made is kept as the cause.
+    assert re.search(message, str(raised.value.__cause__))
+
+
+@pytest.mark.parametrize("gzipped", [False, True], ids=["plain", "gzipped_whole"])
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [(old, new, message) for old, new, message, _ in CONTENT_FAULTS],
+    ids=CONTENT_FAULT_IDS,
+)
+def test_undamaged_file_with_a_fault_of_a_line_keeps_its_message(
+    tmp_path: Path, reference: IndexedFasta, old: bytes, new: bytes, message: str, gzipped: bool
+) -> None:
+    path = write_vcf(tmp_path, TWO_RECORDS.replace(old.decode(), new.decode()), gzipped=gzipped)
+
+    with pytest.raises(PvcEvalInputError, match=message):
+        list(parse_vcf(path, reference))
+
+
+@pytest.mark.parametrize("num_threads", [1, 4])
+def test_damaged_gzip_found_while_threads_parse_samples_is_reported_damaged(
+    tmp_path: Path, make_reference: MakeReference, num_threads: int
+) -> None:
+    fasta, lines = make_threaded_input(random.Random(1))
+    # The POS of line 2,503 moved back by 1,000 bases, behind the line before it, once
+    # several batches have gone to the threads.
+    path = write_damaged_gzip(
+        tmp_path / "a.vcf.gz", HEADER + lines, b"\nchr1\t25011\t", b"\nchr1\t24011\t"
+    )
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, make_reference(*fasta), num_threads=num_threads))
+
+    assert str(raised.value) == make_damaged_message(path, " at line 2503")
+
+
+def test_damaged_gzip_read_as_a_fault_of_the_header_is_reported_damaged(
+    tmp_path: Path,
+) -> None:
+    path = write_damaged_gzip(
+        tmp_path / "a.vcf.gz", HEADER + TWO_RECORDS, b"##fileformat", b"#Xfileformat"
+    )
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        parse_vcf_samples(path)
+
+    assert str(raised.value) == make_damaged_message(path, " at line 1")
+    assert "line 1: a VCF file has a #CHROM line" in str(raised.value.__cause__)
+
+
+def test_damaged_gzip_read_as_text_that_is_not_utf8_is_reported_damaged(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_damaged_gzip(tmp_path / "a.vcf.gz", HEADER + TWO_RECORDS, b"HG003", b"HG\xff03")
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    # A byte that is not UTF-8 is found somewhere after the last line read, on no line known.
+    assert str(raised.value) == make_damaged_message(path, "")
+    assert isinstance(raised.value.__cause__, UnicodeDecodeError)
+
+
+def test_damaged_gzip_whose_text_is_larger_than_a_chunk_of_the_check_is_reported_damaged(
+    tmp_path: Path, make_reference: MakeReference
+) -> None:
+    # About 1.3 MB of text, more than the 1 MiB the whole check decompresses at a time, so
+    # that it finds the damage only past its first chunk; the fault is on line 4.
+    reference = make_reference(*make_fasta({"chr1": "A" * 40_000}))
+    lines = "".join(
+        f"chr1\t{pos_1based}\t.\tA\tC\t.\t.\t.\tGT\t0/1\t1|0\n" for pos_1based in range(1, 40_001)
+    )
+    path = write_damaged_gzip(tmp_path / "a.vcf.gz", HEADER + lines, b"\nchr1\t2\t", b"\nchr1\t0\t")
+    assert len(HEADER + lines) > 1.25 * 2**20
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == make_damaged_message(path, " at line 4")
+
+
+def test_good_gzipped_vcf_read_to_its_end_is_opened_by_gzip_once(
+    tmp_path: Path, reference: IndexedFasta, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = write_vcf(tmp_path, TWO_RECORDS, gzipped=True)
+    paths_opened: list[Path] = []
+    gzip_open = gzip.open
+
+    def open_and_count(
+        filename: Path, mode: str, encoding: str | None = None
+    ) -> gzip.GzipFile | io.TextIOWrapper:
+        paths_opened.append(filename)
+        return gzip_open(filename, mode, encoding=encoding)
+
+    monkeypatch.setattr(gzip, "open", open_and_count)
+
+    assert len(list(parse_vcf(path, reference))) == 2
+    assert paths_opened == [path]
+
+
+# A VCF of 60 SNPs on a reference of 64 As, gzipped as gzip writes it.
+SMALL_VCF = HEADER + "".join(
+    f"chr1\t{pos_1based}\t.\tA\tC\t.\t.\t.\tGT\t0/1\t1|0\n" for pos_1based in range(1, 61)
+)
+
+
+def test_every_damaged_byte_of_a_gzip_vcf_that_stops_the_read_is_reported_damaged(
+    tmp_path: Path, make_reference: MakeReference
+) -> None:
+    reference = make_reference(*make_fasta({"chr1": "A" * 64}))
+    compressed = gzip.compress(SMALL_VCF.encode(), mtime=0)
+    path = tmp_path / "a.vcf.gz"
+    messages: set[str] = set()
+    num_read_whole = 0
+    # Every byte after the gzip header of 10, which gzip does not check whole: a change to
+    # its first two makes the file no gzip file, and one to its time or its last two bytes
+    # changes nothing that is read.
+    for offset in range(10, len(compressed)):
+        damaged = bytearray(compressed)
+        damaged[offset] ^= 0x40
+        path.write_bytes(damaged)
+        try:
+            records = list(parse_vcf(path, reference))
+        except PvcEvalInputError as err:
+            # The line numbers are dropped, so that each message counts once.
+            messages.add(re.sub(r"line \d+", "line N", str(err)))
+            continue
+        # A read with no error has had gzip check every byte, so it gives the records.
+        assert len(records) == 60
+        num_read_whole += 1
+
+    assert messages <= {
+        make_damaged_message(path, " at line N"),
+        make_damaged_message(path, ""),
+        f"{path} is a gzip file cut short or damaged at or after line N. Compress or copy it"
+        " again, and run again.",
+    }
+    # The padding bits after the end of the last deflate block, which zlib does not read.
+    assert num_read_whole <= 1
+
+
+def make_bgzf_block(text: bytes) -> bytes:
+    """A BGZF block of text, as bgzip writes one: a gzip member whose header holds the BC
+    subfield, which gives the size of the block less 1 (SAM/BAM format specification,
+    4.1)."""
+    compressor = zlib.compressobj(6, zlib.DEFLATED, -15)
+    deflated = compressor.compress(text) + compressor.flush()
+    block_size = 18 + len(deflated) + 8
+    header = b"\x1f\x8b\x08\x04\x00\x00\x00\x00\x00\xff\x06\x00BC\x02\x00"
+    trailer = struct.pack("<II", zlib.crc32(text), len(text))
+    return header + struct.pack("<H", block_size - 1) + deflated + trailer
+
+
+# The empty block that ends a BGZF file, the 28 bytes the specification gives.
+BGZF_END = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
+BGZF_BLOCKS = [
+    make_bgzf_block((HEADER + "chr1\t9\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n").encode()),
+    make_bgzf_block(b"chr1\t12\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n"),
+]
+
+
+def test_empty_bgzf_block_is_the_end_block_of_the_specification() -> None:
+    assert make_bgzf_block(b"") == BGZF_END
+
+
+def test_bgzf_file_with_its_end_block_is_read(tmp_path: Path, reference: IndexedFasta) -> None:
+    path = tmp_path / "a.vcf.gz"
+    path.write_bytes(b"".join(BGZF_BLOCKS) + BGZF_END)
+
+    assert [record.start for record in parse_vcf(path, reference)] == [8, 11]
+
+
+@pytest.mark.parametrize("num_blocks", [1, 2], ids=["cut_after_block_1", "cut_after_block_2"])
+def test_bgzf_file_cut_between_blocks_is_cut_short(
+    tmp_path: Path, reference: IndexedFasta, num_blocks: int
+) -> None:
+    path = tmp_path / "a.vcf.gz"
+    path.write_bytes(b"".join(BGZF_BLOCKS[:num_blocks]))
+    message = (
+        f"{path} is a gzip file cut short or damaged: it is in BGZF, as bgzip and bcftools"
+        " write, and lacks the empty block that ends such a file. Copy or compress the file"
+        " again from its source, and run again."
+    )
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+    assert str(raised.value) == message
+    with pytest.raises(PvcEvalInputError) as raised:
+        parse_vcf_samples(path)
+    assert str(raised.value) == message
+
+
 _BYTE_ORDER_MARK_VCF = ("﻿" + HEADER + "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n").encode()
 
 
@@ -721,6 +979,49 @@ def test_alt_dot_gives_a_record_with_ref_only(tmp_path: Path, reference: Indexed
     assert (record.start, record.alleles) == (4, ("A",))
 
 
+@pytest.mark.parametrize(
+    ("alts", "alts_without_dots"),
+    [
+        ("T,.", "T"),
+        (".,T", "T"),
+        ("<DEL>,.", "<DEL>"),
+        ("T,..", "T"),
+        ("T,. ", "T"),
+        ("T,.,G", "T,G"),
+    ],
+    ids=["dot_last", "dot_first", "symbolic_and_dot", "two_dots", "dot_and_space", "dot_between"],
+)
+def test_alt_dot_among_other_alts_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta, alts: str, alts_without_dots: str
+) -> None:
+    path = write_vcf(tmp_path, f"chr1\t5\t.\tA\t{alts}\t.\t.\t.\tGT\t0/1\t0/0\n")
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == (
+        f"{path}, line 3: ALT '{alts}' holds `.` beside other alleles, which VCF does not"
+        " allow: `.` stands alone, for a record with no ALT. Write the ALT without the `.`,"
+        f" here '{alts_without_dots}', and run again."
+    )
+
+
+@pytest.mark.parametrize("alt", ["..", ". "], ids=["two_dots", "dot_and_space"])
+def test_alt_dot_written_with_more_than_one_character_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta, alt: str
+) -> None:
+    path = write_vcf(tmp_path, f"chr1\t5\t.\tA\t{alt}\t.\t.\t.\tGT\t0/1\t0/0\n")
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == (
+        f"{path}, line 3: ALT '{alt}' is neither an allele nor `.`, which VCF writes alone,"
+        " as one character, for a record with no ALT. Write the ALT as `.`, or as the"
+        " alleles it stands for, and run again."
+    )
+
+
 def test_records_at_the_same_pos_both_come_out(tmp_path: Path, reference: IndexedFasta) -> None:
     path = write_vcf(
         tmp_path,
@@ -814,7 +1115,7 @@ def test_ref_that_differs_from_the_reference_stops_the_run(
     assert str(raised.value) == (
         f"{path}, line 3: the REF of chr1:5 is 'Ca', and the reference, read in upper case,"
         " has 'AG' there. It is"
-        " the file's first record with no symbolic allele, so the VCF looks made on another"
+        " the first record read with no symbolic allele, so the VCF looks made on another"
         " reference: compare against the reference it was called on, and run again."
     )
     assert given == []
@@ -883,7 +1184,7 @@ def test_iupac_codes_that_share_no_base_differ(
         list(parse_vcf(path, reference))
 
     assert str(raised.value) == (
-        f"{path}, line 3: the REF of chr1:3 {found} It is the file's first record with no"
+        f"{path}, line 3: the REF of chr1:3 {found} It is the first record read with no"
         " symbolic allele, so the VCF looks made on another reference: compare against the"
         " reference it was called on, and run again."
     )
@@ -907,7 +1208,7 @@ def test_ref_that_agrees_at_its_first_base_and_differs_later_stops_the_run(
         list(parse_vcf(path, reference))
 
     assert str(raised.value) == (
-        f"{path}, line 3: the REF of chr1:5 {found} It is the file's first record with no"
+        f"{path}, line 3: the REF of chr1:5 {found} It is the first record read with no"
         " symbolic allele, so the VCF looks made on another reference: compare against the"
         " reference it was called on, and run again."
     )
@@ -947,7 +1248,7 @@ def test_ref_of_more_than_20_bases_is_named_where_it_first_differs(
         list(parse_vcf(path, reference))
 
     assert str(raised.value) == (
-        f"{path}, line 3: the REF of chr1:2 {found} It is the file's first record with no"
+        f"{path}, line 3: the REF of chr1:2 {found} It is the first record read with no"
         " symbolic allele, so the VCF looks made on another reference: compare against the"
         " reference it was called on, and run again."
     )
@@ -1693,7 +1994,7 @@ def test_ref_that_differs_comes_after_the_records_before_it(
     pos_1based = 11 + index_wrong * 10
     if index_wrong == 0:
         remedy = (
-            "It is the file's first record with no symbolic allele, so the VCF looks made on"
+            "It is the first record read with no symbolic allele, so the VCF looks made on"
             " another reference: compare against the reference it was called on, and run"
             " again."
         )
@@ -1830,3 +2131,411 @@ def test_gq_of_more_digits_than_python_reads_is_absent_and_counted(
         VcfGenotype(alleles=(0, 1), phased=False, phase_set=None, quality=20),
     )
     assert "took 1 QUAL or GQ value that could not be read as a number as absent" in caplog.text
+
+
+# doc/specs/regions_read.md: parse_vcf reads only the records of the contigs it is given.
+# A reference of four contigs, in this .fai order; chr10's name begins with chr1's. Every
+# line of CONTIG_LINES agrees with it.
+FOUR_CONTIGS = {"chr1": "ACGTACGTAC", "chr2": "GGGGGGGG", "chr10": "TTTTTTTT", "chr3": "CCCCCCCC"}
+CONTIG_LINES = (
+    "chr1\t2\t.\tC\tA\t.\t.\t.\tGT\t0/1\t0/1\n"
+    "chr1\t5\t.\tA\tG\t.\t.\t.\tGT\t0/1\t0/1\n"
+    "chr2\t3\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n"
+    "chr10\t4\t.\tT\tC\t.\t.\t.\tGT\t0/1\t0/1\n"
+    "chr3\t6\t.\tC\tG\t.\t.\t.\tGT\t0/1\t0/1\n"
+)
+
+
+@pytest.fixture
+def four_contigs(make_reference: MakeReference) -> IndexedFasta:
+    return make_reference(*make_fasta(FOUR_CONTIGS))
+
+
+def get_places(records: Iterable[VcfRecord]) -> list[tuple[str, int, int]]:
+    """The contig, 0-based start and line number of each record."""
+    return [(record.contig, record.start, record.line_number) for record in records]
+
+
+@pytest.mark.parametrize(
+    ("contigs", "places"),
+    [
+        ({"chr1"}, [("chr1", 1, 3), ("chr1", 4, 4)]),
+        ({"chr10"}, [("chr10", 3, 6)]),
+        (["chr2", "chr3"], [("chr2", 2, 5), ("chr3", 5, 7)]),
+        (
+            None,
+            [("chr1", 1, 3), ("chr1", 4, 4), ("chr2", 2, 5), ("chr10", 3, 6), ("chr3", 5, 7)],
+        ),
+        (
+            {"chr1", "chr2", "chr10", "chr3"},
+            [("chr1", 1, 3), ("chr1", 4, 4), ("chr2", 2, 5), ("chr10", 3, 6), ("chr3", 5, 7)],
+        ),
+        ({"chrX"}, []),
+        ({"chrX", "chr3"}, [("chr3", 5, 7)]),
+        (set(), []),
+    ],
+    ids=[
+        "chr1_not_chr10",
+        "chr10_not_chr1",
+        "chr2_and_chr3_as_a_list",
+        "none_reads_every_record",
+        "every_contig",
+        "a_name_the_reference_lacks",
+        "a_name_the_reference_lacks_and_chr3",
+        "no_contig",
+    ],
+)
+def test_only_records_of_contigs_given_are_read(
+    tmp_path: Path,
+    four_contigs: IndexedFasta,
+    contigs: set[str] | list[str] | None,
+    places: list[tuple[str, int, int]],
+) -> None:
+    path = write_vcf(tmp_path, CONTIG_LINES)
+
+    records = parse_vcf(path, four_contigs, contigs=contigs)
+
+    assert get_places(records) == places
+
+
+@pytest.mark.parametrize("num_threads", [1, 4])
+@pytest.mark.parametrize(
+    "chr2_line",
+    [
+        "chr2\t3\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+        "chr2\t3\t.\tG\tT\t.\t.\t.\tGT\t0/1\n",
+        "chr2\t3\t.\tG\tT\t.\t.\t.\n",
+        "chr2\t0\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+        "chr2\t3\t.\tG\tT\t.\t.\t.\tGT\t0/x\t0/1\n",
+        "chr2\t3\t.\tG\t<DEL>\t.\t.\t.\tGT\t0/1\t0/1\n",
+        "chr2\t3\t.\tG\tT\thigh\t.\t.\tGT:GQ\t0/1:high\t0/1:20\n",
+        "chr2\t3\t.\tGGGGGGGGGG\tG\t.\t.\t.\tGT\t0/1\t0/1\n",
+        "chr2\t3\t.\t\t\t.\t.\t.\tGT\t0/1\t0/1\n",
+    ],
+    ids=[
+        "ref_differs",
+        "too_few_sample_columns",
+        "sites_only",
+        "pos_0",
+        "malformed_gt",
+        "symbolic_alt",
+        "qual_and_gq_not_numbers",
+        "ref_past_the_contig_end",
+        "ref_and_alt_empty",
+    ],
+)
+def test_line_on_a_contig_not_read_gives_no_error_and_no_warning(
+    tmp_path: Path,
+    four_contigs: IndexedFasta,
+    caplog: pytest.LogCaptureFixture,
+    chr2_line: str,
+    num_threads: int,
+) -> None:
+    lines = CONTIG_LINES.split("\n")
+    path = write_vcf(tmp_path, "\n".join([*lines[:2], chr2_line.rstrip("\n"), *lines[3:]]))
+
+    with caplog.at_level(logging.WARNING):
+        records = list(parse_vcf(path, four_contigs, contigs={"chr1"}, num_threads=num_threads))
+
+    assert get_places(records) == [("chr1", 1, 3), ("chr1", 4, 4)]
+    assert caplog.text == ""
+
+
+def test_symbolic_record_on_a_contig_read_is_still_counted(
+    tmp_path: Path, four_contigs: IndexedFasta, caplog: pytest.LogCaptureFixture
+) -> None:
+    # One symbolic record on chr1, read, and one on chr2, not read: the warning counts one.
+    path = write_vcf(
+        tmp_path,
+        "chr1\t2\t.\tC\t<DEL>\t.\t.\t.\tGT\t0/1\t0/1\n"
+        "chr2\t3\t.\tG\t<DEL>\t.\t.\t.\tGT\t0/1\t0/1\n",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        records = list(parse_vcf(path, four_contigs, contigs={"chr1"}))
+
+    assert records == []
+    assert "skipped 1 VCF record with symbolic alleles" in caplog.text
+
+
+# The message parse_vcf gives for a line out of order.
+SORT_ADVICE = " Sort it in the contig order of the reference's .fai and by position, and run again."
+
+
+@pytest.mark.parametrize(
+    ("body", "contigs", "message"),
+    [
+        (
+            "chr2\t3\t.\tG\tT\t.\t.\n",
+            {"chr1"},
+            "line 3: the line has 7 tab-separated columns, and a VCF record has at least 8,"
+            " CHROM to INFO. Check that its columns are separated by tabs, correct the line or"
+            " remove it, and run again.",
+        ),
+        (
+            "chr2\n",
+            {"chr1"},
+            "line 3: the line has 1 tab-separated column, and a VCF record has at least 8,"
+            " CHROM to INFO. Check that its columns are separated by tabs, correct the line or"
+            " remove it, and run again.",
+        ),
+        (
+            # Two faults: too few columns comes first.
+            "chrUn\tfive\t.\tG\tT\t.\t.\n",
+            {"chr1"},
+            "line 3: the line has 7 tab-separated columns, and a VCF record has at least 8,"
+            " CHROM to INFO. Check that its columns are separated by tabs, correct the line or"
+            " remove it, and run again.",
+        ),
+        (
+            "chr2\tfive\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+            {"chr1"},
+            "line 3: POS is 'five', and it must be a whole number of 1 or more. Correct the"
+            " line or remove it, and run again.",
+        ),
+        (
+            # Two faults: a POS that is not a number comes before the contig.
+            "chrUn\t-3\t.\tG\tT\t.\t.\t.\n",
+            {"chr1"},
+            "line 3: POS is '-3', and it must be a whole number of 1 or more. Correct the"
+            " line or remove it, and run again.",
+        ),
+        (
+            f"chr2\t{TOO_MANY_DIGITS}\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+            {"chr1"},
+            "line 3: POS has 5,000 digits, which is past the end of any contig. Correct the"
+            " line or remove it, and run again.",
+        ),
+        (
+            "chrUn\t3\t.\tG\tT\t.\t.\t.\tGT\t0/1\n",
+            {"chr1"},
+            "line 3: contig chrUn is not in the reference. Compare against the reference the"
+            " VCF was called on.",
+        ),
+        (
+            # Two faults: a contig the reference lacks comes before the order.
+            "chr2\t5\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\nchrUn\t3\t.\tG\tT\t.\t.\t.\n",
+            {"chr1"},
+            "line 4: contig chrUn is not in the reference. Compare against the reference the"
+            " VCF was called on.",
+        ),
+    ],
+    ids=[
+        "seven_columns",
+        "one_column",
+        "seven_columns_and_contig_lacking",
+        "pos_not_a_number",
+        "pos_not_a_number_and_contig_lacking",
+        "pos_of_too_many_digits",
+        "contig_lacking",
+        "contig_lacking_and_out_of_order",
+    ],
+)
+def test_line_on_a_contig_not_read_gives_the_error_of_its_first_fault(
+    tmp_path: Path, four_contigs: IndexedFasta, body: str, contigs: set[str], message: str
+) -> None:
+    path = write_vcf(tmp_path, body)
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, four_contigs, contigs=contigs))
+
+    assert str(raised.value) == f"{path}, {message}"
+
+
+@pytest.mark.parametrize(
+    ("body", "contigs", "out_of_order"),
+    [
+        (
+            # Both lines on chr2, not read; POS 0 is taken for its order.
+            "chr2\t5\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\nchr2\t0\t.\tG\tT\t.\t.\t.\n",
+            {"chr1"},
+            "chr2:0 (line 4) comes after chr2:5 (line 3).",
+        ),
+        (
+            # A line of chr2, not read, before chr1 by the .fai's order.
+            "chr2\t3\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t2\t.\tC\tA\t.\t.\t.\tGT\t0/1\t0/1\n",
+            {"chr1"},
+            "chr1:2 (line 4) comes after chr2:3 (line 3).",
+        ),
+        (
+            # A line of chr2, not read, after one of chr10, not read, which the .fai puts
+            # after chr2.
+            "chr1\t2\t.\tC\tA\t.\t.\t.\tGT\t0/1\t0/1\n"
+            "chr10\t4\t.\tT\tC\t.\t.\t.\tGT\t0/1\t0/1\n"
+            "chr2\t3\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+            {"chr1"},
+            "chr2:3 (line 5) comes after chr10:4 (line 4).",
+        ),
+        (
+            # A line of chr2, read, after one of chr10, not read.
+            "chr10\t4\t.\tT\tC\t.\t.\t.\tGT\t0/1\t0/1\nchr2\t3\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n",
+            {"chr2"},
+            "chr2:3 (line 4) comes after chr10:4 (line 3).",
+        ),
+        (
+            # A line of chr1, not read, after one of chr1, read, further on.
+            "chr1\t5\t.\tA\tG\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t2\t.\tC\tA\t.\t.\t.\tGT\t0/1\t0/1\n",
+            {"chr2"},
+            "chr1:2 (line 4) comes after chr1:5 (line 3).",
+        ),
+        (
+            # The line before is not the line of the record before: a blank line and a
+            # comment line come between.
+            "chr2\t5\t.\tG\tT\t.\t.\t.\n\n# a comment\nchr2\t4\t.\tG\tT\t.\t.\t.\n",
+            {"chr1"},
+            "chr2:4 (line 6) comes after chr2:5 (line 3).",
+        ),
+        (
+            "chr1\t5\t.\tA\tG\t.\t.\t.\tGT\t0/1\t0/1\n\n# a comment\n"
+            "chr1\t2\t.\tC\tA\t.\t.\t.\tGT\t0/1\t0/1\n",
+            None,
+            "chr1:2 (line 6) comes after chr1:5 (line 3).",
+        ),
+    ],
+    ids=[
+        "not_read_after_not_read",
+        "read_after_not_read_of_a_later_contig",
+        "not_read_after_not_read_of_a_later_contig",
+        "read_after_not_read",
+        "same_contig_neither_read",
+        "blank_and_comment_lines_between_neither_read",
+        "blank_and_comment_lines_between_both_read",
+    ],
+)
+def test_line_out_of_order_with_a_contig_not_read_stops_the_run(
+    tmp_path: Path,
+    four_contigs: IndexedFasta,
+    body: str,
+    contigs: set[str] | None,
+    out_of_order: str,
+) -> None:
+    path = write_vcf(tmp_path, body)
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, four_contigs, contigs=contigs))
+
+    assert str(raised.value) == f"{path} is not sorted: {out_of_order}{SORT_ADVICE}"
+
+
+def test_ref_that_differs_on_the_first_record_read_says_so(
+    tmp_path: Path, four_contigs: IndexedFasta
+) -> None:
+    # chr1's two lines agree with the reference and are not read; chr2's REF differs.
+    lines = CONTIG_LINES.split("\n")
+    bad_chr2_line = "chr2\t3\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1"
+    path = write_vcf(tmp_path, "\n".join([*lines[:2], bad_chr2_line, *lines[3:]]))
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, four_contigs, contigs={"chr2", "chr3"}))
+
+    assert str(raised.value) == (
+        f"{path}, line 5: the REF of chr2:3 is 'A', and the reference, read in upper case, has"
+        " 'G' there. It is the first record read with no symbolic allele, so the VCF looks"
+        " made on another reference: compare against the reference it was called on, and"
+        " run again."
+    )
+
+
+def test_ref_that_differs_counts_only_the_records_read_before_it(
+    tmp_path: Path, four_contigs: IndexedFasta
+) -> None:
+    # chr1's two lines are read and agree, chr2's and chr10's agree and are not read, and
+    # chr3's REF differs: 2 records, not 4.
+    lines = CONTIG_LINES.split("\n")
+    bad_chr3_line = "chr3\t6\t.\tA\tG\t.\t.\t.\tGT\t0/1\t0/1\n"
+    path = write_vcf(tmp_path, "\n".join([*lines[:4], bad_chr3_line]))
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, four_contigs, contigs={"chr1", "chr3"}))
+
+    assert str(raised.value) == (
+        f"{path}, line 7: the REF of chr3:6 is 'A', and the reference, read in upper case, has"
+        " 'C' there. The 2 records before it with no symbolic allele agree with the"
+        " reference, so this line looks damaged: correct it or remove it, and run again."
+    )
+
+
+def test_contigs_given_as_one_string_raises_type_error(
+    tmp_path: Path, four_contigs: IndexedFasta
+) -> None:
+    # A str is a collection of its letters, which would read nothing in silence.
+    path = write_vcf(tmp_path, CONTIG_LINES)
+
+    with pytest.raises(
+        TypeError,
+        match=r"^contigs must be a collection of contig names or None, not the string 'chr1'$",
+    ):
+        list(parse_vcf(path, four_contigs, contigs="chr1"))
+
+
+# A parse_vcf stream with a pool, dropped unclosed in a reference cycle and finalized by the
+# garbage collector in a thread that holds threading's _active_limbo_lock, as
+# threading.enumerate() and Thread.start() hold it. threading has no public way to hold that
+# lock, and holding it is what makes a finalizer that joins the pool's workers wait forever:
+# a worker that ends takes the lock to leave threading's list of threads. It runs in a
+# process of its own, so that a hang fails the test at its timeout and leaves the lock of
+# this process free.
+_FINALIZED_STREAM_SCRIPT = """
+import gc, sys, threading
+from pathlib import Path
+from pvc_eval.fasta import IndexedFasta
+from pvc_eval.vcf import parse_vcf
+
+directory = Path(sys.argv[1])
+gc.disable()
+with IndexedFasta(directory / "ref.fa") as reference:
+    records = parse_vcf(directory / "a.vcf", reference, num_threads=2, span_limit=1)
+    next(records)
+    cycle = [records]
+    cycle.append(cycle)
+    del records, cycle
+    with threading._active_limbo_lock:
+        gc.collect()
+print("collected")
+"""
+# Seconds the process is given; it takes well under one when nothing waits.
+_FINALIZED_STREAM_TIMEOUT = 30
+
+
+def test_stream_finalized_while_threads_are_listed_does_not_hang(tmp_path: Path) -> None:
+    # 5,000 records one base apart, so that with a span limit of 1 the first record comes
+    # out while the pool still has batches to parse.
+    fasta, fai = make_fasta({"chr1": "A" * 5000})
+    (tmp_path / "ref.fa").write_text(fasta, encoding="utf-8")
+    (tmp_path / "ref.fa.fai").write_text(fai, encoding="utf-8")
+    lines = (f"chr1\t{pos}\t.\tA\tC\t.\t.\t.\tGT\t0/1\t0/1\n" for pos in range(1, 5000))
+    (tmp_path / "a.vcf").write_text(HEADER + "".join(lines), encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "-c", _FINALIZED_STREAM_SCRIPT, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=_FINALIZED_STREAM_TIMEOUT,
+    )
+
+    assert (completed.returncode, completed.stdout, completed.stderr) == (0, "collected\n", "")
+
+
+# Seconds a worker of the test below parses its item for; close() must not wait for it.
+_SLOW_ITEM_SECONDS = 5
+
+
+def test_stream_closed_early_does_not_wait_for_a_worker_still_parsing() -> None:
+    release = threading.Event()
+
+    def parse_item(item: int) -> int:
+        # Item 1 is still being parsed when the stream is closed, until released or for
+        # _SLOW_ITEM_SECONDS at most, so that a close() that waits for it ends.
+        if item == 1:
+            release.wait(_SLOW_ITEM_SECONDS)
+        return item
+
+    results = vcf._map_in_order(parse_item, range(10), 2)
+    assert next(results) == 0
+    started = time.monotonic()
+    results.close()
+    close_seconds = time.monotonic() - started
+    release.set()
+
+    assert close_seconds < 1

@@ -86,14 +86,17 @@ pvc_eval compare --reference ref.fa --a a.vcf.gz --b b.vcf.gz --output loci.tsv
                  [--sample-map pairs.tsv] [--ploidy-a N] [--ploidy-b N] [--phasing-cap N]
                  [--span-limit N|none] [--chain-distance N]
                  [--summary summary.tsv] [--all-rows]
-                 [--evaluator pvc|vcfeval|happy|naive]
 ```
+
+`compare()`, the command, the table writer and the summary are given in full in
+`doc/specs/compare.md`, approved by the owner on 20 October 2026, with how its threads scan only
+the contigs whose loci need STR regions.
 
 | option | what it does |
 |---|---|
 | `--reference` | FASTA with its `.fai`. Contig names and order come from the `.fai`. |
 | `--a`, `--b` | the two VCFs, plain or bgzipped. |
-| `--regions` | compare only the loci that overlap these regions, by at least one position; every other locus is skipped and gets no row, nor a count in the summary. A locus that overlaps is compared whole, its VCF records outside the regions included, since loci are built from all VCF records (§5.3). Without it, every locus is compared. |
+| `--regions` | compare only the loci that overlap these regions, by at least one position; every other locus is skipped and gets no row, nor a count in the summary. A locus that overlaps is compared whole, its VCF records outside the regions included, since loci are built from all VCF records (§5.3). The VCF records of a contig it does not name are not read beyond their contig and position (`doc/specs/regions_read.md`). Without it, every locus is compared. |
 | `--strata` | BED with a fourth column naming each interval's class; a locus takes the class of the intervals it overlaps (several are joined with `,`; none gives `.`). The word `pvc` instead of a path gives each locus one region type from the STR regions it holds — `satellite`, `str-bundle`, `str` or `generic` — with no BED needed (§5.7); a file named `pvc` is given as `./pvc`. |
 | `--str-regions` | BED of STR regions to use instead of running the STR finder. |
 | `--sample-map` | two columns: a sample of A, a sample of B. Without it, samples are paired by name. |
@@ -102,13 +105,13 @@ pvc_eval compare --reference ref.fa --a a.vcf.gz --b b.vcf.gz --output loci.tsv
 | `--chain-distance` | default 10 (§5.3): a whole number of 0 or more. |
 | `--span-limit` | how far, in bases, a VCF record's span may reach beyond its REF before it is cut back to the REF (§5.2): a whole number of 1 or more, default 10000, or `none` for no limit. |
 | `--output` | the table of §6, one row per sample pair and locus. |
-| `--summary` | counts of outcomes by kind and stratum. |
+| `--summary` | counts of the rows over all sample pairs, one line per outcome and stratum, one column per kind (§6). |
 | `--all-rows` | also write the rows whose outcome is *reference in both* (§5.5). |
-| `--evaluator` | what decides each locus's outcome: `pvc`, pvc_eval's own rules (§5.4, §5.5), the default; or `vcfeval`, `happy` or `naive`, another evaluator wrapped behind the same interface (§8). |
 
 **Errors, which stop the run:** a VCF not sorted in the `.fai`'s contig order and by position; a
 contig in a VCF but not in the reference; a VCF record whose REF reaches past the end of its
-contig, or whose REF differs from the reference (§5.2); no sample pairs; a sample named in `--sample-map` absent
+contig, or whose REF differs from the reference (§5.2); an ALT `.` among other ALTs (§5.2); a
+gzipped VCF or BED that is damaged (§5.2); no sample pairs; a sample named in `--sample-map` absent
 from its file; a line of `--sample-map` that is not two fields; a pair given twice; a sample name
 given twice in a header, when a pair needs it. Samples present in only one file and not mapped are listed as a warning and not
 compared.
@@ -119,15 +122,19 @@ another ploidy, contradicting VCF records. Those make the affected locus
 
 The Python API offers each stage of §4 as a function over iterators, so a user can, for example,
 filter VCF records between reading and grouping, or read loci and genotypes without evaluating them.
-Above the stages, one function does what `compare` does, whichever the evaluator: it takes the
+Above the stages, one function does what `compare` does: it takes the
 two VCFs, the reference and the options of the table above, and yields the rows of §6 in position
 order, one per sample pair and compared locus, *reference in both* included; `--all-rows` only
 decides which of them the command line writes.
 
 ```python
-def compare(a: Path, b: Path, reference: Path, config: CompareConfig,
-            evaluator: Evaluator = PVC) -> Iterator[OutcomeRow]: ...
+def compare(a: Path, b: Path, reference: Path, config: CompareConfig = CompareConfig(), *,
+            finder_threads: int = DEFAULT_FINDER_THREADS) -> Iterator[OutcomeRow]: ...
 ```
+
+`--evaluator`, which would choose another evaluator of §8, and an `evaluator` parameter of
+`compare()` are left out until a wrapper of §8 exists (decided by the owner on 20 October 2026):
+adding them then breaks nobody, since their default is pvc_eval's own rules.
 
 `CompareConfig` holds `--regions`, `--strata`, `--str-regions`, `--sample-map`, `--ploidy-a`,
 `--ploidy-b`, `--phasing-cap`,
@@ -161,7 +168,7 @@ file B ──► VCF records, normalised ──┘           └──► anothe
 between them is fixed here, in `pvc_eval.segments`, and changed only in this spec:
 
 ```python
-class RegionType(Enum):
+class RegionType(StrEnum):
     GENERIC = "generic"
     STR = "str"
     STR_BUNDLE = "str-bundle"
@@ -340,7 +347,23 @@ is absent, and pvc_eval never needs pvc to run.
 **Reading.** A VCF, plain or gzipped (known by its first two bytes), is read as UTF-8 text; a
 byte-order mark at its start is dropped, as for a BED, and a gzip file cut short or damaged stops
 the run with a message naming the line it was reached at (decided by the owner on 19 October
-2026).
+2026). gzip checks its data only at the end of each compressed block, so damaged bytes reach the
+reader as text first, and a line made of them would be reported as a fault of the file's content,
+a column missing or records out of order: on 21 October 2026, of 5,087 copies of one gzipped VCF
+each with one byte changed, 4,202 were reported so. So when reading a gzipped VCF or BED stops at
+a fault of its content, the file is first checked whole, and if gzip finds it damaged, the run
+stops with a message saying that the file is damaged and must be compressed or copied again, in
+place of the fault of the line (decided by the owner on 21 October 2026). This holds also where
+the fault is found after the line is read, by sample pairing, `--strata` or `--regions`. A good
+file is read once; the whole check costs only a read that already failed. A BGZF file, as `bgzip`
+and `bcftools` write, ends with an empty block that marks its end; one cut between two blocks
+reads as a valid shorter file, so a BGZF file without that block is cut short, as htslib also
+says (found by the review of 21 October 2026).
+
+**The ALT `.`.** `.` alone as the ALT is a record with no ALT (below). `.` as one of several ALTs
+(`G A,.`) means nothing in VCF, and stops the run with an error naming the file and the line
+(decided by the owner on 21 October 2026); it was read as an allele. The rule holds also for a
+record with a symbolic ALT, `<DEL>,.`, which is otherwise skipped.
 
 **Checks.** Each VCF record's contig must be in the reference, its REF must lie within the contig's
 length, and records must come in the `.fai`'s contig order and by position; otherwise the run stops
@@ -358,7 +381,8 @@ with `A` or `G`, `A` only with codes that include `A`; so a reference that write
 site where the VCF has a plain base, as some references and callers do, is no difference, while a
 VCF made on another build still is (decided by the owner on 19 October 2026). The error says how
 many records of the file agreed with the reference before the failing one, which tells a wrong
-reference (none) from a damaged line (many). A record with a symbolic allele (§9) is checked only
+reference (none) from a damaged line (many); with `--regions`, only the records of the contigs it
+names are compared with the reference and counted (`doc/specs/regions_read.md`). A record with a symbolic allele (§9) is checked only
 for its contig and its order, not for its REF or its length, since it is skipped and nothing is
 compared from it (decided by the owner on 19 October 2026); a file made on another reference still
 stops at its first record with plain alleles.
@@ -718,7 +742,10 @@ Tab-separated, one row per sample pair and locus (without `--all-rows`, rows who
 | `records_a`, `records_b` | how many VCF records with an ALT of each file the locus holds |
 | `invalid_reason_a`, `invalid_reason_b` | for an invalid sample, whatever the outcome, the first that applies: `malformed GT`, `ploidy mismatch`, `contradicting records`; `.` otherwise |
 
-The summary (`--summary`) counts rows by outcome, kind and stratum.
+The summary (`--summary`) counts the rows, *reference in both* included, summed over all sample
+pairs: one line per outcome and stratum, one column per kind and a total (decided by the owner on
+20 October 2026, to be tried first). `doc/specs/compare.md` gives how each field of a row and of
+the summary is written.
 
 ## 7. Tests
 

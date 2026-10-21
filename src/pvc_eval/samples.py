@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence, Set
 from dataclasses import dataclass
 from pathlib import Path
 
+from pvc_eval._text_files import check_gzip_whole
 from pvc_eval.errors import PvcEvalInputError, format_count
 from pvc_eval.vcf import parse_vcf_samples
 
@@ -55,7 +56,8 @@ def make_sample_pairs(
     Raises PvcEvalInputError for a map that cannot be read or is not UTF-8, a line of the
     map that is not two non-empty fields, a sample of the map absent from its file, the
     same pair on two lines of the map, a name in two columns of a header when a pair needs
-    it, and no pair at all.
+    it, and no pair at all; when a VCF the fault is in is a damaged gzip file, it says so
+    in place of the fault (doc/spec.md §5.2).
     """
     samples_a = parse_vcf_samples(path_a)
     samples_b = parse_vcf_samples(path_b)
@@ -93,10 +95,14 @@ def _make_pairs_by_name(
         if name in columns_b
     )
     if not sample_pairs:
-        raise PvcEvalInputError(
+        error = PvcEvalInputError(
             f"{path_a} and {path_b} share no sample name. Pair their samples with"
             " --sample-map and run again."
         )
+        # doc/spec.md §5.2: a header garbled by a damaged gzip can name other samples.
+        check_gzip_whole(error, path_a, "VCF", None)
+        check_gzip_whole(error, path_b, "VCF", None)
+        raise error
     return sample_pairs
 
 
@@ -116,10 +122,11 @@ def _make_pairs_from_map(
         if len(fields) != 2 or "" in fields:
             raise _make_fields_error(sample_map, line_number, fields, path_a, path_b)
         name_a, name_b = fields
-        if name_a not in columns_a:
-            raise _make_absent_error(sample_map, line_number, name_a, path_a, columns_a)
-        if name_b not in columns_b:
-            raise _make_absent_error(sample_map, line_number, name_b, path_b, columns_b)
+        for name, path, columns in ((name_a, path_a, columns_a), (name_b, path_b, columns_b)):
+            if name not in columns:
+                error = _make_absent_error(sample_map, line_number, name, path, columns)
+                check_gzip_whole(error, path, "VCF", None)
+                raise error
         sample_pair = SamplePair(
             name_a=name_a,
             index_a=_find_column(path_a, columns_a, name_a),
@@ -195,11 +202,13 @@ def _find_column(path: Path, columns_by_name: Mapping[str, Sequence[int]], name:
         return columns[0]
     vcf_columns = [str(index + _FIRST_SAMPLE_COLUMN) for index in columns]
     how_many = "two" if len(columns) == 2 else str(len(columns))
-    raise PvcEvalInputError(
+    error = PvcEvalInputError(
         f"{path} names the sample {name} in {how_many} columns,"
         f" {', '.join(vcf_columns[:-1])} and {vcf_columns[-1]}. Rename one of them and"
         " run again."
     )
+    check_gzip_whole(error, path, "VCF", None)
+    raise error
 
 
 def _make_absent_error(
