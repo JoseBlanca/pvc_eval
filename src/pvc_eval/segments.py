@@ -64,6 +64,10 @@ class GenomeSegment:
 
 _MAX_PERIOD = 6  # the longest motif the finder scans, doc/specs/str_finder.md step 1
 
+# The largest match reward and mismatch penalty: pvc's scores are i32 (doc/specs/str_finder.md,
+# "Parameters").
+_MAX_SCORE = 2**31 - 1
+
 # Bases per block of step 1 (_find_candidates): each period takes the scores whose later
 # base is in a block at once, as arrays. On 4 Mb of chr1, tracemalloc's peak of
 # _find_candidates was 9.2 MiB with blocks of 4,096 bases, 11.8 MiB with 65,536 and 21.0 MiB
@@ -125,6 +129,8 @@ class StrFinderParameters:
         _check_period_range("min_period", "max_period", self)
         for name in ("match_reward", "mismatch_penalty", "scan_min_copies", "bundle_distance"):
             _check_at_least(name, getattr(self, name), 1)
+        for name in ("match_reward", "mismatch_penalty"):
+            _check_at_most(name, getattr(self, name), _MAX_SCORE)
         for name in ("contig_end_flank", "max_bundle_len"):
             _check_at_least(name, getattr(self, name), 0)
         _check_at_least("max_str_len", self.max_str_len, self.bundle_distance, "bundle_distance")
@@ -149,6 +155,12 @@ def _check_at_least(name: str, value: int, limit: int, limit_name: str | None = 
     if value < limit:
         shown = limit if limit_name is None else f"{limit_name} ({limit})"
         raise ValueError(f"{name} is {value!r}; it must be {shown} or more")
+
+
+def _check_at_most(name: str, value: int, limit: int) -> None:
+    """Raise ValueError when a parameter is over its limit."""
+    if value > limit:
+        raise ValueError(f"{name} is {value!r}; it must be {limit} or less")
 
 
 def _check_period_range(min_name: str, max_name: str, parameters: StrFinderParameters) -> None:

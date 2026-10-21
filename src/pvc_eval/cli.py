@@ -145,7 +145,7 @@ _FINDER_OPTIONS = (
         metavar="N",
         parse=int,
         help="what the scan adds to a repeat's score for a base equal to the one a period"
-        " before it; 1 or more",
+        " before it; 1 to 2147483647",
     ),
     _FinderOption(
         option="--scan-mismatch-penalty",
@@ -153,7 +153,7 @@ _FINDER_OPTIONS = (
         metavar="N",
         parse=int,
         help="what the scan takes from a repeat's score for a base that differs from the one"
-        " a period before it; 1 or more",
+        " a period before it; 1 to 2147483647",
     ),
     _FinderOption(
         option="--scan-min-copies",

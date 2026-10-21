@@ -103,6 +103,8 @@ _AT_THE_LIMIT: list[tuple[str, dict[str, object]]] = [
     ("max_period", {"max_period": 6}),
     ("match_reward", {"match_reward": 1}),
     ("mismatch_penalty", {"mismatch_penalty": 1}),
+    ("match_reward_largest", {"match_reward": 2**31 - 1}),
+    ("mismatch_penalty_largest", {"mismatch_penalty": 2**31 - 1}),
     ("scan_min_copies", {"scan_min_copies": 1}),
     ("copy_floors", {"copy_floors": _ZERO_FLOORS}),
     ("min_purity_zero", {"min_purity": 0.0}),
@@ -124,6 +126,8 @@ _PAST_THE_LIMIT: list[tuple[str, dict[str, object], str]] = [
     ("max_period", {"max_period": 7}, "max_period"),
     ("match_reward", {"match_reward": 0}, "match_reward"),
     ("mismatch_penalty", {"mismatch_penalty": 0}, "mismatch_penalty"),
+    ("match_reward_too_large", {"match_reward": 2**31}, "match_reward"),
+    ("mismatch_penalty_too_large", {"mismatch_penalty": 2**31}, "mismatch_penalty"),
     ("scan_min_copies", {"scan_min_copies": 0}, "scan_min_copies"),
     ("copy_floors_negative", {"copy_floors": (5, 5, 4, 4, 4, -1)}, "copy_floors"),
     ("copy_floors_five", {"copy_floors": (5, 5, 4, 4, 4)}, "copy_floors"),
@@ -1093,13 +1097,21 @@ def test_step_one_holds_little_when_the_stack_is_never_empty() -> None:
 
 
 @pytest.mark.slow
-def test_a_large_penalty_over_a_long_contig_gives_the_oracles_candidates() -> None:
-    # Over 1 Mb of random bases the running total from the contig's start falls by about
-    # 0.75 * penalty per base, past what 64 bits hold at a penalty of 2**44; only the span
-    # since the stack was last empty need fit. Found by a reviewer on 21 October 2026: step 1
-    # at 9cc05d4 raised OverflowError here.
+@pytest.mark.parametrize(
+    ("reward", "penalty"),
+    [(2**31 - 1, 1), (2**31 - 1, 2**31 - 1), (1, 2**31 - 1)],
+    ids=["largest_reward", "both_largest", "largest_penalty"],
+)
+def test_the_largest_scores_over_a_long_contig_give_the_oracles_candidates(
+    reward: int, penalty: int
+) -> None:
+    # The running totals restart from 0 where a block ends on an empty stack, so they hold
+    # at most the scores since: at the largest reward and a penalty of 1 the stack is never
+    # empty over 1 Mb of random bases, and the totals climb to about 0.25 * reward per base,
+    # 5 * 10**14 here. At 9cc05d4, which did not restart them, a penalty of 2**44 overflowed
+    # 64 bits over this contig.
     bases = _make_random_bases(seed=31, length=1_000_000, alphabet="ACGT")
-    parameters = StrFinderParameters(match_reward=2, mismatch_penalty=2**44)
+    parameters = StrFinderParameters(match_reward=reward, mismatch_penalty=penalty)
     expected = pure_python_step_one.find_candidates(bases, parameters)
     assert _find_candidates(bases, parameters) == expected
 

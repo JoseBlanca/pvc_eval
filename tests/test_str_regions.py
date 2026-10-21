@@ -891,6 +891,10 @@ def test_an_empty_output_path_stops_the_run(
             ["--scan-match-reward", "0"],
             "--scan-match-reward is 0; it must be 1 or more",
         ),
+        (
+            ["--scan-mismatch-penalty", "2147483648"],
+            "--scan-mismatch-penalty is 2147483648; it must be 2147483647 or less",
+        ),
     ],
     ids=[
         "min_purity",
@@ -903,6 +907,7 @@ def test_an_empty_output_path_stops_the_run(
         "max_str_len",
         "max_str_bundle_len",
         "scan_match_reward",
+        "scan_mismatch_penalty_too_large",
     ],
 )
 def test_an_option_outside_its_limit_stops_the_run_naming_the_option(
