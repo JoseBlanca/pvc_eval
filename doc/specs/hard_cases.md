@@ -1,7 +1,8 @@
 # pvc's hard cases — specification
 
-*Status: draft of 21 October 2026, for the owner's approval of each expected outcome. No test of
-it exists yet. It answers `doc/spec.md` Open 3 and replaces the text of its §7.5. It stands on
+*Status: draft of 21 October 2026, for the owner's approval of each expected outcome. Open 1 was
+answered by the owner on 21 October 2026: a `*` is measured against its record's REF as written
+(§6). No test of it exists yet. It answers `doc/spec.md` Open 3 and replaces the text of its §7.5. It stands on
 `doc/spec.md` §5.2 to §5.5, on `doc/specs/loci.md`, `doc/specs/reconciliation.md` and
 `doc/specs/compare.md`, and on the oracle of `doc/specs/respell.md` §8,
 `tests/haplotype_oracle.py`.*
@@ -17,13 +18,16 @@ table that `compare()` must give for it: the outcome, the locus, its locus allel
 of each file. Each becomes a test that runs `compare()` on a few hundred bases of the real
 reference.
 
-What is asked of the owner is to approve each expected outcome, since the check stands on them, and
-to answer Open 1 (§6). 32 of the 50 are *same genotype*: the files spell one haplotype differently
-and pvc_eval must see through it. 11 are *different* and 4 *same alleles, other genotype*, where the
-files truly disagree. 3 are *invalid in B*, file B being pvc's: pvc wrote what it meant to be the
-same haplotypes as file A, and a rule of `doc/spec.md` §5.4 makes them impossible. Two of these
-three, S11 and E5, follow from the rule Open 1 asks about; the third, E11, from the collision rule
-the owner chose on 19 October 2026. pvc_eval at commit 96b3938 gives every one of the 50 rows below.
+What is asked of the owner is to approve each expected outcome, since the check stands on them. 34
+of the 50 are *same genotype*: the files spell one haplotype differently and pvc_eval must see
+through it. 11 are *different* and 4 *same alleles, other genotype*, where the files truly
+disagree. One, E11, is *invalid in B*, file B being pvc's: pvc wrote what it meant to be TR's
+haplotypes, and the collision rule the owner chose on 19 October 2026 makes them impossible.
+
+pvc_eval at commit 96b3938 gives 48 of the 50 rows below. It gives *invalid in B* for S11 and E5,
+where pvc pads a record with a `*` allele, because it measures the `*` against the record's REF
+trimmed. The owner decided on 21 October 2026 that it is measured against the REF as written (§6),
+which makes both *same genotype*; `doc/spec.md` §5.4 and the code change first (§7).
 
 Positions are 1-based and inclusive, as in a VCF, unless they are called excerpt positions.
 
@@ -50,20 +54,26 @@ the caller. A case with no GIAB file takes the files in the order the case names
 
 ### How the expected rows were made
 
-Each expected row was worked out twice, and the two agree on all 50:
+Each expected row was worked out twice, under the rules of `doc/spec.md` at commit 96b3938, and
+the two agree on all 50:
 
 1. **From the haplotypes.** For each file, the oracle of `doc/specs/respell.md` §8, which rebuilds
-haplotypes from the records without pvc_eval's reconciliation, gave the sample's possible genotypes
-over the stretches its records span. Joined with the reference between them, these are the possible
-genotypes over the locus. The outcome came from them by the rules of `doc/spec.md` §5.5, in a script
-written for this and apart from `pvc_eval.evaluate`. 2. **From `compare()`**, on the excerpt and the
-two VCF files, with the default `CompareConfig` and `finder_threads=0`.
+   haplotypes from the records without pvc_eval's reconciliation, gave the sample's possible
+   genotypes over the stretches its records span. Joined with the reference between them, these
+   are the possible genotypes over the locus. The outcome came from them by the rules of
+   `doc/spec.md` §5.5, in a script written for this and apart from `pvc_eval.evaluate`.
+2. **From `compare()`**, on the excerpt and the two VCF files, with the default `CompareConfig` and
+   `finder_threads=0`.
+
+Then the owner changed the rule for a `*` in a padded record (§6), which changes the rows of S11 and
+E5 and no other. Their expected rows are those of the oracle with that rule, worked by this spec's
+writer and again by its reviewer; `compare()` will give them once the code follows the rule (§7).
 
 The oracle and pvc_eval read records by the rules of §5.4, with one difference: the oracle counts a
 `*` as covered only by an edit as written, where pvc_eval also counts every placement of a deletion.
 No case here turns on it: with coverage as written only, all 50 rows are the same (worked by the
 spec's reviewer). So the oracle checks the reconciliation's code, not its rules. Where a rule gives
-a result that the file's caller did not mean, both give it, and the case says so (S11, E5, E11).
+a result that the file's caller did not mean, both give it, and the case says so (E11).
 
 Every record was read back from its file at the line named and compared with the case: POS, REF, ALT
 and the sample's GT, all 50 cases, no difference. An excerpt is a contig of its own, and the STR
@@ -130,20 +140,21 @@ the span of file A's insertion, every position the insertion could be written at
 pvc_eval compares what each file says over the whole locus, not over the repeat alone (`doc/spec.md`
 §5.3). pvc's tract scorer, which compares the repeat alone, counts it right.
 
-**Three cases are invalid in pvc's file, B, where pvc meant file A's haplotypes.**
+**A `*` in a padded record.** In S11 and E5 pvc writes a flank record with a `*` allele and with
+REF and ALT padded over bases they share. Normalising trims those bases (§5.2): in S11 the REF
+shrinks from 24760292–24760298 to 24760294–24760296, in E5 to the anchor base 104588961, and the
+deletion pvc meant to cover the `*` reaches neither. Measured against the trimmed REF, as
+`doc/spec.md` §5.4 says until now, the `*` is not covered and the sample is *invalid in B*.
+Measured against the REF as written, as the owner decided on 21 October 2026, the deletion covers
+it and both are *same genotype*. The cases expect the second.
 
-- S11 and E5: pvc writes a flank record with a `*` allele and with REF and ALT padded over bases
-  they share. Normalising trims those bases (§5.2), and the `*` is then measured against the trimmed
-  REF (§5.4): in S11 the REF shrinks from 24760292–24760298 to 24760294–24760296, in E5 to the
-  anchor base 104588961, and the deletion pvc meant to cover the `*` reaches neither. The sample is
-  *invalid in B*, with the reason `contradicting records`. Measured against the REF as written, both
-  would be *same genotype*; that is Open 1.
-- E11: pvc's two records, trimmed from the left first, give edits that collide as written. pvc meant
-  TR's haplotypes. The collision rule is the owner's of 19 October 2026 (`doc/spec.md` §7.4), and
-  this case stands on it.
+**A collision as written.** In E11 pvc's two records, trimmed from the left first, give edits that
+collide as written, and the sample is *invalid in B*. pvc meant TR's haplotypes. The collision rule
+is the owner's of 19 October 2026 (`doc/spec.md` §7.4), and this case stands on it.
 
-Of pvc-touch30's 53 records with a `*` allele, compared with TR over the same excerpts, these two
-(E5 and E11) are the only ones that make the sample invalid.
+Of pvc-touch30's 53 records with a `*` allele, compared with TR over the same excerpts, E5 and E11
+are the only ones that make the sample invalid under the rules until now, and E11 the only one
+under the rule decided.
 
 **Where the files truly disagree.** pvc's old repeat record keeps the wrong base (S4) or puts an
 insertion on one haplotype (S14); the touching-deletion change put a `*` on the wrong haplotype (E8)
@@ -187,7 +198,7 @@ S14). All in `/Users/jose/devel/pop_var_caller/`.
 | S8 | chr14:90749397–90749422 | GIAB-HG004 | pvc-300x-HG004 | same genotype | 3/4, 3/4 |
 | S9 | chr10:4853442–4853458 | GIAB-HG004 | pvc-300x-HG004 | same genotype | 1/2, 1/2 |
 | S10 | chr20:48207407–48207436 | GIAB-HG004 | pvc-300x-HG004 | same genotype | 3/4, 3/4 |
-| S11 | chr8:24760287–24760317 | GIAB-HG004 | pvc-300x-HG004 | invalid in B | 0/1, . |
+| S11 | chr8:24760287–24760317 | GIAB-HG004 | pvc-300x-HG004 | same genotype | 2/3, 2/3 |
 | S12 | chr4:28575007–28575040 | TR | pvc-main30 | same genotype | 1/2, 1/2 |
 | S13 | chr9:11024723–11024725 | GIAB-HG004 | pvc-explain30-HG004 | same genotype | 1/1, 1/1 |
 | S14 | chr9:11024723–11024725 | GIAB-HG004 | pvc-ng30-HG004 | different | 1/1, 1/2 |
@@ -206,7 +217,7 @@ GIAB file: file A is GATK, file B pvc.
 | E2 | chr13:31685219–31685246 | TR | pvc-touch30 | same genotype | 1/1, 1/1 |
 | E3 | chr20:3029116–3029159 | TR | pvc-touch30 | same genotype | 1/1, 1/1 |
 | E4 | chr20:3029115–3029159 | TR | pvc-base30 | same genotype | 1/1, 1/1 |
-| E5 | chr8:104588961–104588997 | TR | pvc-touch30 | invalid in B | 1/2, . |
+| E5 | chr8:104588961–104588997 | TR | pvc-touch30 | same genotype | 1/2, 1/2 |
 | E6 | chr12:13880994–13881016 | TR | pvc-touch30 | same genotype | 1/2, 1/2 |
 | E7 | chr12:13880994–13881016 | GIAB-HG002 | pvc-touch30 | different | 0/1, 2/4 |
 | E8 | chr4:98053533–98053546 | TR | pvc-touch30 | different | 0/1, 1/2 |
@@ -433,10 +444,10 @@ row  A 3/4  B 3/4  possible 2, 1  records 2, 1  -> same genotype
 ```
 
 **S11.** HG004. pvc writes the 2-base deletion as `TATACAC → TATAC,*` and the 4-base deletion in the
-repeat as a record of its own. Trimmed, the `*` record is `24760294 TAC → T,*`, whose REF is
-24760294–24760296, and no placement of the 4-base deletion (24760297–24760301 at most) deletes a
-position of it, so the `*` is not covered and the sample is invalid. pvc meant GIAB's second
-possible genotype (Open 1).
+repeat as a record of its own. The `*` record's REF as written is 24760292–24760298, and the 4-base
+deletion, as written at 24760298–24760301 or slid to 24760297–24760300, deletes a position of it,
+so it covers the `*`: pvc's one possible genotype is GIAB's second. Trimmed, the REF would be
+24760294–24760296, which no placement deletes, and the sample would be invalid (§6).
 
 ```
 excerpt  chr8:24760150-24760450, 301 bases; excerpt position = position - 24760149; sample HG004
@@ -449,8 +460,8 @@ locus    chr8:24760287-24760317 (excerpt 138-168), kind STR; STR regions: 247602
   1  AAAAATATATATATATATATATATA
   2  AAAAATATACATATATATATATATATA
   3  AAAAATATACATATATATATATATATATA
-possible genotypes  A: 0/1, 2/3   B: none
-row  A 0/1  B .  possible 2, 0  records 2, 2  -> invalid in B, contradicting records
+possible genotypes  A: 0/1, 2/3   B: 2/3
+row  A 2/3  B 2/3  possible 2, 1  records 2, 2  -> same genotype
 ```
 
 **S12.** TR writes three phased records across an STR bundle, pvc one record over the bundle,
@@ -570,9 +581,10 @@ row  A 1/1  B 1/1  possible 1, 2  records 4, 2  -> same genotype
 ```
 
 **E5.** pvc writes the 18-base deletion in the repeat record and turns the insertion record into
-`ACGACGCCGA → ACGACGCCGACGCCGA,*`. Trimmed, the `*` record is `104588961 A → ACGACGC,*`, whose REF
-is its anchor base alone, which no placement of the deletion deletes: the sample is invalid. pvc
-meant TR's haplotypes (Open 1).
+`ACGACGCCGA → ACGACGCCGACGCCGA,*`. The `*` record's REF as written is 104588961–104588970, which
+the 18-base deletion, at 104588966–104588983 as written, deletes in part, so it covers the `*` and
+pvc gives TR's haplotypes. Trimmed, the record would be `104588961 A → ACGACGC,*`, whose REF is
+its anchor base alone, which no placement deletes, and the sample would be invalid (§6).
 
 ```
 excerpt  chr8:104588825-104589125, 301 bases; excerpt position = position - 104588824; sample HG002
@@ -584,8 +596,8 @@ locus    chr8:104588961-104588997 (excerpt 137-173), kind STR; STR regions: 1045
   0  ACGACGCCGACGCCGCCGCCGCCGCCGCCGCCGCCGC
   1  ACGACGCCGCCGCCGCCGC
   2  ACGACGCCGACGCCGACGCCGCCGCCGCCGCCGCCGCCGCCGC
-possible genotypes  A: 1/2   B: none
-row  A 1/2  B .  possible 1, 0  records 2, 2  -> invalid in B, contradicting records
+possible genotypes  A: 1/2   B: 1/2
+row  A 1/2  B 1/2  possible 1, 1  records 2, 2  -> same genotype
 ```
 
 **E6.** pvc writes the deletion across the repeat's right edge in the repeat record and the flank
@@ -1105,14 +1117,15 @@ named by its case, S1 to O5, in pytest's report. The cases themselves are litera
 each file as VCF lines in excerpt positions, each with its original line beside it as a comment; the
 sample's name; and the expected row. Each test:
 
-1. writes the excerpt as a FASTA with its `.fai`, and the two VCF files, to `tmp_path`; 2. checks
-the haplotypes with the oracle: the possible genotypes `tests/haplotype_oracle.py` gives each file
-over the locus are the case's, as sequences, or none for a file whose sample is invalid; 3. runs
-`compare()` with the default `CompareConfig` and `finder_threads=0`, and checks that it yields the
-case's rows, one for these cases, field by field: the locus (0-based and half-open in `OutcomeRow`),
-the kind, the STR regions with their types and motifs, the outcome, the locus alleles, both reported
-genotypes, both counts of possible genotypes, both invalid reasons and both counts of records. QUAL
-and GQ are not checked, since the cases set them.
+1. writes the excerpt as a FASTA with its `.fai`, and the two VCF files, to `tmp_path`;
+2. checks the haplotypes with the oracle: the possible genotypes `tests/haplotype_oracle.py` gives
+   each file over the locus are the case's, as sequences, or none for a file whose sample is
+   invalid;
+3. runs `compare()` with the default `CompareConfig` and `finder_threads=0`, and checks that it
+   yields the case's rows, one for these cases, field by field: the locus (0-based and half-open in
+   `OutcomeRow`), the kind, the STR regions with their types and motifs, the outcome, the locus
+   alleles, both reported genotypes, both counts of possible genotypes, both invalid reasons and
+   both counts of records. QUAL and GQ are not checked, since the cases set them.
 
 Step 2 needs the oracle to give its possible genotypes, which it now uses only inside
 `check_same_haplotypes`. It gains one public function, in the tests and not in `pvc_eval`:
@@ -1136,8 +1149,7 @@ invalid, and raises `ValueError` when a window crosses the stretch's ends or the
 **Each test can fail.** The plan shows the test failing before it is trusted, at each of its two
 checks: the oracle's, with an ALT of file B changed by one base in a case that is *same genotype*;
 and `compare()`'s, with the oracle's literal left as it is and one field of the expected row
-changed, the outcome of one case and one locus allele of another. The `*` of S11 replaced by `0`
-gives *same genotype* and fails both.
+changed, the outcome of one case and one locus allele of another.
 
 **The excerpts against the reference.** Two more tests read each excerpt's stretch from a reference
 and check that it is the case's bases, and that the STR regions of each locus are those the STR
@@ -1149,55 +1161,46 @@ E12 to E16, from the FASTA that `PVC_EVAL_TOMATO` names, the SL4.0 chromosomes a
 is skipped on its own, with a message naming its variable, when the variable is not set or names no
 file, as `tests/test_compare_real.py` is. The 50 tests of the cases need neither.
 
-## 6. Open points
+## 6. A `*` is measured against its record's REF as written
 
-**Open 1. Whether a `*` is measured against the REF as written.** pvc writes a flank record padded
-over bases its REF and ALTs share, and a `*` in it means "the haplotype's bases of this REF, as
-written, are deleted by another record". pvc_eval trims the record before it asks whether a deletion
-covers the `*` (`doc/spec.md` §5.2, §5.4; `doc/specs/reconciliation.md` §4.2), and in S11 and E5
-trimming removes exactly the bases the deletion reaches. The sample is invalid where pvc meant the
-other file's haplotypes. In pvc-touch30, E5 is the one record of 53 with a `*` allele that trimming
-leaves uncovered; S11 is pvc-300x-HG004's one `*` record. Three answers:
+The owner decided on 21 October 2026, answering Open 1 of this spec's draft, that a deletion covers
+a `*` when one of its placements deletes a position of the `*` record's REF as the file wrote it,
+before trimming (§5.2), and no longer of the trimmed REF. A `*` names the bases of the REF its
+caller wrote, whichever side the caller padded, and pvc pads such records on purpose
+(`doc/devel/ng/spec/str_edge_deletion_alleles.md` §6). The rest of the rule stands: the placements
+of a deletion, the other edits that cover a `*` as written, and a haplotype `.` at a record, which
+might carry any of its ALTs.
 
-- **Keep the rule.** S11 and E5 stay *invalid in B*, with B's genotype `.` and its reason
-  `contradicting records`. A caller's padded `*` record is judged by its trimmed REF, as every other
-  record is judged by its trimmed alleles. Nothing changes in pvc_eval. A pvc file is then read as
-  pvc means it only where its `*` record, trimmed, still shares a position with a placement of the
-  deletion; in S11 no spelling of the 2-base deletion does, so pvc would have to write the two
-  haplotypes in one record.
-- **Measure a `*` against the REF as written.** A deletion covers a `*` when one of its placements
-  deletes a position of the `*` record's REF as the file wrote it, before trimming. S11 and E5
-  become *same genotype*, with the same locus alleles: S11 reports `2/3` and `2/3`, B with one
-  possible genotype, and E5 `1/2` and `1/2`. Every other case here keeps its row, and so do
-  `doc/specs/reconciliation.md` R1 and R2, whose `*` records are not padded (worked with a copy of
-  the oracle changed so, on S11, E5, E2, E3, E6 and S1). It costs a change to `doc/spec.md` §5.4 and
-  to `doc/specs/reconciliation.md` §4.2, a field of `VcfRecord` for the stretch its REF covered as
-  written, which it does not keep now, and the same change in `pvc_eval.reconcile` and in the
-  oracle; and in `doc/specs/respell.md`, whose rule for which records a re-spelling keeps whole,
-  "touches the REF of a record with a `*` ALT", and whose `*` records added under deletions both use
-  the trimmed REF, so that a re-spelling could otherwise change whether a padded `*` is covered. A
-  file could then cover a `*` with a deletion of a flank base it padded the REF over, which no
-  caller here does.
-- **Trim a `*` record from the left first**, as an edit is trimmed (§5.4), and measure the `*`
-  against what is left. S11's REF becomes 24760296–24760298 and E5's the base 104588970, which the
-  deletions reach: both become *same genotype*, with the rows of the second answer, and no other
-  case changes (run by the spec's reviewer). It costs the same changes as the second answer, since
-  `VcfRecord` keeps the alleles trimmed from the right first and the left trimming needs them as
-  written. It does not count the bases a caller padded on the left as part of the REF, but it works
-  here only because pvc pads on the left: a record padded on the right would still lose the bases
-  the deletion reaches.
+The options not taken were to keep measuring against the trimmed REF, which leaves S11 and E5
+*invalid in B*, and to trim a `*` record from the left first, as an edit is trimmed, which gives
+the same rows here but works only for a record padded on the left.
 
-The recommendation is the second answer, to measure against the REF as written: a `*` names the
-bases of the REF its caller wrote, whichever side the caller padded, and pvc writes such records on
-purpose (`str_edge_deletion_alleles.md` §6). Meanwhile the tests expect *invalid in B* for S11 and
-E5, as the spec says now; the other answer changes their expected rows in this spec first, then the
-code.
+What the decision changes in the cases: S11 and E5 become *same genotype*, with the same locus
+alleles as before, S11 reporting `2/3` and `2/3` and E5 `1/2` and `1/2`. No other case changes,
+and neither do `doc/specs/reconciliation.md` R1 and R2, whose `*` records are not padded: worked
+with a copy of the oracle changed so, by this spec's writer on S11, E5, E2, E3, E6 and S1, and by
+its reviewer on every case. A file can now cover a `*` with a deletion of a flank base it padded
+the REF over; no case here does.
 
-## 7. Changes to `doc/spec.md`
+## 7. Changes to other specs and to the code
 
-Once the owner approves the cases, in a commit of its own: §7.5 becomes a pointer to this spec, and
-§10 marks Open 3 answered, with the date. The answer to Open 1, if it changes the rule, is a change
-to §5.4 in a commit of its own before any code.
+In this order, each in a commit of its own, the specs before the code:
+
+1. `doc/spec.md` §5.4: the `*` rule above, in place of "a position of the `*` record's normalised
+   REF". `doc/specs/reconciliation.md` §4.2 likewise, with a case of a padded `*` record made from
+   S11's records over their own few bases.
+2. `doc/specs/respell.md`: where it judges which records a re-spelling keeps whole by "the REF of a
+   record with a `*` ALT", that REF is the REF as written, so that no re-spelling changes whether a
+   padded `*` is covered. The `*` records it adds under deletions are written unpadded, so their
+   REF as written is their REF trimmed.
+3. The code: `VcfRecord` keeps the stretch its REF covered as written, which it does not now, and
+   `pvc_eval.reconcile`, `tests/haplotype_oracle.py` and the re-spelling program measure a `*`
+   against it. The tests of R1 and R2 pass unchanged, and the new case of `reconciliation.md` is
+   added.
+4. Once the owner approves the cases, `doc/spec.md` §7.5 becomes a pointer to this spec, and §10
+   marks Open 3 answered, with the date.
+
+The tests of S11 and E5 fail until step 3 is done; the plan puts it before the tests of the cases.
 
 ## 8. Not in this spec
 
