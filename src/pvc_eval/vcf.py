@@ -116,7 +116,8 @@ class VcfRecord:
     genotypes: one per sample, in the order of the header; a MALFORMED_GT or OTHER_PLOIDY_GT
         keeps no GQ.
     line_number: the 1-based line of the file, for messages.
-    span: the record's span (§5.2), 0-based and half-open; it always contains the REF.
+    span: the record's span (§5.2), 0-based and half-open; it always contains the REF, and
+        for a record with a `*` allele, its REF as written too.
     written_ref: the stretch the REF covers as the file wrote it, before trimming, 0-based
         and half-open, against which a `*` is measured (doc/specs/reconciliation.md §4.2),
         where it differs from the REF; it always contains the REF. None stands for the REF,
@@ -894,7 +895,8 @@ def _parse_line_without_samples(
 ) -> tuple[_PlacedLine, bool, bool]:
     """A line normalised and with its span, its sample columns left to parse; whether its
     QUAL was taken as absent for not being a number; and whether its span was cut to its
-    REF for reaching more than span_limit beyond it.
+    REF, and with a `*` allele to its REF and its REF as written, for reaching more than
+    span_limit beyond it.
 
     pos: the 0-based position of POS; the REF lies within the contig and agrees with the
     reference.
@@ -909,6 +911,11 @@ def _parse_line_without_samples(
     # doc/specs/reconciliation.md §7: None where the REF lost no base to trimming, so that
     # the field costs nothing on most records.
     written_ref = None if len(trimmed[0]) == len(fields[3]) else (pos, pos + len(fields[3]))
+    # §5.2: a `*` names the bases of the REF as written, so the deletion that covers it must
+    # fall in its locus, also when the limit cut the span back. The span then starts at pos
+    # at the earliest, so the records held for their order are let go as before.
+    if written_ref is not None and _SPANNING_DELETION in trimmed[1:]:
+        span = (min(span[0], pos), max(span[1], written_ref[1]))
     qual = _parse_qual(fields[5])
     placed_line = _PlacedLine(
         pos=pos,

@@ -186,15 +186,15 @@ CASES = {
         result_a=CONTRADICTING,
         span_limit=2,
     ),
-    # R10, reference 10-21 TATACACATAGG, locus 12-19: the `*` record is normalised to
-    # 12 TAC T,*, and both placements of the deletion of 16-19, as written or slid to 15-18,
-    # delete a position of its REF as written, 10-16.
+    # R10, reference 10-21 TATACACATAGG, locus 10-19: the `*` record is normalised to
+    # 12 TAC T,*, its span holds its REF as written, 10-16, and both placements of the
+    # deletion of 16-19, as written or slid to 15-18, delete a position of it.
     "R10-padded-star-covered-by-its-ref-as-written": Case(
         ref_start=10,
         bases="TATACACATAGG",
-        locus=(12, 19),
+        locus=(10, 19),
         lines_a=["10 TATACAC TATAC,* 1/2", "15 ACATA A 0/1"],
-        alleles=("TACACATA", "TACATA", "TACA"),
+        alleles=("TATACACATA", "TATACATA", "TATACA"),
         result_a=((1, 2),),
     ),
     # Beside R10, reference 9-21 GTATACACATAGG, locus 10-17: the deletion of the A at 11 lies
@@ -396,7 +396,8 @@ def test_reconcile_gives_the_locus_alleles_and_possible_genotypes_of_each_case(
 
 
 # §7: a record built without written_ref is measured against its REF, here R10's normalised
-# REF, 12-14, which no placement of the deletion reaches.
+# REF, 12-14, which no placement of the deletion reaches. The records keep the spans parse_vcf
+# gives them, so the locus is R10's, 10-19.
 def test_reconcile_measures_a_star_without_written_ref_against_its_ref(
     case_files: CaseFiles,
 ) -> None:
@@ -407,11 +408,11 @@ def test_reconcile_measures_a_star_without_written_ref_against_its_ref(
             reference, ["10 TATACAC TATAC,* 1/2", "15 ACATA A 0/1"]
         )
     )
-    locus = make_locus((12, 19), records)
+    locus = make_locus((10, 19), records)
 
     reconciled = reconcile(locus, get_locus_bases(reference, locus), pair_samples(1))
 
-    assert reconciled.alleles == ("TACACATA",)
+    assert reconciled.alleles == ("TATACACATA",)
     assert reconciled.results_a == {0: CONTRADICTING}
 
 

@@ -391,6 +391,21 @@ def test_a_deletion_in_the_left_padding_of_a_star_record_covers_it(
     assert comparison == HaplotypeComparison(num_windows=1, num_linked_pairs=0, num_over_cap=0)
 
 
+# doc/spec.md §5.2: the deletion of the T at 10 lies next to the `*` record's REF as
+# written, 10-16, and a base apart from its trimmed span, 12-17, so only a span that holds
+# the REF as written puts both in one window, where the deletion covers the `*`.
+def test_a_star_record_and_a_deletion_in_its_padding_share_a_window(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    reference = case_files.write_reference(9, "GTATACACATAGG")
+    lines_a = ["9 GT G 0/1", "10 TATACAC TATAC,* 0/2"]
+    lines_b = ["9 GT G 0|1"]
+
+    comparison = _check(tmp_path, reference, lines_a, lines_b)
+
+    assert comparison == HaplotypeComparison(num_windows=1, num_linked_pairs=0, num_over_cap=0)
+
+
 def test_ploidy_1_gives_one_genotype_a_window(case_files: CaseFiles, tmp_path: Path) -> None:
     reference = case_files.write_reference(1, _O_BASES)
     # The records at 2-3 and 4 lie next to each other: one window, 2-4.

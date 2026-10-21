@@ -1307,6 +1307,33 @@ def test_written_ref_left_out_is_none_which_stands_for_the_ref() -> None:
     assert record.written_ref is None
 
 
+# doc/spec.md §5.2: TAC -> T at 12-14, 1-based, slides to 16-17, so it spans 12-17; with
+# the `*`, the span holds the REF as written, 10-16, too, also once a limit of 1 cuts the
+# span to the trimmed REF.
+@pytest.mark.parametrize(
+    ("alts", "span_limit", "span"),
+    [
+        ("TATAC,*", SpanLimit(), (9, 17)),
+        ("TATAC,*", SpanLimit(span_limit=1), (9, 16)),
+        ("TATAC", SpanLimit(), (11, 17)),
+    ],
+    ids=["star-record", "star-record-cut-by-the-limit", "no-star"],
+)
+def test_span_of_a_record_with_a_star_holds_its_ref_as_written(
+    tmp_path: Path,
+    make_reference: MakeReference,
+    alts: str,
+    span_limit: SpanLimit,
+    span: tuple[int, int],
+) -> None:
+    reference = make_reference(*make_fasta({"chr1": "GGGGGGGGGTATACACATAGG"}))
+    path = write_vcf(tmp_path, f"chr1\t10\t.\tTATACAC\t{alts}\t.\t.\t.\tGT\t1/2\t0/0\n")
+
+    (record,) = parse_vcf(path, reference, **span_limit)
+
+    assert record.span == span
+
+
 @pytest.mark.parametrize(
     ("written_ref", "message"),
     [
