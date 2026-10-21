@@ -23,8 +23,9 @@ from tests.hard_cases import HARD_CASES, HardCase, Reference
 
 from pvc_eval.compare import compare
 from pvc_eval.fasta import IndexedFasta
-from pvc_eval.outcome import OutcomeRow
+from pvc_eval.outcome import LocusGenotype, OutcomeRow
 from pvc_eval.segments import GenomeSegment, RegionType, segment_contig
+from pvc_eval.vcf import MISSING
 
 # doc/specs/hard_cases.md §1: the bases the STR regions of an excerpt are compared over,
 # beyond each end of it.
@@ -97,6 +98,23 @@ def _get_checked_fields(row: OutcomeRow) -> dict[str, object]:
     return {field: getattr(row, field) for field in _CHECKED_FIELDS}
 
 
+def _make_sequences(
+    alleles: Sequence[str], possible_genotypes: frozenset[LocusGenotype] | None
+) -> frozenset[tuple[str, ...]] | None:
+    """Possible genotypes as indices into alleles turned into the sorted tuples of
+    sequences the oracle gives; None stays None."""
+    if possible_genotypes is None:
+        return None
+    sequence_genotypes = set()
+    for genotype in possible_genotypes:
+        sequences = []
+        for index in genotype:
+            assert index is not MISSING, "no case has a missing haplotype"
+            sequences.append(alleles[index])
+        sequence_genotypes.add(tuple(sorted(sequences)))
+    return frozenset(sequence_genotypes)
+
+
 @pytest.mark.parametrize("case", HARD_CASES, ids=[case.name for case in HARD_CASES])
 def test_hard_case(case: HardCase, tmp_path: Path) -> None:
     reference = tmp_path / "excerpt.fa"
@@ -112,7 +130,10 @@ def test_hard_case(case: HardCase, tmp_path: Path) -> None:
         ]
     rows = list(compare(vcf_a, vcf_b, reference, finder_threads=0))
 
-    assert oracle_genotypes == [case.oracle_genotypes_a, case.oracle_genotypes_b]
+    assert oracle_genotypes == [
+        _make_sequences(case.alleles, case.possible_genotypes_a),
+        _make_sequences(case.alleles, case.possible_genotypes_b),
+    ]
     # One row for each of these cases, compared field by field, so that a failure names the
     # fields that differ.
     assert len(rows) == 1, rows

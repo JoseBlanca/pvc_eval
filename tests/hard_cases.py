@@ -3,10 +3,9 @@
 Every value comes from §4.5, which the owner approved on 21 October 2026: the excerpt and
 its offset, the sample, the records of each file, the locus with its kind and STR regions,
 the locus alleles, the possible genotypes of each file and the row. The line of §4.5 that
-gives the excerpt, each record and the locus stands beside it as a comment; the records,
-the locus and the STR regions are written in excerpt positions, the position minus the
-offset. The possible genotypes, which §4.5 gives as indices into the locus alleles, are
-written as the sequences those indices name, since the oracle gives sequences.
+gives the excerpt, each record, the locus, the possible genotypes and the row stands
+beside it as a comment; the records, the locus and the STR regions are written in excerpt
+positions, the position minus the offset.
 
 The 301 bases of each excerpt were read on 21 October 2026 from the stretch §4.5 gives,
 with pvc_eval.fasta.IndexedFasta, in upper case: E12 to E16 from SL4.0,
@@ -50,8 +49,9 @@ class HardCase:
     locus_1based: the locus in excerpt positions, 1-based and inclusive.
     kind, str_regions_1based: the locus's kind and its STR regions.
     alleles: the locus alleles, REF first.
-    oracle_genotypes_a, oracle_genotypes_b: the possible genotypes of each file over the
-        locus, each a sorted tuple of sequences; None for a sample that is invalid.
+    possible_genotypes_a, possible_genotypes_b: the possible genotypes of each file over
+        the locus, each as indices into alleles, sorted; None for a sample that is
+        invalid.
     outcome, genotype_a, genotype_b, possible_a, possible_b, records_a, records_b,
         invalid_reason_a, invalid_reason_b: the row, in the fields of OutcomeRow.
     """
@@ -68,8 +68,8 @@ class HardCase:
     kind: Kind
     str_regions_1based: tuple[StrRegion1Based, ...]
     alleles: tuple[str, ...]
-    oracle_genotypes_a: frozenset[tuple[str, ...]] | None
-    oracle_genotypes_b: frozenset[tuple[str, ...]] | None
+    possible_genotypes_a: frozenset[LocusGenotype] | None
+    possible_genotypes_b: frozenset[LocusGenotype] | None
     outcome: Outcome
     genotype_a: LocusGenotype | None
     genotype_b: LocusGenotype | None
@@ -111,16 +111,10 @@ HARD_CASES = (
             "CGTGTGTGTGTGTGTGTGTGTGTGTGAAAGAGAGAGAG",
             "CGTGTGTGTGTGTGTGTGTGTGTGAAAGAGAGAGAG",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("CGTGTGTGTGTGTGTGTGTGTGTGAAAGAGAGAGAG", "CGTGTGTGTGTGTGTGTGTGTGTGTGAAAGAGAGAGAG"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("CGTGTGTGTGTGTGTGTGTGTGTGAAAGAGAGAGAG", "CGTGTGTGTGTGTGTGTGTGTGTGTGAAAGAGAGAGAG"),
-            }
-        ),
+        # possible genotypes  A: 1/2   B: 1/2
+        possible_genotypes_a=frozenset({(1, 2)}),
+        possible_genotypes_b=frozenset({(1, 2)}),
+        # row  A 1/2  B 1/2  possible 1, 1  records 2, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 2),
         genotype_b=(1, 2),
@@ -162,16 +156,10 @@ HARD_CASES = (
             "GTAAACTTTTTTTTTTG",
             "GAAACTTTTTTTTTTTTTTTTTG",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("GAAACTTTTTTTTTTTTTTTTTG", "GAAACTTTTTTTTTTTTTTTTTG"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("GAAACTTTTTTTTTTTTTTTTTG", "GAAACTTTTTTTTTTTTTTTTTG"),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 1/1
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(1, 1)}),
+        # row  A 1/1  B 1/1  possible 1, 1  records 4, 2  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 1),
         genotype_b=(1, 1),
@@ -211,16 +199,10 @@ HARD_CASES = (
             "CAAAAAAAAAAAAAAAAAAAAAAG",
             "CAAAAAAAAAAAAAAAAAAAAAAA",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("CAAAAAAAAAAAAAAAAAAAAAAG", "CAAAAAAAAAAAAAAAAAAAAAAG"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("CAAAAAAAAAAAAAAAAAAAAAAA", "CAAAAAAAAAAAAAAAAAAAAAAG"),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 1/2
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(1, 2)}),
+        # row  A 1/1  B 1/2  possible 1, 1  records 1, 2  -> different
         outcome=Outcome.DIFFERENT,
         genotype_a=(1, 1),
         genotype_b=(1, 2),
@@ -260,16 +242,10 @@ HARD_CASES = (
             "AAAAAAATAAAAATAAAAAATAAAAAA",
             "AAAAAAATAAGAATAAAAAATAAAAAA",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("AAAAAAAAAAAAGAATAAAAAATAAAAAA", "AAAAAAATAAAAATAAAAAATAAAAAA"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("AAAAAAAAAAAAGAATAAAAAATAAAAAA", "AAAAAAATAAGAATAAAAAATAAAAAA"),
-            }
-        ),
+        # possible genotypes  A: 0/1   B: 0/2
+        possible_genotypes_a=frozenset({(0, 1)}),
+        possible_genotypes_b=frozenset({(0, 2)}),
+        # row  A 0/1  B 0/2  possible 1, 1  records 2, 1  -> different
         outcome=Outcome.DIFFERENT,
         genotype_a=(0, 1),
         genotype_b=(0, 2),
@@ -308,16 +284,10 @@ HARD_CASES = (
             "AAAAAAAAAAAAGAATAAAAAATAAAAAA",
             "AAAAAAATAAAAATAAAAAATAAAAAA",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("AAAAAAAAAAAAGAATAAAAAATAAAAAA", "AAAAAAATAAAAATAAAAAATAAAAAA"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("AAAAAAAAAAAAGAATAAAAAATAAAAAA", "AAAAAAATAAAAATAAAAAATAAAAAA"),
-            }
-        ),
+        # possible genotypes  A: 0/1   B: 0/1
+        possible_genotypes_a=frozenset({(0, 1)}),
+        possible_genotypes_b=frozenset({(0, 1)}),
+        # row  A 0/1  B 0/1  possible 1, 1  records 2, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(0, 1),
         genotype_b=(0, 1),
@@ -355,16 +325,10 @@ HARD_CASES = (
             "TATAATAATAATAATAATAATAATAATAATAATAAT",
             "TATAATAATAATAATAATAATAATAAT",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("TATAATAATAATAATAATAATAATAAT", "TATAATAATAATAATAATAATAATAAT"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("TATAATAATAATAATAATAATAATAAT", "TATAATAATAATAATAATAATAATAAT"),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 1/1
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(1, 1)}),
+        # row  A 1/1  B 1/1  possible 1, 1  records 1, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 1),
         genotype_b=(1, 1),
@@ -406,26 +370,10 @@ HARD_CASES = (
             "AAAAATTCTGTAACCGTGTGTGTATGTGTGTGTGTGTGTGTGTGT",
             "AAAAATTCTGTAACCGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                (
-                    "AAAAATTCTGTAACCGTGTGTGTGTGTGTATGTGTGTGTGTGTGTGTGTGT",
-                    "AAAAATTCTGTAACCGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
-                ),
-                (
-                    "AAAAATTCTGTAACCGTGTGTGTATGTGTGTGTGTGTGTGTGTGT",
-                    "AAAAATTCTGTAACCGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
-                ),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                (
-                    "AAAAATTCTGTAACCGTGTGTGTGTGTGTATGTGTGTGTGTGTGTGTGTGT",
-                    "AAAAATTCTGTAACCGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
-                ),
-            }
-        ),
+        # possible genotypes  A: 1/2, 3/4   B: 1/2
+        possible_genotypes_a=frozenset({(1, 2), (3, 4)}),
+        possible_genotypes_b=frozenset({(1, 2)}),
+        # row  A 1/2  B 1/2  possible 2, 1  records 2, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 2),
         genotype_b=(1, 2),
@@ -467,17 +415,10 @@ HARD_CASES = (
             "TTTTTCTTTTTTTTTTTTTTTTTG",
             "TTTTTCTTTTTTTTTTTTTTTTTTT",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("TTTTTCTTTTTTTTTTTTTTTTTT", "TTTTTCTTTTTTTTTTTTTTTTTTG"),
-                ("TTTTTCTTTTTTTTTTTTTTTTTG", "TTTTTCTTTTTTTTTTTTTTTTTTT"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("TTTTTCTTTTTTTTTTTTTTTTTG", "TTTTTCTTTTTTTTTTTTTTTTTTT"),
-            }
-        ),
+        # possible genotypes  A: 1/2, 3/4   B: 3/4
+        possible_genotypes_a=frozenset({(1, 2), (3, 4)}),
+        possible_genotypes_b=frozenset({(3, 4)}),
+        # row  A 3/4  B 3/4  possible 2, 1  records 2, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(3, 4),
         genotype_b=(3, 4),
@@ -517,16 +458,10 @@ HARD_CASES = (
             "CAAAAAAAAAAAAAAAC",
             "CAAAAAAAAAAAAAAC",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("CAAAAAAAAAAAAAAAC", "CAAAAAAAAAAAAAAC"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("CAAAAAAAAAAAAAAAC", "CAAAAAAAAAAAAAAC"),
-            }
-        ),
+        # possible genotypes  A: 1/2   B: 1/2
+        possible_genotypes_a=frozenset({(1, 2)}),
+        possible_genotypes_b=frozenset({(1, 2)}),
+        # row  A 1/2  B 1/2  possible 1, 1  records 2, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 2),
         genotype_b=(1, 2),
@@ -568,17 +503,10 @@ HARD_CASES = (
             "GCACACACACACACACACACACACGT",
             "GCACACACACACACACACACACACACACACAT",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("GCACACACACACACACACACACACACACACGT", "GCACACACACACACACACACACACAT"),
-                ("GCACACACACACACACACACACACACACACAT", "GCACACACACACACACACACACACGT"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("GCACACACACACACACACACACACACACACAT", "GCACACACACACACACACACACACGT"),
-            }
-        ),
+        # possible genotypes  A: 1/2, 3/4   B: 3/4
+        possible_genotypes_a=frozenset({(1, 2), (3, 4)}),
+        possible_genotypes_b=frozenset({(3, 4)}),
+        # row  A 3/4  B 3/4  possible 2, 1  records 2, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(3, 4),
         genotype_b=(3, 4),
@@ -620,17 +548,10 @@ HARD_CASES = (
             "AAAAATATACATATATATATATATATA",
             "AAAAATATACATATATATATATATATATA",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("AAAAATATACACATATATATATATATATATA", "AAAAATATATATATATATATATATA"),
-                ("AAAAATATACATATATATATATATATA", "AAAAATATACATATATATATATATATATA"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("AAAAATATACATATATATATATATATA", "AAAAATATACATATATATATATATATATA"),
-            }
-        ),
+        # possible genotypes  A: 0/1, 2/3   B: 2/3
+        possible_genotypes_a=frozenset({(0, 1), (2, 3)}),
+        possible_genotypes_b=frozenset({(2, 3)}),
+        # row  A 2/3  B 2/3  possible 2, 1  records 2, 2  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(2, 3),
         genotype_b=(2, 3),
@@ -671,16 +592,10 @@ HARD_CASES = (
             "ACACACCCCCCCCCACACACACACACACACAC",
             "ACACACCCCCCCACACACACACACACAG",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("ACACACCCCCCCACACACACACACACAG", "ACACACCCCCCCCCACACACACACACACACAC"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("ACACACCCCCCCACACACACACACACAG", "ACACACCCCCCCCCACACACACACACACACAC"),
-            }
-        ),
+        # possible genotypes  A: 1/2   B: 1/2
+        possible_genotypes_a=frozenset({(1, 2)}),
+        possible_genotypes_b=frozenset({(1, 2)}),
+        # row  A 1/2  B 1/2  possible 1, 1  records 3, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 2),
         genotype_b=(1, 2),
@@ -719,16 +634,10 @@ HARD_CASES = (
             "CAC",
             "CAGAG",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("CAGAG", "CAGAG"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("CAGAG", "CAGAG"),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 1/1
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(1, 1)}),
+        # row  A 1/1  B 1/1  possible 1, 1  records 2, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 1),
         genotype_b=(1, 1),
@@ -769,16 +678,10 @@ HARD_CASES = (
             "CAGAG",
             "CAG",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("CAGAG", "CAGAG"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("CAG", "CAGAG"),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 1/2
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(1, 2)}),
+        # row  A 1/1  B 1/2  possible 1, 1  records 2, 2  -> different
         outcome=Outcome.DIFFERENT,
         genotype_a=(1, 1),
         genotype_b=(1, 2),
@@ -816,16 +719,10 @@ HARD_CASES = (
             "AATAAAAAAAAAAA",
             "AAAAAAAAAAAA",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("AAAAAAAAAAAA", "AATAAAAAAAAAAA"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("AAAAAAAAAAAA", "AATAAAAAAAAAAA"),
-            }
-        ),
+        # possible genotypes  A: 0/1   B: 0/1
+        possible_genotypes_a=frozenset({(0, 1)}),
+        possible_genotypes_b=frozenset({(0, 1)}),
+        # row  A 0/1  B 0/1  possible 1, 1  records 1, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(0, 1),
         genotype_b=(0, 1),
@@ -865,16 +762,10 @@ HARD_CASES = (
             "AAAAACTATATATATATATATATATATA",
             "AAAAAGTATATATATATATATATA",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("AAAAAGTATATATATATATATATA", "AAAAAGTATATATATATATATATA"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("AAAAAGTATATATATATATATATA", "AAAAAGTATATATATATATATATA"),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 1/1
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(1, 1)}),
+        # row  A 1/1  B 1/1  possible 1, 1  records 2, 2  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 1),
         genotype_b=(1, 1),
@@ -916,22 +807,10 @@ HARD_CASES = (
             "GATTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTG",
             "GGTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                (
-                    "GGTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG",
-                    "GGTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG",
-                ),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                (
-                    "GGTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG",
-                    "GGTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG",
-                ),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 1/1
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(1, 1)}),
+        # row  A 1/1  B 1/1  possible 1, 1  records 4, 2  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 1),
         genotype_b=(1, 1),
@@ -975,26 +854,10 @@ HARD_CASES = (
             "GTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG",
             "GGGTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                (
-                    "GGTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG",
-                    "GGTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG",
-                ),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                (
-                    "GGTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG",
-                    "GGTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG",
-                ),
-                (
-                    "GGGTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG",
-                    "GTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG",
-                ),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 1/1, 2/3
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(1, 1), (2, 3)}),
+        # row  A 1/1  B 1/1  possible 1, 2  records 4, 2  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 1),
         genotype_b=(1, 1),
@@ -1035,16 +898,10 @@ HARD_CASES = (
             "ACGACGCCGCCGCCGCCGC",
             "ACGACGCCGACGCCGACGCCGCCGCCGCCGCCGCCGCCGCCGC",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("ACGACGCCGACGCCGACGCCGCCGCCGCCGCCGCCGCCGCCGC", "ACGACGCCGCCGCCGCCGC"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("ACGACGCCGACGCCGACGCCGCCGCCGCCGCCGCCGCCGCCGC", "ACGACGCCGCCGCCGCCGC"),
-            }
-        ),
+        # possible genotypes  A: 1/2   B: 1/2
+        possible_genotypes_a=frozenset({(1, 2)}),
+        possible_genotypes_b=frozenset({(1, 2)}),
+        # row  A 1/2  B 1/2  possible 1, 1  records 2, 2  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 2),
         genotype_b=(1, 2),
@@ -1086,16 +943,10 @@ HARD_CASES = (
             "TTGTGTGTGTGTGTGTG",
             "TTGTGTGTGTGTGTGTGTGTGTGTGTGTG",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("TTGTGTGTGTGTGTGTG", "TTGTGTGTGTGTGTGTGTGTGTGTGTGTG"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("TTGTGTGTGTGTGTGTG", "TTGTGTGTGTGTGTGTGTGTGTGTGTGTG"),
-            }
-        ),
+        # possible genotypes  A: 1/2   B: 1/2
+        possible_genotypes_a=frozenset({(1, 2)}),
+        possible_genotypes_b=frozenset({(1, 2)}),
+        # row  A 1/2  B 1/2  possible 1, 1  records 3, 2  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 2),
         genotype_b=(1, 2),
@@ -1138,17 +989,10 @@ HARD_CASES = (
             "TTGTGTGTGTGTGTGTGTGTGTGTGTGCG",
             "TTGTGTGTGTGTGTGTGTGTGTGTGTGTG",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("TTGTGTGTGTGTGTGTGTGTGCG", "TTGTGTGTGTGTGTGTGTGTGTG"),
-                ("TTGTGTGTGTGTGTGTG", "TTGTGTGTGTGTGTGTGTGTGTGTGTGCG"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("TTGTGTGTGTGTGTGTG", "TTGTGTGTGTGTGTGTGTGTGTGTGTGTG"),
-            }
-        ),
+        # possible genotypes  A: 0/1, 2/3   B: 2/4
+        possible_genotypes_a=frozenset({(0, 1), (2, 3)}),
+        possible_genotypes_b=frozenset({(2, 4)}),
+        # row  A 0/1  B 2/4  possible 2, 1  records 2, 2  -> different
         outcome=Outcome.DIFFERENT,
         genotype_a=(0, 1),
         genotype_b=(2, 4),
@@ -1189,16 +1033,10 @@ HARD_CASES = (
             "TAATAAAAAAA",
             "TAAAAAAAAAA",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("TAACAAAAAAAAAA", "TAATAAAAAAA"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("TAAAAAAAAAA", "TAATAAAAAAA"),
-            }
-        ),
+        # possible genotypes  A: 0/1   B: 1/2
+        possible_genotypes_a=frozenset({(0, 1)}),
+        possible_genotypes_b=frozenset({(1, 2)}),
+        # row  A 0/1  B 1/2  possible 1, 1  records 2, 2  -> different
         outcome=Outcome.DIFFERENT,
         genotype_a=(0, 1),
         genotype_b=(1, 2),
@@ -1240,17 +1078,10 @@ HARD_CASES = (
             "TAACAATAAAAAAA",
             "TAAAAAAAAAA",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("TAACAAAAAAAAAA", "TAATAAAAAAA"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("TAACAAAAAAAAAA", "TAATAAAAAAA"),
-                ("TAAAAAAAAAA", "TAACAATAAAAAAA"),
-            }
-        ),
+        # possible genotypes  A: 0/1   B: 0/1, 2/3
+        possible_genotypes_a=frozenset({(0, 1)}),
+        possible_genotypes_b=frozenset({(0, 1), (2, 3)}),
+        # row  A 0/1  B 0/1  possible 1, 2  records 2, 2  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(0, 1),
         genotype_b=(0, 1),
@@ -1291,16 +1122,10 @@ HARD_CASES = (
             "AAGAGAGTGAGAGAGAGAGAGAGAGAGAGA",
             "AGAGAGAGAGAGAGAGAGAGAGA",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("AAGAGAGTGAGAGAGAGAGAGAGAGAGAGA", "AAGAGAGTGAGAGAGAGAGAGAGAGAGAGA"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("AAGAGAGTGAGAGAGAGAGAGAGAGAGAGA", "AGAGAGAGAGAGAGAGAGAGAGA"),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 1/2
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(1, 2)}),
+        # row  A 1/1  B 1/2  possible 1, 1  records 2, 2  -> different
         outcome=Outcome.DIFFERENT,
         genotype_a=(1, 1),
         genotype_b=(1, 2),
@@ -1341,12 +1166,10 @@ HARD_CASES = (
             "CATATATATATATATATATATATATATATATATAA",
             "CATATATATATATATATATATATAA",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("CATATATATATATATATATATATAA", "CATATATATATATATATATATATATATATATATAA"),
-            }
-        ),
-        oracle_genotypes_b=None,
+        # possible genotypes  A: 1/2   B: none
+        possible_genotypes_a=frozenset({(1, 2)}),
+        possible_genotypes_b=None,
+        # row  A 1/2  B .  possible 1, 0  records 2, 2  -> invalid in B, contradicting records
         outcome=Outcome.INVALID_IN_B,
         genotype_a=(1, 2),
         genotype_b=None,
@@ -1386,16 +1209,10 @@ HARD_CASES = (
             "TTTTTTTTTTTTATA",
             "TTTTTTTTTTTTTA",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("TTTTTTTTTTTTTA", "TTTTTTTTTTTTTA"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("TTTTTTTTTTTTTA", "TTTTTTTTTTTTTA"),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 1/1
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(1, 1)}),
+        # row  A 1/1  B 1/1  possible 1, 1  records 2, 2  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 1),
         genotype_b=(1, 1),
@@ -1435,16 +1252,10 @@ HARD_CASES = (
             "TTTTTTTTTTTTATA",
             "TTTTTTTTTTTTTA",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("TTTTTTTTTTTTTA", "TTTTTTTTTTTTTA"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("TTTTTTTTTTTTATA", "TTTTTTTTTTTTTA"),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 0/1
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(0, 1)}),
+        # row  A 1/1  B 0/1  possible 1, 1  records 2, 2  -> same alleles, other genotype
         outcome=Outcome.SAME_ALLELES,
         genotype_a=(1, 1),
         genotype_b=(0, 1),
@@ -1484,16 +1295,10 @@ HARD_CASES = (
             "TTTTTTTTTTTTATA",
             "TTTTTTTTTTTTTTA",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("TTTTTTTTTTTTTTA", "TTTTTTTTTTTTTTA"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("TTTTTTTTTTTTATA", "TTTTTTTTTTTTTTA"),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 0/1
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(0, 1)}),
+        # row  A 1/1  B 0/1  possible 1, 1  records 2, 2  -> same alleles, other genotype
         outcome=Outcome.SAME_ALLELES,
         genotype_a=(1, 1),
         genotype_b=(0, 1),
@@ -1535,16 +1340,10 @@ HARD_CASES = (
             "CAAAAAAAAAAAA",
             "CAAAAAAAA",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("CAAAAAAAAAAAA", "CAAAAAAAAAAAA"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("CAAAAAAAA", "CAAAAAAAAAAAA"),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 1/2
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(1, 2)}),
+        # row  A 1/1  B 1/2  possible 1, 1  records 3, 2  -> different
         outcome=Outcome.DIFFERENT,
         genotype_a=(1, 1),
         genotype_b=(1, 2),
@@ -1586,16 +1385,10 @@ HARD_CASES = (
             "CAAAAAAAAAAAAAAAAA",
             "CAAAAAAAAAAAA",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("CAAAAAAAAAAAAAAAAA", "CAAAAAAAAAAAAAAAAA"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("CAAAAAAAAAAAA", "CAAAAAAAAAAAA"),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 2/2
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(2, 2)}),
+        # row  A 1/1  B 2/2  possible 1, 1  records 3, 2  -> different
         outcome=Outcome.DIFFERENT,
         genotype_a=(1, 1),
         genotype_b=(2, 2),
@@ -1633,16 +1426,10 @@ HARD_CASES = (
             "ATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
             "ATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("ATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT", "ATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("ATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT", "ATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT"),
-            }
-        ),
+        # possible genotypes  A: 0/1   B: 0/1
+        possible_genotypes_a=frozenset({(0, 1)}),
+        possible_genotypes_b=frozenset({(0, 1)}),
+        # row  A 0/1  B 0/1  possible 1, 1  records 1, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(0, 1),
         genotype_b=(0, 1),
@@ -1680,16 +1467,10 @@ HARD_CASES = (
             "ATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
             "ATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("ATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT", "ATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("ATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT", "ATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT"),
-            }
-        ),
+        # possible genotypes  A: 0/1   B: 0/1
+        possible_genotypes_a=frozenset({(0, 1)}),
+        possible_genotypes_b=frozenset({(0, 1)}),
+        # row  A 0/1  B 0/1  possible 1, 1  records 1, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(0, 1),
         genotype_b=(0, 1),
@@ -1728,22 +1509,10 @@ HARD_CASES = (
             "AAAAACAGTCTATCATCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTATCATTTTT",
             "AAAAACAGTCTATCATCTATCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTATCTATCATTTTT",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                (
-                    "AAAAACAGTCTATCATCTATCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTATCTATCATTTTT",
-                    "AAAAACAGTCTATCATCTATCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTATCTATCATTTTT",
-                ),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                (
-                    "AAAAACAGTCTATCATCTATCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTATCTATCATTTTT",
-                    "AAAAACAGTCTATCATCTATCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTATCTATCATTTTT",
-                ),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 1/1
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(1, 1)}),
+        # row  A 1/1  B 1/1  possible 1, 1  records 2, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 1),
         genotype_b=(1, 1),
@@ -1783,22 +1552,10 @@ HARD_CASES = (
             "AAAAACAGTCTATCATCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTATCATTTTT",
             "AAAAACAGTCTATCATCTATCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTATCTATCATTTTT",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                (
-                    "AAAAACAGTCTATCATCTATCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTATCTATCATTTTT",
-                    "AAAAACAGTCTATCATCTATCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTATCTATCATTTTT",
-                ),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                (
-                    "AAAAACAGTCTATCATCTATCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTATCTATCATTTTT",
-                    "AAAAACAGTCTATCATCTATCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTATCTATCATTTTT",
-                ),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 1/1
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(1, 1)}),
+        # row  A 1/1  B 1/1  possible 1, 1  records 2, 2  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 1),
         genotype_b=(1, 1),
@@ -1837,22 +1594,10 @@ HARD_CASES = (
             "CAGATAGATAGATAGATAGATAGATAGATAGG",
             "CAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGA",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                (
-                    "CAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGA",
-                    "CAGATAGATAGATAGATAGATAGATAGATAGG",
-                ),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                (
-                    "CAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGA",
-                    "CAGATAGATAGATAGATAGATAGATAGATAGG",
-                ),
-            }
-        ),
+        # possible genotypes  A: 0/1   B: 0/1
+        possible_genotypes_a=frozenset({(0, 1)}),
+        possible_genotypes_b=frozenset({(0, 1)}),
+        # row  A 0/1  B 0/1  possible 1, 1  records 2, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(0, 1),
         genotype_b=(0, 1),
@@ -1893,26 +1638,10 @@ HARD_CASES = (
             "CAGATAGATAGATAGATAGATAGATAGATAGA",
             "CAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGG",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                (
-                    "CAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGA",
-                    "CAGATAGATAGATAGATAGATAGATAGATAGG",
-                ),
-                (
-                    "CAGATAGATAGATAGATAGATAGATAGATAGA",
-                    "CAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGG",
-                ),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                (
-                    "CAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGA",
-                    "CAGATAGATAGATAGATAGATAGATAGATAGG",
-                ),
-            }
-        ),
+        # possible genotypes  A: 0/1, 2/3   B: 0/1
+        possible_genotypes_a=frozenset({(0, 1), (2, 3)}),
+        possible_genotypes_b=frozenset({(0, 1)}),
+        # row  A 0/1  B 0/1  possible 2, 1  records 2, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(0, 1),
         genotype_b=(0, 1),
@@ -1953,16 +1682,10 @@ HARD_CASES = (
             "CTTTTTTGTTTTGTTTTGTTTTGTTTT",
             "TTTTTTGTTGTTGTTTTGTTTTGTTTT",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("CTTTTTTGTTTTGTTTTGTTTTGTTTT", "TTTTTTGTTGTTGTTTTGTTTTGTTTT"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("CTTTTTTGTTTTGTTTTGTTTTGTTTT", "TTTTTTGTTGTTGTTTTGTTTTGTTTT"),
-            }
-        ),
+        # possible genotypes  A: 0/1   B: 0/1
+        possible_genotypes_a=frozenset({(0, 1)}),
+        possible_genotypes_b=frozenset({(0, 1)}),
+        # row  A 0/1  B 0/1  possible 1, 1  records 4, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(0, 1),
         genotype_b=(0, 1),
@@ -2003,17 +1726,10 @@ HARD_CASES = (
             "TCTTTTTTGTTGTTGTTTTGTTTTGTTTT",
             "TTTTTTTGTTTTGTTTTGTTTTGTTTT",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("TCTTTTTTGTTTTGTTTTGTTTTGTTTT", "TTTTTTTGTTGTTGTTTTGTTTTGTTTT"),
-                ("TCTTTTTTGTTGTTGTTTTGTTTTGTTTT", "TTTTTTTGTTTTGTTTTGTTTTGTTTT"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("TCTTTTTTGTTTTGTTTTGTTTTGTTTT", "TTTTTTTGTTGTTGTTTTGTTTTGTTTT"),
-            }
-        ),
+        # possible genotypes  A: 0/1, 2/3   B: 0/1
+        possible_genotypes_a=frozenset({(0, 1), (2, 3)}),
+        possible_genotypes_b=frozenset({(0, 1)}),
+        # row  A 0/1  B 0/1  possible 2, 1  records 2, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(0, 1),
         genotype_b=(0, 1),
@@ -2052,16 +1768,10 @@ HARD_CASES = (
             "GTATATATATATATATG",
             "ATATATATATATATATATATATATATATATATATATATATATGTATG",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("ATATATATATATATATATATATATATATATATATATATATATGTATG", "GTATATATATATATATG"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("ATATATATATATATATATATATATATATATATATATATATATGTATG", "GTATATATATATATATG"),
-            }
-        ),
+        # possible genotypes  A: 0/1   B: 0/1
+        possible_genotypes_a=frozenset({(0, 1)}),
+        possible_genotypes_b=frozenset({(0, 1)}),
+        # row  A 0/1  B 0/1  possible 1, 1  records 2, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(0, 1),
         genotype_b=(0, 1),
@@ -2102,22 +1812,10 @@ HARD_CASES = (
             "TACACACACACACACACACACACACACACACACACACACAT",
             "TACACACACACACACACACACACACACACACACACACACACACACAC",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                (
-                    "TACACACACACACACACACACACACACACACACACACACACACACAC",
-                    "TACACACACACACACACACACACACACACACACACACACAT",
-                ),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                (
-                    "TACACACACACACACACACACACACACACACACACACACACACACAC",
-                    "TACACACACACACACACACACACACACACACACACACACAT",
-                ),
-            }
-        ),
+        # possible genotypes  A: 1/2   B: 1/2
+        possible_genotypes_a=frozenset({(1, 2)}),
+        possible_genotypes_b=frozenset({(1, 2)}),
+        # row  A 1/2  B 1/2  possible 1, 1  records 3, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 2),
         genotype_b=(1, 2),
@@ -2159,26 +1857,10 @@ HARD_CASES = (
             "TACACACACACACACACACACACACACACACACACACACAC",
             "TACACACACACACACACACACACACACACACACACACACACACACAT",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                (
-                    "TACACACACACACACACACACACACACACACACACACACACACACAC",
-                    "TACACACACACACACACACACACACACACACACACACACAT",
-                ),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                (
-                    "TACACACACACACACACACACACACACACACACACACACACACACAC",
-                    "TACACACACACACACACACACACACACACACACACACACAT",
-                ),
-                (
-                    "TACACACACACACACACACACACACACACACACACACACAC",
-                    "TACACACACACACACACACACACACACACACACACACACACACACAT",
-                ),
-            }
-        ),
+        # possible genotypes  A: 1/2   B: 1/2, 3/4
+        possible_genotypes_a=frozenset({(1, 2)}),
+        possible_genotypes_b=frozenset({(1, 2), (3, 4)}),
+        # row  A 1/2  B 1/2  possible 1, 2  records 1, 2  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 2),
         genotype_b=(1, 2),
@@ -2219,22 +1901,10 @@ HARD_CASES = (
             "GCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCA",
             "CCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCA",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                (
-                    "GCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCA",
-                    "GCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCA",
-                ),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                (
-                    "CCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCA",
-                    "GCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCA",
-                ),
-            }
-        ),
+        # possible genotypes  A: 1/2   B: 2/3
+        possible_genotypes_a=frozenset({(1, 2)}),
+        possible_genotypes_b=frozenset({(2, 3)}),
+        # row  A 1/2  B 2/3  possible 1, 1  records 2, 1  -> different
         outcome=Outcome.DIFFERENT,
         genotype_a=(1, 2),
         genotype_b=(2, 3),
@@ -2272,22 +1942,10 @@ HARD_CASES = (
             "AACACACACACACACACACACACACACACACACACACACACA",
             "AACACACACACACACACACACACACACACACACACACACA",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                (
-                    "AACACACACACACACACACACACACACACACACACACACA",
-                    "AACACACACACACACACACACACACACACACACACACACACA",
-                ),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                (
-                    "AACACACACACACACACACACACACACACACACACACACA",
-                    "AACACACACACACACACACACACACACACACACACACACA",
-                ),
-            }
-        ),
+        # possible genotypes  A: 0/1   B: 1/1
+        possible_genotypes_a=frozenset({(0, 1)}),
+        possible_genotypes_b=frozenset({(1, 1)}),
+        # row  A 0/1  B 1/1  possible 1, 1  records 1, 1  -> same alleles, other genotype
         outcome=Outcome.SAME_ALLELES,
         genotype_a=(0, 1),
         genotype_b=(1, 1),
@@ -2326,22 +1984,10 @@ HARD_CASES = (
             "ATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
             "ATTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                (
-                    "ATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
-                    "ATTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
-                ),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                (
-                    "ATTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
-                    "ATTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
-                ),
-            }
-        ),
+        # possible genotypes  A: 0/1   B: 2/2
+        possible_genotypes_a=frozenset({(0, 1)}),
+        possible_genotypes_b=frozenset({(2, 2)}),
+        # row  A 0/1  B 2/2  possible 1, 1  records 1, 1  -> different
         outcome=Outcome.DIFFERENT,
         genotype_a=(0, 1),
         genotype_b=(2, 2),
@@ -2379,22 +2025,10 @@ HARD_CASES = (
             "TTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
             "TTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                (
-                    "TTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
-                    "TTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
-                ),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                (
-                    "TTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
-                    "TTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT",
-                ),
-            }
-        ),
+        # possible genotypes  A: 0/1   B: 1/1
+        possible_genotypes_a=frozenset({(0, 1)}),
+        possible_genotypes_b=frozenset({(1, 1)}),
+        # row  A 0/1  B 1/1  possible 1, 1  records 1, 1  -> same alleles, other genotype
         outcome=Outcome.SAME_ALLELES,
         genotype_a=(0, 1),
         genotype_b=(1, 1),
@@ -2435,22 +2069,10 @@ HARD_CASES = (
             "GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCTTCCTCCTCCTCCTCCTC",
             "GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCTTCCTCCTCCTCCTC",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                (
-                    "GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCTTCCTCCTCCTCCTC",
-                    "GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCTTCCTCCTCCTCCTC",
-                ),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                (
-                    "GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCTTCCTCCTCCTCCTC",
-                    "GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCTTCCTCCTCCTCCTC",
-                ),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 1/1
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(1, 1)}),
+        # row  A 1/1  B 1/1  possible 1, 1  records 4, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 1),
         genotype_b=(1, 1),
@@ -2500,34 +2122,10 @@ HARD_CASES = (
             "GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCCTCTTCCTCCTCCTCCTC",
             "GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCCTCCTCCTCCTCCTC",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                (
-                    "GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCTTCCTCCTCCTCCTC",
-                    "GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCTTCCTCCTCCTCCTC",
-                ),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                (
-                    "GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCCTCCTCCTCCTCCTCCTC",
-                    "GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCTTCCTCCTCCTCCTC",
-                ),
-                (
-                    "GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCCTCTTCCTCCTCCTCCTC",
-                    "GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCCTCCTCCTCCTCCTC",
-                ),
-                (
-                    "GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCTTCCTCCTCCTCCTC",
-                    "GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCCTCCTCCTCCTCCTCCTC",
-                ),
-                (
-                    "GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCCTCCTCCTCCTCCTC",
-                    "GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCCTCTTCCTCCTCCTCCTC",
-                ),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 1/6, 2/3, 4/5, 7/8
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(1, 6), (2, 3), (4, 5), (7, 8)}),
+        # row  A 1/1  B 1/6  possible 1, 4  records 4, 3  -> different
         outcome=Outcome.DIFFERENT,
         genotype_a=(1, 1),
         genotype_b=(1, 6),
@@ -2565,16 +2163,10 @@ HARD_CASES = (
             "AAAAAAAAAAAAG",
             "AAAAAAAAAAAAAGAAAG",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("AAAAAAAAAAAAAGAAAG", "AAAAAAAAAAAAAGAAAG"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("AAAAAAAAAAAAAGAAAG", "AAAAAAAAAAAAAGAAAG"),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 1/1
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(1, 1)}),
+        # row  A 1/1  B 1/1  possible 1, 1  records 1, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 1),
         genotype_b=(1, 1),
@@ -2612,16 +2204,10 @@ HARD_CASES = (
             "AAAAAAAAAAAAG",
             "AAAAAAAAAAAAAGAAAG",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("AAAAAAAAAAAAAGAAAG", "AAAAAAAAAAAAAGAAAG"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("AAAAAAAAAAAAAGAAAG", "AAAAAAAAAAAAAGAAAG"),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 1/1
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(1, 1)}),
+        # row  A 1/1  B 1/1  possible 1, 1  records 1, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 1),
         genotype_b=(1, 1),
@@ -2659,16 +2245,10 @@ HARD_CASES = (
             "AAAAAAAAAAAAG",
             "AAAAAAAAAAAAAGAAAG",
         ),
-        oracle_genotypes_a=frozenset(
-            {
-                ("AAAAAAAAAAAAAGAAAG", "AAAAAAAAAAAAAGAAAG"),
-            }
-        ),
-        oracle_genotypes_b=frozenset(
-            {
-                ("AAAAAAAAAAAAAGAAAG", "AAAAAAAAAAAAAGAAAG"),
-            }
-        ),
+        # possible genotypes  A: 1/1   B: 1/1
+        possible_genotypes_a=frozenset({(1, 1)}),
+        possible_genotypes_b=frozenset({(1, 1)}),
+        # row  A 1/1  B 1/1  possible 1, 1  records 1, 1  -> same genotype
         outcome=Outcome.SAME_GENOTYPE,
         genotype_a=(1, 1),
         genotype_b=(1, 1),
