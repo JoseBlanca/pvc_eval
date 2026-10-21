@@ -1030,15 +1030,42 @@ def test_alt_dot_written_with_more_than_one_character_stops_the_run(
     )
 
 
+# The end of an error for an ALT outside ASCII, after the place of the ALT or the character.
+ALT_DAMAGED = (
+    "a character outside ASCII, which is no base, so the line looks damaged. Correct it or"
+    " remove it, and run again."
+)
+# An insertion of 100,000 characters whose last is ß.
+LONG_ALT = "G" + "A" * 99_998 + "ß"
+
+
 @pytest.mark.parametrize(
-    ("alts", "letter"),
+    ("alts", "found"),
     [
-        ("ß", "'ß' (U+00DF)"),
-        ("Aß", "'ß' (U+00DF)"),
-        ("A,ß", "'ß' (U+00DF)"),
-        ("ß,*", "'ß' (U+00DF)"),
-        (f"A{COMBINING_ACUTE}", f"'{COMBINING_ACUTE}' (U+0301)"),
-        (f"A{NO_BREAK_SPACE}", f"'{NO_BREAK_SPACE}' (U+00A0)"),
+        ("ß", "ALT 'ß' (U+00DF) of chr1:1 holds"),
+        ("Aß", "ALT 'Aß' (U+00DF) of chr1:1 holds"),
+        ("A,ß", "ALT 'A,ß' (U+00DF) of chr1:1 holds"),
+        ("ß,*", "ALT 'ß,*' (U+00DF) of chr1:1 holds"),
+        (f"A{COMBINING_ACUTE}", f"ALT 'A{COMBINING_ACUTE}' (U+0301) of chr1:1 holds"),
+        (f"A{NO_BREAK_SPACE}", f"ALT 'A{NO_BREAK_SPACE}' (U+00A0) of chr1:1 holds"),
+        (f"ß{COMBINING_ACUTE}", f"ALT 'ß{COMBINING_ACUTE}' (U+00DF, U+0301) of chr1:1 holds"),
+        ("ßAß", "ALT 'ßAß' (U+00DF) of chr1:1 holds"),
+        (
+            "ACGTACGTACGTACGTACGß",
+            "ALT 'ACGTACGTACGTACGTACGß' (U+00DF) of chr1:1 holds",
+        ),
+        (
+            "ACGTACGTACGTACGTACGTß",
+            "ALT 1 of chr1:1 (21 characters) has 'ß' (U+00DF) at character 21,",
+        ),
+        (
+            LONG_ALT,
+            "ALT 1 of chr1:1 (100,000 characters) has 'ß' (U+00DF) at character 100,000,",
+        ),
+        (
+            f"A,{'C' * 30}ß",
+            "ALT 2 of chr1:1 (31 characters) has 'ß' (U+00DF) at character 31,",
+        ),
     ],
     ids=[
         "alone",
@@ -1047,23 +1074,25 @@ def test_alt_dot_written_with_more_than_one_character_stops_the_run(
         "beside_a_star",
         "combining_mark_after_a_base",
         "no_break_space_after_a_base",
+        "two_characters_outside_ascii",
+        "one_character_twice",
+        "column_of_20_characters_quoted_whole",
+        "column_of_21_characters_named_where",
+        "insertion_of_100000_characters",
+        "second_alt_of_a_long_column",
     ],
 )
-def test_alt_holding_a_letter_outside_ascii_stops_the_run(
-    tmp_path: Path, reference: IndexedFasta, alts: str, letter: str
+def test_alt_holding_a_character_outside_ascii_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta, alts: str, found: str
 ) -> None:
     # Upper-cased by Python's rules, ß would be the allele SS, and agree with another
-    # file's SS.
+    # file's SS. An ALT column of more than 20 characters is not written in the message.
     path = write_vcf(tmp_path, f"chr1\t1\t.\tG\t{alts}\t.\t.\t.\tGT\t0/1\t0/0\n")
 
     with pytest.raises(PvcEvalInputError) as raised:
         list(parse_vcf(path, reference))
 
-    assert str(raised.value) == (
-        f"{path}, line 3: ALT '{alts}' of chr1:1 holds {letter}, a character outside ASCII,"
-        " which is no base, so the line looks damaged. Correct it or remove it, and run"
-        " again."
-    )
+    assert str(raised.value) == f"{path}, line 3: {found} {ALT_DAMAGED}"
 
 
 def test_records_at_the_same_pos_both_come_out(tmp_path: Path, reference: IndexedFasta) -> None:

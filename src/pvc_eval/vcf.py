@@ -604,7 +604,7 @@ def _check_ref(
 
 # A REF of up to this many bases is written whole in its error, beside the reference's
 # bases; a longer one only where it first differs, so that a deletion of 5 kb does not put
-# two strings of 5 kb into the message.
+# two strings of 5 kb into the message. An ALT column outside ASCII follows the same limit.
 _MAX_REF_WRITTEN = 20
 
 
@@ -898,18 +898,31 @@ def _check_alt_letters(
     alt_field: str, contig: str, pos_1based: int, path: Path, line_number: int
 ) -> None:
     """§5.2: an ALT of bases that holds a character outside ASCII comes from a damaged file.
-    Python would upper-case `ß` to `SS`, which could agree with another file's `SS`.
+    Python would upper-case `ß` to `SS`, which could agree with another file's `SS`. An ALT
+    column of up to _MAX_REF_WRITTEN characters is written whole in the error, as a REF is;
+    a longer one only by the ALT and the place in it of its first such character.
 
     alt_field: the ALT column of a record with no symbolic allele, as written.
     """
     # Most columns are ASCII, which str.isascii tells at the speed of C.
     if alt_field.isascii():
         return
-    letter = next(letter for letter in alt_field if not letter.isascii())
+    if len(alt_field) <= _MAX_REF_WRITTEN:
+        found = f"ALT {_format_letters(alt_field)} of {contig}:{pos_1based} holds"
+    else:
+        alt_number, alt, index = next(
+            (alt_number, alt, index)
+            for alt_number, alt in enumerate(alt_field.split(","), start=1)
+            for index, character in enumerate(alt)
+            if not character.isascii()
+        )
+        found = (
+            f"ALT {alt_number} of {contig}:{pos_1based} ({len(alt):,} characters) has"
+            f" {_format_letters(alt[index])} at character {index + 1:,},"
+        )
     raise PvcEvalInputError(
-        f"{path}, line {line_number}: ALT '{alt_field}' of {contig}:{pos_1based} holds"
-        f" {_format_letters(letter)}, a character outside ASCII, which is no base, so the line"
-        " looks damaged. Correct it or remove it, and run again."
+        f"{path}, line {line_number}: {found} a character outside ASCII, which is no base, so"
+        " the line looks damaged. Correct it or remove it, and run again."
     )
 
 
