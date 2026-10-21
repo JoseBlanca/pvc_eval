@@ -11,6 +11,7 @@ missing: PVC_EVAL_GRCH38 for the 45 cases on GRCh38, PVC_EVAL_TOMATO for the fiv
 E12 to E16.
 """
 
+import dataclasses
 import os
 from collections.abc import Sequence
 from pathlib import Path
@@ -163,9 +164,10 @@ def _find_excerpt_problems(
 def _find_locus_str_regions(
     case: HardCase, widened: str, widened_start: int, directory: Path
 ) -> tuple[tuple[int, int, RegionType | None, str | None], ...]:
-    """The STR regions segment_contig finds inside a case's locus over the widened bases,
-    which start at widened_start of the contig, 0-based; in excerpt positions, 1-based and
-    inclusive, as the case gives them."""
+    """The STR regions segment_contig finds over the widened bases that overlap or touch a
+    case's locus, so that one that crosses an end of the locus is not missed; in excerpt
+    positions, 1-based and inclusive, as the case gives them. The widened bases start at
+    widened_start of the contig, 0-based."""
     fasta = directory / f"{case.name}.fa"
     write_fasta(fasta, {case.contig: widened})
     # An excerpt position p is the widened sequence's 0-based position p - 1 + shift.
@@ -176,9 +178,21 @@ def _find_locus_str_regions(
             (segment.start - shift + 1, segment.end - shift, segment.region_type, segment.motif)
             for segment in segment_contig(indexed_fasta, case.contig)
             if segment.region_type is not RegionType.GENERIC
-            and start_1based - 1 + shift <= segment.start
-            and segment.end <= end + shift
+            and segment.start <= end + shift
+            and start_1based - 1 + shift <= segment.end
         )
+
+
+def test_an_str_region_across_the_locus_end_is_found(tmp_path: Path) -> None:
+    # S1's locus narrowed to 145-160 inside its STR region 146-176, read over the excerpt
+    # alone: the region crosses the locus's end, and is reported, so that the excerpt test
+    # would see that the case gives no STR region.
+    s1 = next(case for case in HARD_CASES if case.name == "S1")
+    narrowed = dataclasses.replace(s1, locus_1based=(145, 160), str_regions_1based=())
+
+    str_regions = _find_locus_str_regions(narrowed, s1.bases, s1.offset, tmp_path)
+
+    assert str_regions == ((146, 176, RegionType.STR_BUNDLE, None),)
 
 
 def test_grch38_excerpts_are_the_references(tmp_path: Path) -> None:
