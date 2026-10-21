@@ -814,7 +814,7 @@ def _make_pos_error(pos: str, path: Path, line_number: int) -> PvcEvalInputError
 
 def _parse_alts(fields: list[str], path: Path, line_number: int) -> tuple[str, ...]:
     """The ALTs of a line, () for `.`, after checking that REF and every ALT hold
-    something, and that no ALT is `.` beside others (§5.2)."""
+    something, and that no ALT is `.`, or dots and spaces, beside others or alone (§5.2)."""
     if not fields[3]:
         raise PvcEvalInputError(
             f"{path}, line {line_number}: REF is empty, and it must hold at least one base."
@@ -829,15 +829,27 @@ def _parse_alts(fields: list[str], path: Path, line_number: int) -> tuple[str, .
             " must hold at least one base, and a record with no ALT has `.`. Correct the"
             " line or remove it, and run again."
         )
-    # A single breakend, `A.` or `.A`, is an ALT of its own and symbolic.
-    if "." in alts:
-        alts_without_dots = ",".join(alt for alt in alts if alt != ".")
+    # §5.2: `.` beside other ALTs means nothing, and so does `..` or `. `, which no
+    # breakend is either, since a single breakend, `A.` or `.A`, has a base beside its dot.
+    if not any(_is_dots(alt) for alt in alts):
+        return alts
+    if len(alts) == 1:
         raise PvcEvalInputError(
-            f"{path}, line {line_number}: ALT '{fields[4]}' holds `.` beside other alleles,"
-            " which VCF does not allow: `.` stands alone, for a record with no ALT. Write the"
-            f" ALT without the `.`, here '{alts_without_dots}', and run again."
+            f"{path}, line {line_number}: ALT '{fields[4]}' is neither an allele nor `.`, which"
+            " VCF writes alone, as one character, for a record with no ALT. Write the ALT as"
+            " `.`, or as the alleles it stands for, and run again."
         )
-    return alts
+    alts_without_dots = ",".join(alt for alt in alts if not _is_dots(alt))
+    raise PvcEvalInputError(
+        f"{path}, line {line_number}: ALT '{fields[4]}' holds `.` beside other alleles,"
+        " which VCF does not allow: `.` stands alone, for a record with no ALT. Write the"
+        f" ALT without the `.`, here '{alts_without_dots}', and run again."
+    )
+
+
+def _is_dots(alt: str) -> bool:
+    """Whether an ALT holds nothing but dots and spaces."""
+    return not alt.strip(". ")
 
 
 def _is_symbolic(alt: str) -> bool:

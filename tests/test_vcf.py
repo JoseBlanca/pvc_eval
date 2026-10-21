@@ -888,9 +888,20 @@ def test_alt_dot_gives_a_record_with_ref_only(tmp_path: Path, reference: Indexed
     assert (record.start, record.alleles) == (4, ("A",))
 
 
-@pytest.mark.parametrize("alts", ["T,.", ".,T"], ids=["dot_last", "dot_first"])
+@pytest.mark.parametrize(
+    ("alts", "alts_without_dots"),
+    [
+        ("T,.", "T"),
+        (".,T", "T"),
+        ("<DEL>,.", "<DEL>"),
+        ("T,..", "T"),
+        ("T,. ", "T"),
+        ("T,.,G", "T,G"),
+    ],
+    ids=["dot_last", "dot_first", "symbolic_and_dot", "two_dots", "dot_and_space", "dot_between"],
+)
 def test_alt_dot_among_other_alts_stops_the_run(
-    tmp_path: Path, reference: IndexedFasta, alts: str
+    tmp_path: Path, reference: IndexedFasta, alts: str, alts_without_dots: str
 ) -> None:
     path = write_vcf(tmp_path, f"chr1\t5\t.\tA\t{alts}\t.\t.\t.\tGT\t0/1\t0/0\n")
 
@@ -900,7 +911,23 @@ def test_alt_dot_among_other_alts_stops_the_run(
     assert str(raised.value) == (
         f"{path}, line 3: ALT '{alts}' holds `.` beside other alleles, which VCF does not"
         " allow: `.` stands alone, for a record with no ALT. Write the ALT without the `.`,"
-        " here 'T', and run again."
+        f" here '{alts_without_dots}', and run again."
+    )
+
+
+@pytest.mark.parametrize("alt", ["..", ". "], ids=["two_dots", "dot_and_space"])
+def test_alt_dot_written_with_more_than_one_character_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta, alt: str
+) -> None:
+    path = write_vcf(tmp_path, f"chr1\t5\t.\tA\t{alt}\t.\t.\t.\tGT\t0/1\t0/0\n")
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == (
+        f"{path}, line 3: ALT '{alt}' is neither an allele nor `.`, which VCF writes alone,"
+        " as one character, for a record with no ALT. Write the ALT as `.`, or as the"
+        " alleles it stands for, and run again."
     )
 
 
