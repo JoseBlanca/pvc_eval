@@ -34,6 +34,7 @@ from pvc_eval.vcf import (
     Span,
     VcfGenotype,
     VcfRecord,
+    get_written_ref,
     parse_vcf,
     trim_alt,
 )
@@ -612,7 +613,7 @@ def _make_record_index(input_records: Iterable[_InputRecord]) -> _RecordIndex:
                 for record_edits in by_place.values()
                 if _SPANNING_DELETION in record_edits.vcf_record.alleles[1:]
             ),
-            _get_written_ref,
+            get_written_ref,
         ),
         touched_places=_find_touched_places(by_contig),
     )
@@ -641,12 +642,6 @@ def _make_contig_edits(
 
 def _get_ref(vcf_record: VcfRecord) -> Span:
     return vcf_record.start, vcf_record.end
-
-
-def _get_written_ref(vcf_record: VcfRecord) -> Span:
-    """The REF as the file wrote it, which parse_vcf gives every record."""
-    assert vcf_record.written_ref is not None, "parse_vcf sets written_ref"
-    return vcf_record.written_ref
 
 
 def _find_ref_touching_records(contig_edits: _ContigEdits, stretch: Span) -> Iterator[_RecordEdits]:

@@ -26,6 +26,7 @@ from pvc_eval.vcf import (
     Span,
     VcfGenotype,
     VcfRecord,
+    get_written_ref,
     trim_alt,
 )
 
@@ -448,12 +449,7 @@ def _is_star_covered(
     any other edit when, as written, it replaces one. The edits that count are those of the
     alleles the haplotype carries at the other records, and every ALT of a record where it
     is MISSING, since it might carry that one."""
-    # §7: a record built without written_ref is measured against its REF.
-    star_start, star_end = (
-        (star_record.start, star_record.end)
-        if star_record.written_ref is None
-        else star_record.written_ref
-    )
+    star_start, star_end = get_written_ref(star_record)
     for vcf_record, record_edits, allele_index in zip(records, edits, haplotype, strict=True):
         if vcf_record is star_record:
             continue

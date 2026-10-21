@@ -74,8 +74,7 @@ def make_record(
     start: int, alleles: tuple[str, ...], span: tuple[int, int], index_in_file: int
 ) -> VcfRecord:
     """The record parse_vcf gives for a line of write_vcf, 0-based and half-open;
-    index_in_file counts the records of the file from 0. No line of these tests shares a base
-    across its alleles, so the REF as written is the REF."""
+    index_in_file counts the records of the file from 0."""
     return VcfRecord(
         contig="chr1",
         start=start,
@@ -84,7 +83,6 @@ def make_record(
         genotypes=(HOMOZYGOUS_ALT,),
         line_number=FIRST_RECORD_LINE + index_in_file,
         span=span,
-        written_ref=(start, start + len(alleles[0])),
     )
 
 

@@ -6,8 +6,9 @@ Positions are 0-based and half-open inside pvc_eval. The 1-based POS of a VCF li
 converted here, and nowhere else.
 
 Public: parse_vcf, which gives the VCF records; parse_vcf_samples, which gives the sample
-names; trim_alt, which trims an ALT against its REF; VcfRecord and VcfGenotype; Span, the
-type of VcfRecord.span; the sentinels a genotype is compared with, MISSING, MALFORMED_GT
+names; trim_alt, which trims an ALT against its REF; VcfRecord and VcfGenotype;
+get_written_ref, which gives a record's REF as the file wrote it; Span, the type of
+VcfRecord.span; the sentinels a genotype is compared with, MISSING, MALFORMED_GT
 and OTHER_PLOIDY_GT; and the constants DEFAULT_PLOIDY, DEFAULT_SPAN_LIMIT and
 DEFAULT_NUM_THREADS.
 """
@@ -117,8 +118,10 @@ class VcfRecord:
     line_number: the 1-based line of the file, for messages.
     span: the record's span (§5.2), 0-based and half-open; it always contains the REF.
     written_ref: the stretch the REF covers as the file wrote it, before trimming, 0-based
-        and half-open, against which a `*` is measured (doc/specs/reconciliation.md §4.2);
-        it always contains the REF. None stands for the REF, as in a record built by hand.
+        and half-open, against which a `*` is measured (doc/specs/reconciliation.md §4.2),
+        where it differs from the REF; it always contains the REF. None stands for the REF,
+        so a record built by hand with None equals the one parse_vcf gives for a REF that
+        lost no base. get_written_ref gives the stretch either way.
     """
 
     contig: str
@@ -151,6 +154,14 @@ class VcfRecord:
     @property
     def end(self) -> int:
         return self.start + len(self.alleles[0])
+
+
+def get_written_ref(vcf_record: VcfRecord) -> Span:
+    """The stretch the record's REF covers as the file wrote it, before trimming, 0-based
+    and half-open: its written_ref, or its REF where that is None."""
+    if vcf_record.written_ref is None:
+        return vcf_record.start, vcf_record.end
+    return vcf_record.written_ref
 
 
 def parse_vcf_samples(path: Path) -> tuple[str, ...]:
@@ -405,6 +416,7 @@ class _PlacedLine:
     qual: float | None
     line_number: int
     span: Span
+    written_ref: Span | None
     fields: list[str]
 
 
@@ -894,6 +906,9 @@ def _parse_line_without_samples(
     is_beyond_reach = span is None
     if span is None:
         span = (start, start + len(trimmed[0]))
+    # doc/specs/reconciliation.md §7: None where the REF lost no base to trimming, so that
+    # the field costs nothing on most records.
+    written_ref = None if len(trimmed[0]) == len(fields[3]) else (pos, pos + len(fields[3]))
     qual = _parse_qual(fields[5])
     placed_line = _PlacedLine(
         pos=pos,
@@ -903,6 +918,7 @@ def _parse_line_without_samples(
         qual=qual,
         line_number=line_number,
         span=span,
+        written_ref=written_ref,
         fields=fields,
     )
     return placed_line, _is_taken_as_absent(fields[5], qual), is_beyond_reach
@@ -953,7 +969,7 @@ def _parse_batch(
             genotypes=genotypes,
             line_number=line.line_number,
             span=line.span,
-            written_ref=(line.pos, line.pos + len(line.fields[3])),
+            written_ref=line.written_ref,
         )
         records.append((line.pos, record))
     return records, num_not_numbers

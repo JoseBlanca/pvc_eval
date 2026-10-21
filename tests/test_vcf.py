@@ -1270,17 +1270,20 @@ def test_records_are_trimmed_and_never_moved(tmp_path: Path, reference: IndexedF
     [
         # Trimmed to TAC -> T,* at 12-14, 1-based; the file's REF covers 10-16.
         ("chr1\t10\t.\tTATACAC\tTATAC,*", 11, ("TAC", "T", "*"), (9, 16)),
-        ("chr1\t15\t.\tACATA\tA", 14, ("ACATA", "A"), (14, 19)),
+        # Trimmed at the left alone, to ACAC -> A at 13-16.
+        ("chr1\t12\t.\tTACAC\tTA", 12, ("ACAC", "A"), (11, 16)),
+        # A REF that lost no base: None, as a record built by hand has.
+        ("chr1\t15\t.\tACATA\tA", 14, ("ACATA", "A"), None),
     ],
-    ids=["padded-star-record", "unpadded-record"],
+    ids=["padded-star-record", "padded-at-the-left", "unpadded-record"],
 )
-def test_written_ref_is_the_ref_as_the_file_wrote_it(
+def test_written_ref_is_the_ref_as_the_file_wrote_it_where_it_differs(
     tmp_path: Path,
     make_reference: MakeReference,
     line: str,
     start: int,
     alleles: tuple[str, ...],
-    written_ref: tuple[int, int],
+    written_ref: tuple[int, int] | None,
 ) -> None:
     reference = make_reference(*make_fasta({"chr1": "GGGGGGGGGTATACACATAGG"}))
     path = write_vcf(tmp_path, f"{line}\t.\t.\t.\tGT\t1/2\t0/0\n")
@@ -2119,6 +2122,7 @@ def make_placed_line(gt: str, gq: int) -> vcf._PlacedLine:
         qual=30.0,
         line_number=gq,
         span=(0, 1),
+        written_ref=None,
         fields=fields,
     )
 
