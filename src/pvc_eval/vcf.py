@@ -902,9 +902,10 @@ def _check_alt_letters(
 
     alt_field: the ALT column of a record with no symbolic allele, as written.
     """
-    letter = next((letter for letter in alt_field if not letter.isascii()), None)
-    if letter is None:
+    # Most columns are ASCII, which str.isascii tells at the speed of C.
+    if alt_field.isascii():
         return
+    letter = next(letter for letter in alt_field if not letter.isascii())
     raise PvcEvalInputError(
         f"{path}, line {line_number}: ALT '{alt_field}' of {contig}:{pos_1based} holds"
         f" {_format_letters(letter)}, a letter outside ASCII, which is no base, so the line"
