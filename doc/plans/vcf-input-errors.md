@@ -1,6 +1,6 @@
 # Plan: a damaged gzip reported as damaged, and an ALT `.` among others refused
 
-*Status: under way, 21 October 2026, on the branch `vcf-input-errors` in the worktree
+*Status: done, 21 October 2026, on the branch `vcf-input-errors` in the worktree
 `.claude/worktrees/vcf-input-errors`, from `main` at bd33d55. The owner ordered both changes on
 21 October 2026, after the work of the re-spelling program found them; the rules are in
 `doc/spec.md` §3 and §5.2 (4a9acae). The work report will be `doc/reports/vcf-input-errors.md`.*
@@ -18,7 +18,7 @@ Two faults of a VCF that pvc_eval reports wrongly:
 
 ## The milestone
 
-- [ ] **1. Both faults reported as `doc/spec.md` §5.2 says**
+- [x] **1. Both faults reported as `doc/spec.md` §5.2 says**
 
   Spec: `doc/spec.md` §3, "Errors, which stop the run", and §5.2, "Reading" and "The ALT `.`".
 
