@@ -1,4 +1,5 @@
 import gzip
+import io
 import itertools
 import logging
 import random
@@ -708,6 +709,43 @@ def test_damaged_gzip_read_as_text_that_is_not_utf8_is_reported_damaged(
     # A byte that is not UTF-8 is found somewhere after the last line read, on no line known.
     assert str(raised.value) == make_damaged_message(path, "")
     assert isinstance(raised.value.__cause__, UnicodeDecodeError)
+
+
+def test_damaged_gzip_whose_text_is_larger_than_a_chunk_of_the_check_is_reported_damaged(
+    tmp_path: Path, make_reference: MakeReference
+) -> None:
+    # About 1.3 MB of text, more than the 1 MiB the whole check decompresses at a time, so
+    # that it finds the damage only past its first chunk; the fault is on line 4.
+    reference = make_reference(*make_fasta({"chr1": "A" * 40_000}))
+    lines = "".join(
+        f"chr1\t{pos_1based}\t.\tA\tC\t.\t.\t.\tGT\t0/1\t1|0\n" for pos_1based in range(1, 40_001)
+    )
+    path = write_damaged_gzip(tmp_path / "a.vcf.gz", HEADER + lines, b"\nchr1\t2\t", b"\nchr1\t0\t")
+    assert len(HEADER + lines) > 1.25 * 2**20
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == make_damaged_message(path, " at line 4")
+
+
+def test_good_gzipped_vcf_read_to_its_end_is_opened_by_gzip_once(
+    tmp_path: Path, reference: IndexedFasta, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = write_vcf(tmp_path, TWO_RECORDS, gzipped=True)
+    paths_opened: list[Path] = []
+    gzip_open = gzip.open
+
+    def open_and_count(
+        filename: Path, mode: str, encoding: str | None = None
+    ) -> gzip.GzipFile | io.TextIOWrapper:
+        paths_opened.append(filename)
+        return gzip_open(filename, mode, encoding=encoding)
+
+    monkeypatch.setattr(gzip, "open", open_and_count)
+
+    assert len(list(parse_vcf(path, reference))) == 2
+    assert paths_opened == [path]
 
 
 # A VCF of 60 SNPs on a reference of 64 As, gzipped as gzip writes it.

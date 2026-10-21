@@ -5,6 +5,7 @@ A BED line is 0-based and half-open, as the intervals parse_bed yields are.
 """
 
 import gzip
+import io
 from pathlib import Path
 
 import pytest
@@ -351,6 +352,25 @@ def test_parse_bed_refuses_a_bgzipped_bed_without_its_end_block(tmp_path: Path) 
         " write, and lacks the empty block that ends such a file. Copy or compress the file"
         " again from its source, and run again."
     )
+
+
+def test_parse_bed_opens_a_good_gzipped_bed_read_to_its_end_with_gzip_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = write_compressed_bed(tmp_path, gzip.compress(_TWO_BED_LINES))
+    paths_opened: list[Path] = []
+    gzip_open = gzip.open
+
+    def open_and_count(
+        filename: Path, mode: str, encoding: str | None = None
+    ) -> gzip.GzipFile | io.TextIOWrapper:
+        paths_opened.append(filename)
+        return gzip_open(filename, mode, encoding=encoding)
+
+    monkeypatch.setattr(gzip, "open", open_and_count)
+
+    assert len(list(parse_bed(path, _CONTIGS))) == 2
+    assert paths_opened == [path]
 
 
 def test_parse_bed_refuses_a_line_separated_by_spaces(tmp_path: Path) -> None:
