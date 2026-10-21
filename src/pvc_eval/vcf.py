@@ -228,7 +228,8 @@ def parse_vcf(
     is a directory or cannot be read, for a file that is not UTF-8 text once decompressed or
     is a gzip file cut short or damaged, for a file with no #CHROM line after its ## lines, for
     an empty sample name in it, for a line that does not hold a VCF record or has an ALT `.`
-    among other ALTs, and for one whose
+    among other ALTs, for a record with no symbolic allele whose ALT holds a letter outside
+    ASCII, and for one whose
     number of sample columns differs from the number of samples the #CHROM line names. A
     blank line is skipped. A record with a symbolic allele is skipped once its contig and
     its order are checked, and its REF is not; the number skipped is logged as a warning
@@ -479,6 +480,7 @@ def _parse_lines_without_samples(
                 continue
             if pos_1based == 0:
                 raise _make_pos_error(fields[1], path, line_number)
+            _check_alt_letters(fields[4], contig, pos_1based, path, line_number)
             pos = pos_1based - 1
             contig_length = reference.get_length(contig)
             # §5.2: a REF past the end of its contig means the VCF was made on another
@@ -892,6 +894,24 @@ def _parse_alts(fields: list[str], path: Path, line_number: int) -> tuple[str, .
     )
 
 
+def _check_alt_letters(
+    alt_field: str, contig: str, pos_1based: int, path: Path, line_number: int
+) -> None:
+    """§5.2: an ALT of bases that holds a letter outside ASCII comes from a damaged file.
+    Python would upper-case `ß` to `SS`, which could agree with another file's `SS`.
+
+    alt_field: the ALT column of a record with no symbolic allele, as written.
+    """
+    letter = next((letter for letter in alt_field if not letter.isascii()), None)
+    if letter is None:
+        return
+    raise PvcEvalInputError(
+        f"{path}, line {line_number}: ALT '{alt_field}' of {contig}:{pos_1based} holds"
+        f" {_format_letters(letter)}, a letter outside ASCII, which is no base, so the line"
+        " looks damaged. Correct it or remove it, and run again."
+    )
+
+
 def _is_dots(alt: str) -> bool:
     """Whether an ALT holds nothing but dots and spaces."""
     return not alt.strip(". ")
@@ -922,8 +942,8 @@ def _parse_line_without_samples(
     pos: the 0-based position of POS; the REF lies within the contig and agrees with the
     reference.
     """
-    # VCF bases are case-insensitive. The REF agrees with the reference, so it holds only
-    # ASCII letters, and str.upper gives the bases _check_ref compared.
+    # VCF bases are case-insensitive. The REF agrees with the reference and the ALTs were
+    # checked, so they hold only ASCII letters, which str.upper upper-cases as _check_ref did.
     alleles = (fields[3].upper(), *(alt.upper() for alt in alts))
     start, trimmed = _trim(pos, alleles)
     span = _find_span_in_window(start, trimmed, reference_window, contig, contig_length, span_limit)

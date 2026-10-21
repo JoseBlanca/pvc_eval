@@ -39,6 +39,12 @@ HEADER = (
     "##fileformat=VCFv4.3\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tHG002\tHG003\n"
 )
 
+# Written by their names, since ruff takes the long s for an f and the Kelvin sign for a K,
+# and a combining mark joins the character before it.
+LONG_S = "\N{LATIN SMALL LETTER LONG S}"
+KELVIN_SIGN = "\N{KELVIN SIGN}"
+COMBINING_ACUTE = "\N{COMBINING ACUTE ACCENT}"
+
 type MakeReference = Callable[[str, str], IndexedFasta]
 
 
@@ -321,7 +327,7 @@ def test_contig_missing_from_the_reference_stops_the_run(
 
 @pytest.mark.parametrize(
     "alt",
-    ["<DEL>", "A]chr2:20]", "[chr2:20[A", "A.", ".A", "T,A.", ".A,T"],
+    ["<DEL>", "A]chr2:20]", "[chr2:20[A", "A.", ".A", "T,A.", ".A,T", "<DEL>,ß"],
     ids=[
         "symbolic",
         "breakend_right",
@@ -330,6 +336,7 @@ def test_contig_missing_from_the_reference_stops_the_run(
         "single_breakend_left",
         "single_breakend_among_other_alts",
         "single_breakend_before_other_alts",
+        "symbolic_beside_an_alt_outside_ascii",
     ],
 )
 def test_symbolic_alleles_are_skipped_and_counted(
@@ -1022,6 +1029,34 @@ def test_alt_dot_written_with_more_than_one_character_stops_the_run(
     )
 
 
+@pytest.mark.parametrize(
+    ("alts", "letter"),
+    [
+        ("ß", "'ß' (U+00DF)"),
+        ("Aß", "'ß' (U+00DF)"),
+        ("A,ß", "'ß' (U+00DF)"),
+        ("ß,*", "'ß' (U+00DF)"),
+        (f"A{COMBINING_ACUTE}", f"'{COMBINING_ACUTE}' (U+0301)"),
+    ],
+    ids=["alone", "after_a_base", "second_alt", "beside_a_star", "combining_mark_after_a_base"],
+)
+def test_alt_holding_a_letter_outside_ascii_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta, alts: str, letter: str
+) -> None:
+    # Upper-cased by Python's rules, ß would be the allele SS, and agree with another
+    # file's SS.
+    path = write_vcf(tmp_path, f"chr1\t1\t.\tG\t{alts}\t.\t.\t.\tGT\t0/1\t0/0\n")
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == (
+        f"{path}, line 3: ALT '{alts}' of chr1:1 holds {letter}, a letter outside ASCII,"
+        " which is no base, so the line looks damaged. Correct it or remove it, and run"
+        " again."
+    )
+
+
 def test_records_at_the_same_pos_both_come_out(tmp_path: Path, reference: IndexedFasta) -> None:
     path = write_vcf(
         tmp_path,
@@ -1188,13 +1223,6 @@ def test_iupac_codes_that_share_no_base_differ(
         " symbolic allele, so the VCF looks made on another reference: compare against the"
         " reference it was called on, and run again."
     )
-
-
-# Written by their names, since ruff takes the long s for an f and the Kelvin sign for a K,
-# and a combining mark joins the character before it.
-LONG_S = "\N{LATIN SMALL LETTER LONG S}"
-KELVIN_SIGN = "\N{KELVIN SIGN}"
-COMBINING_ACUTE = "\N{COMBINING ACUTE ACCENT}"
 
 
 # A character outside ASCII is written with its code point, so that one that looks like a
