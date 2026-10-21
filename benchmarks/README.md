@@ -271,11 +271,19 @@ alternating pairs, from two worktrees, and judged by the median of the ratios:
     bash benchmarks/paired.sh BASE_WORKTREE CANDIDATE_WORKTREE benchmarks/data/chr1_10mb_4mb.fa 10
 
 where `paired.sh` runs `uv run --no-sync --project <worktree> pvc_eval str-regions` from
-each worktree in turn under `/usr/bin/time -l` and prints both sides' means, the median
-ratio and the median peak RSS. It writes the two outputs of the last pair to
-`.profiles/paired/` and compares them. The same code against itself gave a median ratio of 1.0017 over 10
-pairs on 4 Mb and 0.9954 over 5 pairs on 16 Mb, so a gain is claimed beyond 3% on 4 Mb and
-2% on 16 Mb.
+each worktree in turn under `/usr/bin/time -l`, A first in odd pairs and B first in even ones,
+and prints each side's wall time, CPU time, peak RSS and the load average before the run, the
+median ratios of the wall and the CPU times, and whether the two outputs of every pair were equal.
+Options of `str-regions` go after the four arguments (`--threads 1`). The outputs of the last pair
+are in `.profiles/paired/`. Run the same worktree against itself in the same window before
+judging a candidate: on 21 October 2026 that gave a median ratio of 1.000 over 10 pairs on 4 Mb at
+a load average of 1.4 to 1.7, and 1.11 over 2 pairs on 64 Mb at 8 to 34. A gain is claimed beyond
+twice that deviation, and at least 3%.
+
+`threads_str_finder.py FASTA 1 4 8` runs one `segment_contig` of the first contig per thread, N
+threads at once, and prints each call's time and the CPU time of all of them against N times one
+thread's. That ratio shows contention between threads and moves little with the load of other
+jobs, where the wall time of `str-regions --threads N` over many contigs mostly does not.
 
 The evidence:
 
@@ -303,3 +311,18 @@ with CPython 3.15.0 free-threaded:
 | chr1 | forecast 10 to 12 minutes, 1.4 GB | 76.9 s, 1,154.9 MB |
 
 measured in alternating pairs (10, 5 and 2) between 17:18 and 17:26, and chr1 once at 17:27.
+
+The second review, of step 1 with numpy, is `doc/reports/perf-str-finder-numpy.md`, 21 October
+2026, on the same machine with numpy 2.5.4, at a load average of 3 to 14.5 from other sessions;
+both sides of each pair share it, so the ratios are what to compare:
+
+| input | main, 96b3938 | after the review, 419c85b | median ratio |
+|---|---|---|---|
+| 4 Mb | 2.395 s, 59.1 MB | 0.744 s, 76.0 MB | 0.304, 20 pairs |
+| 16 Mb | 9.380 s, 113.2 MB | 2.636 s, 130.1 MB | 0.278, 10 pairs |
+| 64 Mb | 23.352 s, 339.7 MB | 7.408 s, 357.4 MB | 0.291, 5 pairs |
+| chr1 | 79.2 s, 1,157.6 MB | 24.9 s, 1,176.8 MB | 0.315, 2 pairs |
+| GRCh38, 1 thread | 1,169.6 s, 1,855.9 MB | 376.1 s, 1,977.3 MB | one run each |
+
+On a quiet machine at 12:09 the same day (load 1.2 to 1.9), main took 1.212 s on 4 Mb, 4.941 s on
+16 Mb and 20.246 s on 64 Mb.
