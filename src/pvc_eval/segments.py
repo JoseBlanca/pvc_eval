@@ -67,8 +67,11 @@ _MAX_PERIOD = 6  # the longest motif the finder scans, doc/specs/str_finder.md s
 # Bases per block of step 1 (_find_candidates): each period takes the scores whose later
 # base is in a block at once, as arrays. On 4 Mb of chr1, tracemalloc's peak of
 # _find_candidates was 9.2 MiB with blocks of 4,096 bases, 11.8 MiB with 65,536 and 21.0 MiB
-# with 262,144, about 49 bytes per base of a block (CPython 3.15t, numpy 2.5.4, Apple M5 Pro,
-# 21 October 2026).
+# with 262,144, about 49 bytes per base of a block, while the running totals were kept at
+# every score; 10.9 MiB with 65,536 once they were kept at the runs' boundaries. On 16 Mb,
+# str-regions took 8% longer with blocks of 16,384 and 2% less with 262,144, for 4.5 MB less
+# and 11.6 MB more peak RSS per thread (CPython 3.15t, numpy 2.5.4, Apple M5 Pro, 21 October
+# 2026; doc/reports/perf-str-finder-numpy.md, P3).
 _BLOCK_BASES = 1 << 16
 
 # Every byte to its canonical base: A, C, G and T in either case to the upper-case base,
@@ -220,14 +223,18 @@ class _BlockScores:
     boundary k is the place before score k.
 
     run_starts and run_ends hold the runs of matches, `[run_starts[i], run_ends[i])`, as
-    indices from first, in order. totals holds the running total at each boundary from first
-    to the end of the scores, totals[k] that at first + k.
+    indices from first, in order. befores and throughs hold the running totals before and
+    after each run, and end_total the running total after the last score; the running total
+    only falls between two runs, and only rises within one.
     """
 
     first: int
+    score_count: int
     run_starts: _Positions
     run_ends: _Positions
-    totals: NDArray[np.int64]
+    befores: NDArray[np.int64]
+    throughs: NDArray[np.int64]
+    end_total: int
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -409,12 +416,14 @@ def _find_final_candidates(
     scores = _make_block_scores(
         canonical, state.position, max(end - period, state.position), period, state, parameters
     )
-    totals = scores.totals
-    lowest = np.minimum.accumulate(totals)
-    # Whether the stack is empty at each run's start, and at the end of the scores.
-    befores = totals[scores.run_starts]
-    opens = (befores == lowest[scores.run_starts]) & (befores <= state.least)
-    closes = end == len(canonical) or bool(totals[-1] == lowest[-1] and totals[-1] <= state.least)
+    befores = scores.befores
+    # Whether the stack is empty at each run's start, and at the end of the scores: whether
+    # the total there is the least so far. Between two runs the total is least just before
+    # the second starts, so the least so far is that of the runs' starts and of the blocks
+    # before.
+    opens = (befores == np.minimum.accumulate(befores)) & (befores <= state.least)
+    least = min(state.least, int(befores.min(initial=scores.end_total)))
+    closes = end == len(canonical) or scores.end_total <= least
     on_its_own = opens.copy()  # whether a subsequence starts and ends at the run
     on_its_own[:-1] &= opens[1:]
     if on_its_own.size:
@@ -427,18 +436,18 @@ def _find_final_candidates(
         (run_starts[grouped] + scores.first).tolist(),
         (run_ends[grouped] + scores.first).tolist(),
         opens[grouped].tolist(),
-        totals[run_starts[grouped]].tolist(),
-        totals[run_ends[grouped]].tolist(),
+        befores[grouped].tolist(),
+        scores.throughs[grouped].tolist(),
         closes,
     )
-    state.position = scores.first + len(totals) - 1
-    state.total = int(totals[-1])
-    state.least = min(state.least, int(lowest[-1]))
+    state.position = scores.first + scores.score_count
+    state.total = scores.end_total
+    state.least = least
     final = _join_candidates(
         _CandidateArrays(
             starts=run_starts[on_its_own] + scores.first,
             ends=run_ends[on_its_own] + scores.first,
-            scores=totals[run_ends[on_its_own]] - totals[run_starts[on_its_own]],
+            scores=scores.throughs[on_its_own] - befores[on_its_own],
         ),
         grouped_final,
     )
@@ -458,7 +467,8 @@ def _make_block_scores(
 ) -> _BlockScores:
     """The scores `[first, stop)` of one period, 0-based and half-open: score k is the match
     reward when the canonical bases at k + period and at k are the same A, C, G or T, and
-    minus the mismatch penalty otherwise. The running total at first is state.total."""
+    minus the mismatch penalty otherwise. The running total at first is state.total, and
+    the totals are kept at the runs' boundaries only."""
     later = canonical[first + period : stop + period]
     # A flag per score, with a mismatch before the first and after the last, so that the
     # changes of flag pair up as the starts and ends of the runs of matches. np.zeros is a
@@ -466,14 +476,25 @@ def _make_block_scores(
     matches = np.zeros(stop - first + 2, np.bool_)
     matches[1:-1] = (later == canonical[first:stop]) & (later != 0)
     changes = (matches[1:] != matches[:-1]).nonzero()[0]
-    # The flag before the first score counts as a mismatch, which the penalty added back
-    # undoes: totals[0] is state.total.
-    steps = matches[:-1] * (parameters.match_reward + parameters.mismatch_penalty)
-    totals = (steps - parameters.mismatch_penalty).cumsum() + (
-        state.total + parameters.mismatch_penalty
-    )
+    run_starts = changes[0::2]
+    run_ends = changes[1::2]
+    # Every score before a run's start that is not in an earlier run is a mismatch: the
+    # total before it is the reward and the penalty for each match before it, and minus the
+    # penalty for each score before it.
+    lengths = run_ends - run_starts
+    matched_through = lengths.cumsum()
+    reward = parameters.match_reward
+    penalty = parameters.mismatch_penalty
+    befores = state.total + (reward + penalty) * (matched_through - lengths) - penalty * run_starts
+    matched = int(matched_through[-1]) if matched_through.size else 0
     return _BlockScores(
-        first=first, run_starts=changes[0::2], run_ends=changes[1::2], totals=totals
+        first=first,
+        score_count=stop - first,
+        run_starts=run_starts,
+        run_ends=run_ends,
+        befores=befores,
+        throughs=befores + reward * lengths,
+        end_total=state.total + (reward + penalty) * matched - penalty * (stop - first),
     )
 
 

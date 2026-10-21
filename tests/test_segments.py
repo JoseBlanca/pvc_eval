@@ -398,37 +398,44 @@ def test_the_comparisons_are_zero_for_a_match_and_cut_at_the_blocks(
 
 
 # Worked by hand: score k compares the base at k + period with the base at k, and the runs
-# of matches are `[start, end)` of the scores, 0-based and half-open.
+# of matches are `[start, end)` of the scores, 0-based and half-open. The running totals
+# start from a carried 10, with a reward of 2 and a penalty of 7: those before and after
+# each run, then that after the last score.
 _RUN_CASES = [
     # A=A, then N against A, N against N twice, A against N, then A=A.
-    ("n_never_matches_n", "AANNNAA", 1, 0, 6, [(0, 1), (5, 6)]),
+    ("n_never_matches_n", "AANNNAA", 1, 0, 6, [(0, 1), (5, 6)], [(10, 12), (-16, -14)], -14),
     # c=C, a=A, C=c, then T against a.
-    ("lower_case_matches_upper_case", "CAcaCT", 2, 0, 4, [(0, 3)]),
+    ("lower_case_matches_upper_case", "CAcaCT", 2, 0, 4, [(0, 3)], [(10, 16)], 9),
     # The scores 3 to 6 of eight A's, all matches.
-    ("scores_from_a_later_position", "AAAAAAAA", 1, 3, 7, [(3, 7)]),
+    ("scores_from_a_later_position", "AAAAAAAA", 1, 3, 7, [(3, 7)], [(10, 18)], 18),
 ]
 
 
 @pytest.mark.parametrize(
-    ("bases", "period", "first", "stop", "expected"),
+    ("bases", "period", "first", "stop", "runs", "totals", "end_total"),
     [case[1:] for case in _RUN_CASES],
     ids=[case[0] for case in _RUN_CASES],
 )
 def test_the_runs_of_a_block_are_its_matching_scores_and_its_totals_go_on(
-    bases: str, period: int, first: int, stop: int, expected: list[tuple[int, int]]
+    bases: str,
+    period: int,
+    first: int,
+    stop: int,
+    runs: list[tuple[int, int]],
+    totals: list[tuple[int, int]],
+    end_total: int,
 ) -> None:
     canonical = np.frombuffer(bases.encode("ascii").translate(_CANONICAL), np.uint8)
     # The scan carried 10 as its running total to the block's first score.
     state = _ScanState(position=first, total=10, least=0, stack=[])
     scores = _make_block_scores(canonical, first, stop, period, state, StrFinderParameters())
-    runs = [
+    got_runs = [
         (start + first, end + first)
         for start, end in zip(scores.run_starts.tolist(), scores.run_ends.tolist(), strict=True)
     ]
-    assert runs == expected
-    matches = sum(end - start for start, end in expected)
-    assert scores.totals[0] == 10
-    assert scores.totals[-1] == 10 + 2 * matches - 7 * (stop - first - matches)
+    assert got_runs == runs
+    assert list(zip(scores.befores.tolist(), scores.throughs.tolist(), strict=True)) == totals
+    assert scores.end_total == end_total
 
 
 def test_finds_a_clean_perfect_tract() -> None:
