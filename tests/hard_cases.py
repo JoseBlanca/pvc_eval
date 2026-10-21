@@ -13,7 +13,7 @@ S_lycopersicum_chromosomes.4.00.fa, and the other 45 from GRCh38,
 GCA_000001405.15_GRCh38_no_alt_plus_hs38d1_analysis_set.fna. The excerpt tests of
 tests/test_hard_cases.py check them against those references.
 
-Public: HardCase, Reference, HARD_CASES.
+Public: HardCase, Reference, StrRegion1Based, HARD_CASES.
 """
 
 from dataclasses import dataclass

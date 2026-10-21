@@ -19,35 +19,17 @@ import pytest
 from tests.compare_case import write_fasta
 from tests.conftest import EnvironmentPath, get_paths_from_environment
 from tests.haplotype_oracle import find_possible_genotypes
-from tests.hard_cases import HARD_CASES, HardCase, Reference
+from tests.hard_cases import HARD_CASES, HardCase, Reference, StrRegion1Based
 
 from pvc_eval.compare import compare
 from pvc_eval.fasta import IndexedFasta
-from pvc_eval.outcome import LocusGenotype, OutcomeRow
+from pvc_eval.outcome import LocusGenotype
 from pvc_eval.segments import GenomeSegment, RegionType, segment_contig
 from pvc_eval.vcf import MISSING
 
 # doc/specs/hard_cases.md §1: the bases the STR regions of an excerpt are compared over,
 # beyond each end of it.
 _WIDENING = 5_000
-# The fields of OutcomeRow §5 checks: QUAL and GQ are not, since the cases set them.
-_CHECKED_FIELDS = (
-    "contig",
-    "start",
-    "end",
-    "kind",
-    "str_regions",
-    "outcome",
-    "alleles",
-    "genotype_a",
-    "genotype_b",
-    "possible_a",
-    "possible_b",
-    "invalid_reason_a",
-    "invalid_reason_b",
-    "records_a",
-    "records_b",
-)
 
 
 def _write_vcf(path: Path, contig: str, sample: str, lines: Sequence[str]) -> Path:
@@ -68,8 +50,9 @@ def _write_vcf(path: Path, contig: str, sample: str, lines: Sequence[str]) -> Pa
 
 
 def _make_expected_row(case: HardCase) -> dict[str, object]:
-    """The fields of _CHECKED_FIELDS the case expects, with its excerpt positions made
-    0-based and half-open, as OutcomeRow holds them."""
+    """The fields of OutcomeRow the case expects, by name, with its excerpt positions made
+    0-based and half-open, as OutcomeRow holds them. QUAL and GQ are not among them, since
+    the cases set them (doc/specs/hard_cases.md §5)."""
     start_1based, end = case.locus_1based
     str_regions = tuple(
         GenomeSegment(case.contig, region_start_1based - 1, region_end, region_type, motif)
@@ -92,10 +75,6 @@ def _make_expected_row(case: HardCase) -> dict[str, object]:
         "records_a": case.records_a,
         "records_b": case.records_b,
     }
-
-
-def _get_checked_fields(row: OutcomeRow) -> dict[str, object]:
-    return {field: getattr(row, field) for field in _CHECKED_FIELDS}
 
 
 def _make_sequences(
@@ -137,7 +116,8 @@ def test_hard_case(case: HardCase, tmp_path: Path) -> None:
     # One row for each of these cases, compared field by field, so that a failure names the
     # fields that differ.
     assert len(rows) == 1, rows
-    assert _get_checked_fields(rows[0]) == _make_expected_row(case)
+    expected_row = _make_expected_row(case)
+    assert {field: getattr(rows[0], field) for field in expected_row} == expected_row
 
 
 def _find_excerpt_problems(
@@ -170,7 +150,7 @@ def _find_excerpt_problems(
 
 def _find_locus_str_regions(
     case: HardCase, widened: str, widened_start: int, directory: Path
-) -> tuple[tuple[int, int, RegionType | None, str | None], ...]:
+) -> tuple[StrRegion1Based, ...]:
     """The STR regions segment_contig finds over the widened bases that overlap or touch a
     case's locus, so that one that crosses an end of the locus is not missed; in excerpt
     positions, 1-based and inclusive, as the case gives them. The widened bases start at
@@ -180,14 +160,24 @@ def _find_locus_str_regions(
     # An excerpt position p is the widened sequence's 0-based position p - 1 + shift.
     shift = case.offset - widened_start
     start_1based, end = case.locus_1based
+    str_regions = []
     with IndexedFasta(fasta) as indexed_fasta:
-        return tuple(
-            (segment.start - shift + 1, segment.end - shift, segment.region_type, segment.motif)
-            for segment in segment_contig(indexed_fasta, case.contig)
-            if segment.region_type is not RegionType.GENERIC
-            and segment.start <= end + shift
-            and start_1based - 1 + shift <= segment.end
-        )
+        for segment in segment_contig(indexed_fasta, case.contig):
+            assert segment.region_type is not None, "segment_contig gives every segment a type"
+            if (
+                segment.region_type is not RegionType.GENERIC
+                and segment.start <= end + shift
+                and start_1based - 1 + shift <= segment.end
+            ):
+                str_regions.append(
+                    (
+                        segment.start - shift + 1,
+                        segment.end - shift,
+                        segment.region_type,
+                        segment.motif,
+                    )
+                )
+    return tuple(str_regions)
 
 
 def test_an_str_region_across_the_locus_end_is_found(tmp_path: Path) -> None:
