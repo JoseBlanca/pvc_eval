@@ -85,7 +85,7 @@ file says or would test nothing:
 |---|---|
 | a record with no ALT (`.`) | it makes no edit, and its `./.` makes a haplotype missing wherever its REF reaches (`doc/spec.md` §5.2) |
 | a record with a `*` ALT | a `*` makes no edit and says another record's edit covers it |
-| a record whose reach, or the reach of any record its rewriting would write, overlaps or touches the REF of a record with a `*` ALT | reconciliation covers a `*` by every placement of a deletion and by the edits of a missing haplotype (`doc/specs/reconciliation.md` §4.2), so a rewritten neighbour could cover a `*` that was not covered, or the reverse |
+| a record whose reach, or the reach of any record its rewriting would write, overlaps or touches the REF as written of a record with a `*` ALT, the stretch its file's REF covers before trimming (`doc/specs/reconciliation.md` §4.2, decided by the owner on 21 October 2026) | reconciliation covers a `*` by every placement of a deletion and by the edits of a missing haplotype (`doc/specs/reconciliation.md` §4.2), so a rewritten neighbour could cover a `*` that was not covered, or the reverse |
 | a record with a symbolic allele | `parse_vcf` skips it, and so does pvc_eval (`doc/spec.md` §9); it is written where it stood |
 | a record at which some sample's GT is malformed, or of another ploidy than the one the file is read with | the sample is invalid wherever the record is (`doc/specs/reconciliation.md` §4), and its GT has no alleles to carry into pieces |
 | a **touched** record: one at which some sample carries an edit that touches an edit the same sample carries at another record of the contig, the two VCF alleles being ones that may share a haplotype | where edits of one haplotype touch, the outcome can follow the spelling (owner, 19 October 2026) |
@@ -283,9 +283,12 @@ re-spelling writes the `*`.
 sample when all of these hold:
 
 - *h* carries, at another record D, a deletion: an edit that replaces one or more positions with
-  no bases, which deletes, as written, a position of R's REF as `parse_vcf` trims it. The REF as
-  the file writes it can reach further: `12 TC TA` is `13 C A` trimmed, and a `*` there for a
-  deletion of 12 alone is not covered, so B's sample would be invalid (found by the review);
+  no bases, which deletes, as written, a position of R's REF as `parse_vcf` trims it. A `*` is
+  measured against its record's REF as written (`doc/specs/reconciliation.md` §4.2), which holds
+  the trimmed REF, so such a deletion covers it however the record is written. The trimmed REF is
+  asked for so that the re-spelling adds a `*` only where it would have been covered before the
+  rule of 21 October 2026 too: `12 TC TA` is `13 C A` trimmed, and a `*` there for a deletion of
+  12 alone is now covered, but is not added;
 - R's VCF genotype gives *h* REF, `0`. A `.` is left as it is. An ALT on *h* would be an edit
   touching the deletion, and R would be kept;
 - the phase between R and D on *h* is known, in one of three ways:
@@ -502,7 +505,7 @@ possible genotypes over some such pair, of A's blocks or of B's, and the oracle 
 - **impossible**, when two edits it carries collide as `doc/spec.md` §5.4 says (they replace a
   common position, an insertion lies between two positions one edit replaces, or two insertions
   go in at one point), or when it carries a `*` and no edit it carries replaces, as written, a
-  position of that record's REF; the assignment then gives no genotype;
+  position of that record's REF as written, the stretch its file's REF covers before trimming; the assignment then gives no genotype;
 - **missing**, when it is not impossible and is `.` at some record of the window. A `*` is also
   covered, as in reconciliation, by an edit of any ALT of a record at which the haplotype is
   `.`, since the haplotype might carry it; a `.` at a record none of whose ALTs covers the `*`
