@@ -12,19 +12,20 @@ region across a locus's end. pvc_eval measures a `*` against its record's REF as
 span of a record with a `*` holds that REF, as the owner decided on 21 October 2026; `doc/spec.md`
 §5.2, §5.4, §7.5 and §10, `doc/specs/reconciliation.md` and `doc/specs/respell.md` say so.
 
-**Checks at the end**, at 2e7e3f3: `ruff format --check`, `ruff check` and `ty check` pass;
-`uv run pytest -q` gives "1968 passed, 11 skipped" (1886 passed, 9 skipped at a050b57); the hard
+**Checks at the end**, at a0b9dbc: `ruff format --check`, `ruff check` and `ty check` pass;
+`uv run pytest -q` gives "1974 passed, 11 skipped" (1886 passed, 9 skipped at a050b57); the hard
 cases give "51 passed, 2 skipped" without the two variables and "53 passed" with them: the 50
 cases, the test that the excerpt tests catch an STR region across a locus's end, and the two
 excerpt tests, which need the variables. `PVC_EVAL_GRCH38` and `PVC_EVAL_TOMATO` name the FASTA of
 GRCh38 and of SL4.0, the tomato reference of the five tomato cases.
 
-**What is asked of the owner.** The merge of `hard-cases` into `main`; nothing is pushed. Two
-things found on the way are not fixed here, and neither blocks the merge:
+**What is asked of the owner.** The merge of `hard-cases` into `main`; nothing is pushed.
 
-- A REF of non-ASCII letters, `ß` against a reference `G`, stops the run with a Python traceback
-  from `_check_ref` in `pvc_eval.vcf` instead of an error naming the line, and `ſ` is read as the
-  IUPAC code `S`. It is on `main` already. It would be a small plan of one milestone, or an issue.
+- A REF of letters outside ASCII, `ß` against a reference `G`, stopped the run with a Python
+  traceback, and `ſ` was read as the IUPAC code `S`, on `main` too. At the owner's word of 21
+  October 2026 it is fixed on this branch by `doc/plans/non-ascii-ref.md` (below). An ALT of such
+  letters is still upper-cased by Python's rules, `ß` read as `SS`, with no traceback; the plan
+  left it as it is, and it is the owner's to decide whether such an ALT should stop the run.
 - The warning for a record whose span the span limit cut says it "was given only its REF as its
   span". A reviewer thought it no longer fits a record with a `*`, which keeps its REF as written.
   It does fit: a user reads "its REF" as the REF the file wrote, which is now exactly the span of
@@ -124,3 +125,15 @@ The owner can stop here.
   192,802; review 43,000 to 60,000 for each of five categories, and 76,810 for the correctness
   reviewer with its second look. Milestone 2, implementation and one round of fixes 210,362;
   review 64,523 to 95,483 for each of four categories.
+
+## The plan of a REF letter outside ASCII
+
+`doc/plans/non-ascii-ref.md`, one milestone, done at a0b9dbc from 178789c. `doc/spec.md` §5.2 says
+a letter outside ASCII is no base; `_check_ref` upper-cases only ASCII letters, so such a REF
+differs from the reference and stops the run with the error of §5.2, which now writes each letter
+outside ASCII with its code point, `'K' (U+212A)`, so that a look-alike of a base cannot read as one.
+`tests/test_vcf.py` has six cases: `ß` and `ſ` at a `G`, `ß` inside a longer REF and ending a REF
+of 21 bases, the Kelvin sign, and a combining mark after a `G`; each failed at 178789c. Two
+reviewers, errors and tests; the errors reviewer tried 15 characters outside ASCII, every one
+stopped with the error naming the file, line and position, and its finding, the look-alikes, is
+the code points above; the tests reviewer's missing case, the REF of 21 bases, was added.

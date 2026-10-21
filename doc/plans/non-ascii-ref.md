@@ -1,6 +1,6 @@
 # Plan: a REF letter outside ASCII
 
-*Status: under way, 21 October 2026, on the branch `hard-cases`, which the owner asked for. A
+*Status: done, 21 October 2026, on the branch `hard-cases`, which the owner asked for. A
 small change with no spec of its own; it builds the sentence of `doc/spec.md` §5.2 that says a REF
 letter outside ASCII is no base. The work report is `doc/reports/hard-cases.md`.*
 
@@ -15,7 +15,7 @@ for a REF that differs, naming the file, the line and the position.
 
 Before it: at 95f100b the checks pass and `uv run pytest -q` gives "1968 passed, 11 skipped".
 
-- [ ] **1. A REF letter outside ASCII differs from the reference**
+- [x] **1. A REF letter outside ASCII differs from the reference**
 
   Spec: `doc/spec.md` §5.2, the sentence on letters outside ASCII.
 
