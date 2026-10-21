@@ -353,12 +353,17 @@ a column missing or records out of order: on 21 October 2026, of 5,087 copies of
 each with one byte changed, 4,202 were reported so. So when reading a gzipped VCF or BED stops at
 a fault of its content, the file is first checked whole, and if gzip finds it damaged, the run
 stops with a message saying that the file is damaged and must be compressed or copied again, in
-place of the fault of the line (decided by the owner on 21 October 2026). A good file is read
-once; the whole check costs only a read that already failed.
+place of the fault of the line (decided by the owner on 21 October 2026). This holds also where
+the fault is found after the line is read, by sample pairing, `--strata` or `--regions`. A good
+file is read once; the whole check costs only a read that already failed. A BGZF file, as `bgzip`
+and `bcftools` write, ends with an empty block that marks its end; one cut between two blocks
+reads as a valid shorter file, so a BGZF file without that block is cut short, as htslib also
+says (found by the review of 21 October 2026).
 
 **The ALT `.`.** `.` alone as the ALT is a record with no ALT (below). `.` as one of several ALTs
 (`G A,.`) means nothing in VCF, and stops the run with an error naming the file and the line
-(decided by the owner on 21 October 2026); it was read as an allele.
+(decided by the owner on 21 October 2026); it was read as an allele. The rule holds also for a
+record with a symbolic ALT, `<DEL>,.`, which is otherwise skipped.
 
 **Checks.** Each VCF record's contig must be in the reference, its REF must lie within the contig's
 length, and records must come in the `.fai`'s contig order and by position; otherwise the run stops
