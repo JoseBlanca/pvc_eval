@@ -577,13 +577,16 @@ meant; the two are the same haplotype unless another edit lies at p+1 or p+2.
   Left first puts the insertion after the anchor, as VCF does.
 - A `*` allele makes no edit: it says the haplotype's bases here are removed by another VCF record,
   which carries that edit. The haplotype must carry a deletion, from another VCF record of the
-  locus, that deletes a position of the `*` record's normalised REF, where it was written or at
-  any other placement its span allows (§5.2), or another edit that replaces such a position as
-  written, as GATK writes `*` under an MNP; a haplotype missing at a VCF record might carry any
-  of its ALTs. If it carries none, the haplotype is **impossible**.
+  locus, that deletes a position of the `*` record's REF as the file wrote it, before normalising,
+  where the deletion was written or at any other placement its span allows (§5.2), or another edit
+  that replaces such a position as written, as GATK writes `*` under an MNP; a haplotype missing
+  at a VCF record might carry any of its ALTs. If it carries none, the haplotype is **impossible**.
   The placements count because `bcftools norm` moves the deletion and leaves the `*` record where
   it was. A deletion's anchor base is in its span but deleted by no placement, so a `*` on it
-  alone is not covered.
+  alone is not covered. The REF counts as written because a `*` names the bases of the REF its
+  caller wrote: pvc pads a record with a `*` over bases its alleles share, and normalising would
+  trim away the very bases the deletion reaches (decided by the owner on 21 October 2026, over
+  the normalised REF; `doc/specs/hard_cases.md` §6, cases S11 and E5).
 - The edits of one haplotype are applied to the reference over the locus in position order. Two
   edits **collide** if they change the same reference position, if one is an insertion between
   two positions the other replaces, or if they are two insertions at the same point, as written. Colliding edits cannot both apply: the haplotype is **impossible**.
