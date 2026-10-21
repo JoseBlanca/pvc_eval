@@ -113,6 +113,9 @@ def compare(
         plan the contigs to scan. Closing the stream stops the threads; it waits for the
         readers, and not for a scan in progress.
 
+    With config.regions, the VCF records of a contig the regions do not name are not read,
+    and their lines are checked only for their place (doc/specs/regions_read.md).
+
     Without config.str_regions, the STR regions of a contig reach the loci only once a
     record on it has reached them and, with config.regions, the regions name it. A thread
     of the finder may scan a contig earlier, or one that turns out not to be needed, and
@@ -135,13 +138,25 @@ def compare(
         sample_pairs = make_sample_pairs(a, b, sample_map=config.sample_map)
         regions = None if config.regions is None else read_regions(config.regions, contigs)
         get_stratum = _make_get_stratum(config.strata, contigs)
+        contigs_read = _find_contigs_read(indexed_fasta, regions)
         if finder_threads == 0:
-            records_a = _parse_vcf_until_exit(stack, a, indexed_fasta, config, config.ploidy_a)
-            records_b = _parse_vcf_until_exit(stack, b, indexed_fasta, config, config.ploidy_b)
+            records_a = _parse_vcf_until_exit(
+                stack, a, indexed_fasta, config, config.ploidy_a, contigs_read
+            )
+            records_b = _parse_vcf_until_exit(
+                stack, b, indexed_fasta, config, config.ploidy_b, contigs_read
+            )
             finder = None
         else:
             records_a, records_b, finder = _start_threads(
-                stack, (a, b), reference, indexed_fasta, config, regions, finder_threads
+                stack,
+                (a, b),
+                reference,
+                indexed_fasta,
+                config,
+                regions,
+                contigs_read,
+                finder_threads,
             )
         # The contigs of the records build_loci has taken, from which the segments are decided.
         taken_contigs: set[str] = set()
@@ -183,15 +198,33 @@ def _is_whole(number: object) -> bool:
     return isinstance(number, int) and not isinstance(number, bool)
 
 
+def _find_contigs_read(reference: IndexedFasta, regions: Regions | None) -> frozenset[str] | None:
+    """The contigs whose VCF records are read: those regions names when given, or None for
+    every contig (doc/specs/regions_read.md)."""
+    if regions is None:
+        return None
+    return frozenset(
+        contig for contig in reference.contigs if _is_named(contig, reference, regions)
+    )
+
+
 def _parse_vcf_until_exit(
-    stack: ExitStack, path: Path, reference: IndexedFasta, config: CompareConfig, ploidy: int
+    stack: ExitStack,
+    path: Path,
+    reference: IndexedFasta,
+    config: CompareConfig,
+    ploidy: int,
+    contigs_read: frozenset[str] | None,
 ) -> Iterator[VcfRecord]:
-    """parse_vcf's records of a file, its stream closed when stack exits, so that a run
-    stopped early closes the file and parse_vcf's pool at once."""
+    """parse_vcf's records of a file on contigs_read, or on every contig when it is None,
+    its stream closed when stack exits, so that a run stopped early closes the file and
+    parse_vcf's pool at once."""
     # parse_vcf is a generator function, so its stream has close().
     vcf_records = cast(
         Generator[VcfRecord],
-        parse_vcf(path, reference, span_limit=config.span_limit, ploidy=ploidy),
+        parse_vcf(
+            path, reference, span_limit=config.span_limit, ploidy=ploidy, contigs=contigs_read
+        ),
     )
     return stack.enter_context(closing(vcf_records))
 
@@ -332,6 +365,7 @@ def _start_threads(
     reference: IndexedFasta,
     config: CompareConfig,
     regions: Regions | None,
+    contigs_read: frozenset[str] | None,
     finder_threads: int,
 ) -> tuple[Iterator[VcfRecord], Iterator[VcfRecord], _Finder | None]:
     """Starts a reader for each of file A and file B and, without config.str_regions, the
@@ -339,11 +373,12 @@ def _start_threads(
     reader, as the loci side takes them, and the finder (doc/specs/compare.md, "Which thread
     does what").
 
-    reference_path: the FASTA that reference reads, which each thread of the finder opens
-        for itself.
+    reference_path: the FASTA that reference reads, which each reader and each thread of
+        the finder opens for itself.
+    contigs_read: the contigs whose records the readers read, or None for every contig.
 
-    When stack exits, the stop is set, and the readers started are waited for
-    (doc/specs/compare.md, "Errors, and stopping early").
+    When stack exits, the stop is set; no thread is waited for (doc/specs/compare.md, "The
+    stop").
     """
     stop = threading.Event()
     finder = None
@@ -353,60 +388,72 @@ def _start_threads(
         Queue(maxsize=_BUFFER_BATCHES),
         Queue(maxsize=_BUFFER_BATCHES),
     )
-    readers = [
-        threading.Thread(
-            target=_parse_vcf_into_buffer,
-            args=(
-                functools.partial(
-                    parse_vcf, path, reference, span_limit=config.span_limit, ploidy=ploidy
-                ),
-                buffer,
-                finder,
-            ),
-            name=f"pvc_eval reader {file_name}",
-            daemon=True,
-        )
-        for path, ploidy, buffer, file_name in zip(
-            paths, (config.ploidy_a, config.ploidy_b), buffers, "AB", strict=True
-        )
-    ]
-    stack.callback(_stop_threads, stop, finder, buffers, readers)
+    stack.callback(_stop_threads, stop, finder, buffers)
     if finder is not None:
         # The reference lacks a contig an index lists: a record on it stops the run when a
         # reader reaches it, so its scan is not planned.
         index_contigs = parse_index_contigs(paths[0]) | parse_index_contigs(paths[1])
         finder.put(contig for contig in reference.contigs if contig in index_contigs)
         finder.start(reference_path)
-    for reader in readers:
-        reader.start()
+    for path, ploidy, buffer, file_name in zip(
+        paths, (config.ploidy_a, config.ploidy_b), buffers, "AB", strict=True
+    ):
+        open_vcf_records = functools.partial(
+            _open_vcf_records,
+            path,
+            span_limit=config.span_limit,
+            ploidy=ploidy,
+            contigs=contigs_read,
+        )
+        threading.Thread(
+            target=_parse_vcf_into_buffer,
+            args=(open_vcf_records, reference_path, buffer, finder),
+            name=f"pvc_eval reader {file_name}",
+            daemon=True,
+        ).start()
     return _take_records(buffers[0]), _take_records(buffers[1]), finder
 
 
 def _stop_threads(
-    stop: threading.Event,
-    finder: _Finder | None,
-    buffers: Iterable[_Buffer],
-    readers: Iterable[threading.Thread],
+    stop: threading.Event, finder: _Finder | None, buffers: Iterable[_Buffer]
 ) -> None:
-    """Sets the stop, wakes the finder's threads that wait for a contig, shuts the buffers
-    down, which wakes a reader waiting for room, and waits for the readers started to end. A
-    scan in progress is not waited for."""
+    """Sets the stop, wakes the finder's threads that wait for a contig, and shuts the
+    buffers down, which wakes a reader waiting for room; each reader then ends within one
+    batch of parse_vcf's work. No thread is waited for: a stop run by the garbage collector,
+    in a thread that may hold threading's lock on its list of threads, would wait forever
+    for a thread that ends, which takes that lock (doc/specs/compare.md, "The stop").
+
+    While Python is exiting it does nothing: shutting a buffer down takes a lock, which
+    Python then refuses, and every thread of compare() is a daemon thread, which ends with
+    the process."""
+    if sys.is_finalizing():
+        return
     stop.set()
     if finder is not None:
         finder.stop()
     for buffer in buffers:
         buffer.shutdown(immediate=True)
-    # A stream that Python closes as it exits cannot wait for a thread; the readers end with
-    # Python, and the reference is no longer read.
-    if sys.is_finalizing():
-        return
-    for reader in readers:
-        if reader.ident is not None:
-            reader.join()
+
+
+def _open_vcf_records(
+    path: Path,
+    reference: IndexedFasta,
+    *,
+    span_limit: int | None,
+    ploidy: int,
+    contigs: frozenset[str] | None,
+) -> Generator[VcfRecord]:
+    """parse_vcf's stream over reference, which a reader thread has opened for itself."""
+    # parse_vcf is a generator function, so its stream has close().
+    return cast(
+        Generator[VcfRecord],
+        parse_vcf(path, reference, span_limit=span_limit, ploidy=ploidy, contigs=contigs),
+    )
 
 
 def _parse_vcf_into_buffer(
-    open_vcf_records: Callable[[], Iterator[VcfRecord]],
+    open_vcf_records: Callable[[IndexedFasta], Generator[VcfRecord]],
+    reference_path: Path,
     buffer: _Buffer,
     finder: _Finder | None,
 ) -> None:
@@ -416,15 +463,20 @@ def _parse_vcf_into_buffer(
     put in the finder's line. At the stop the buffer is shut down, and the reading ends with
     its stream closed.
 
-    open_vcf_records: parse_vcf with its arguments, called in this thread.
+    open_vcf_records: parse_vcf with its arguments but the reference, called in this thread
+        with the reader's own handle on the reference.
+    reference_path: the FASTA, which the reader opens for itself and closes when its reading
+        ends, so that compare() closes its own without waiting for it, and nothing is opened
+        for a reader that does not start.
     """
     # After the stop, nothing more is taken from the buffer.
     with suppress(ShutDown):
-        _put_vcf_records(open_vcf_records, buffer, finder)
+        _put_vcf_records(open_vcf_records, reference_path, buffer, finder)
 
 
 def _put_vcf_records(
-    open_vcf_records: Callable[[], Iterator[VcfRecord]],
+    open_vcf_records: Callable[[IndexedFasta], Generator[VcfRecord]],
+    reference_path: Path,
     buffer: _Buffer,
     finder: _Finder | None,
 ) -> None:
@@ -432,8 +484,10 @@ def _put_vcf_records(
     batch: list[VcfRecord] = []
     ending: BaseException | _END = _END
     try:
-        # parse_vcf is a generator function, so its stream has close().
-        with closing(cast(Generator[VcfRecord], open_vcf_records())) as vcf_records:
+        with (
+            IndexedFasta(reference_path) as reference,
+            closing(open_vcf_records(reference)) as vcf_records,
+        ):
             contig = None
             for vcf_record in vcf_records:
                 if finder is not None and vcf_record.contig != contig:
@@ -501,22 +555,16 @@ class _Finder:
         self._waited_contig: str | None = None
 
     def start(self, reference_path: Path) -> None:
-        """Starts the finder's threads, each with the FASTA at reference_path opened here for
-        it alone and closed when it ends, so that a scan still running after compare() has
-        closed its reference reads a descriptor of its own. They are daemon threads, so that
-        a scan in progress does not keep Python from exiting.
-
-        Raises what IndexedFasta raises for the FASTA, before any thread starts.
+        """Starts the finder's threads. Each opens the FASTA at reference_path for itself and
+        closes it when it ends, so that a scan still running after compare() has closed its
+        reference reads a descriptor of its own, and nothing is opened for a thread that does
+        not start. They are daemon threads, so that a scan in progress does not keep Python
+        from exiting.
         """
-        with ExitStack() as opened:
-            references = [
-                opened.enter_context(IndexedFasta(reference_path)) for _ in range(self._num_threads)
-            ]
-            opened.pop_all()
-        for number, reference in enumerate(references, start=1):
+        for number in range(1, self._num_threads + 1):
             thread = threading.Thread(
                 target=self._find_in_line,
-                args=(reference,),
+                args=(reference_path,),
                 name=f"pvc_eval finder {number}",
                 daemon=True,
             )
@@ -571,10 +619,17 @@ class _Finder:
         with self._condition:
             self._condition.notify_all()
 
-    def _find_in_line(self, reference: IndexedFasta) -> None:
-        """A finder thread: the contigs taken from the line, scanned one after another in
-        reference, its own, until the stop. A scan's exception is passed to the loci side, or
-        dropped after the stop."""
+    def _find_in_line(self, reference_path: Path) -> None:
+        """A finder thread: the contigs taken from the line, scanned one after another in the
+        FASTA at reference_path, which it opens for itself, until the stop. A scan's
+        exception, or the one that opening the FASTA raised, is passed to the loci side for
+        each contig it takes, or dropped after the stop."""
+        try:
+            reference = IndexedFasta(reference_path)
+        except BaseException as error:  # noqa: BLE001 -- raised by the loci side, or dropped at the stop
+            while (contig := self._take_contig()) is not None:
+                self._put_result(contig, error)
+            return
         with reference:
             while (contig := self._take_contig()) is not None:
                 try:

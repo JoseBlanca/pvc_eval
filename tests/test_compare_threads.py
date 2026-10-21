@@ -25,6 +25,9 @@ import pytest
 from tests.compare_case import CONTIGS, LINES_A, LINES_B, CompareCase, write_compare_case
 from tests.test_compare import (
     _CONTIGS_WITH_RECORDS,
+    _LINES_A_REF_DIFFERS_ON_CHR1,
+    _LINES_A_REF_DIFFERS_ON_CHR4,
+    _REGIONS_NAMING_CHR3,
     _get_scan_messages,
     _make_config,
     _run_nine_steps,
@@ -297,6 +300,61 @@ def test_regions_naming_contig_3_scan_contig_3_alone_whatever_the_indexes(
     assert _get_scan_messages(caplog) == ["chr3: finding STR regions in 300 bases."]
 
 
+@pytest.mark.parametrize("bed_line", _REGIONS_NAMING_CHR3)
+def test_ref_that_differs_on_contig_1_does_not_stop_a_run_with_regions_naming_contig_3(
+    tmp_path: Path, bed_line: str
+) -> None:
+    # doc/specs/regions_read.md: with 2 finder threads, as tests/test_compare.py with none.
+    (tmp_path / "differs").mkdir()
+    (tmp_path / "agrees").mkdir()
+    case = write_compare_case(tmp_path / "differs", lines_a=_LINES_A_REF_DIFFERS_ON_CHR1)
+    agreeing_case = write_compare_case(tmp_path / "agrees")
+    config = _make_config(f"--regions {bed_line}", tmp_path)
+    expected = _run_nine_steps(agreeing_case, config, _CONTIGS_WITH_RECORDS)
+    assert expected[1] is None
+    _check_same_run(_run_compare(case, config, 2), expected)
+
+
+def test_ref_that_differs_on_contig_1_stops_a_run_without_regions(tmp_path: Path) -> None:
+    case = write_compare_case(tmp_path, lines_a=_LINES_A_REF_DIFFERS_ON_CHR1)
+    rows, error = _run_compare(case, CompareConfig(), 2)
+    assert rows == []
+    assert str(error) == (
+        f"{case.a}, line 3: the REF of chr1:50 is 'G', and the reference, read in upper case,"
+        " has 'T' there. It is the first record read with no symbolic allele, so the VCF"
+        " looks made on another reference: compare against the reference it was called on,"
+        " and run again."
+    )
+
+
+@pytest.mark.parametrize("indexes", ["neither indexed", "both indexed"])
+def test_bed_line_past_the_end_of_contig_4_reads_no_record_of_it(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, indexes: str
+) -> None:
+    # chr4 has 200 bases, so the BED line at 300-400 names no contig, and chr4:51's REF,
+    # which differs from the reference, is not read; an index that lists chr4 does not
+    # plan its scan.
+    (tmp_path / "differs").mkdir()
+    (tmp_path / "agrees").mkdir()
+    index_contigs = {
+        "neither indexed": {},
+        "both indexed": {"contigs_a": ["chr1", "chr3", "chr4"], "contigs_b": ["chr2", "chr3"]},
+    }[indexes]
+    case = _index_case(
+        write_compare_case(tmp_path / "differs", lines_a=_LINES_A_REF_DIFFERS_ON_CHR4),
+        **index_contigs,
+    )
+    agreeing_case = write_compare_case(tmp_path / "agrees")
+    regions = tmp_path / "regions.bed"
+    regions.write_text("chr3\t0\t300\nchr4\t300\t400\n", encoding="utf-8")
+    config = CompareConfig(regions=regions)
+    expected = _run_nine_steps(agreeing_case, config, _CONTIGS_WITH_RECORDS)
+    assert len(expected[0]) == 2
+    caplog.set_level(logging.INFO, logger=_LOGGER)
+    _check_same_run(_run_compare(case, config, 2), expected)
+    assert _get_scan_messages(caplog) == ["chr3: finding STR regions in 300 bases."]
+
+
 @pytest.mark.parametrize("finder_threads", _FINDER_THREADS)
 @pytest.mark.parametrize(
     "last_line_on_chr1",
@@ -556,8 +614,9 @@ def test_reader_held_by_the_finder_takes_one_buffer_and_two_batches(
     # The buffer full, one batch the loci side took before it waited on the finder for chr1,
     # and one the reader holds while it waits: 158 batches.
     assert num_taken == (_BUFFER_BATCHES + 2) * _BATCH_RECORDS == 10_112
-    # Closed, the stream has waited for its readers.
-    assert _get_new_threads(threads_before, "pvc_eval reader") == []
+    # Closed, the stream does not wait for its readers, which end within one batch of
+    # parse_vcf's work (doc/specs/compare.md, "The stop").
+    assert _join_threads(threads_before, "pvc_eval reader", 5) == []
 
 
 def test_close_after_first_row_ends_readers_and_starts_no_scan(
@@ -579,8 +638,9 @@ def test_close_after_first_row_ends_readers_and_starts_no_scan(
         assert _call_with_timeout(lambda: next(rows)).contig == "chr1"
         _call_with_timeout(rows.close)
         num_calls = len(calls)
-        # Closed, the stream has waited for its readers, before it closed the reference.
-        assert _get_new_threads(threads_before, "pvc_eval reader") == []
+        # Closed, the stream does not wait for its readers, which end within one batch of
+        # parse_vcf's work (doc/specs/compare.md, "The stop").
+        assert _join_threads(threads_before, "pvc_eval reader", 5) == []
     finally:
         release.set()
     assert _join_threads(threads_before, "pvc_eval", 5) == []
@@ -730,3 +790,111 @@ def test_stream_never_closed_ends_python_with_no_error(tmp_path: Path) -> None:
     assert (completed.returncode, completed.stdout) == (0, "chr1\n")
     assert "Error" not in completed.stderr
     assert "Exception" not in completed.stderr
+
+
+# A compare() stream with threads, dropped unclosed in a reference cycle and finalized by the
+# garbage collector in a thread that holds threading's _active_limbo_lock, as
+# threading.enumerate() and Thread.start() hold it. threading has no public way to hold that
+# lock, and holding it is what makes a stop that joins the readers wait forever: a reader
+# that ends takes the lock to leave threading's list of threads (doc/specs/compare.md, "The
+# stop"). It runs in a process of its own, so that a hang fails the test at its timeout and
+# leaves the lock of this process free.
+_FINALIZED_SCRIPT = """
+import gc, sys, threading
+from pathlib import Path
+from pvc_eval.compare import CompareConfig, compare
+
+directory = Path(sys.argv[1])
+gc.disable()
+rows = compare(
+    directory / "a.vcf", directory / "b.vcf", directory / "ref.fa", CompareConfig(chain_distance=0)
+)
+print(next(rows).contig)
+cycle = [rows]
+cycle.append(cycle)
+del rows, cycle
+with threading._active_limbo_lock:
+    gc.collect()
+print("collected")
+"""
+
+
+def test_stream_finalized_while_threads_are_listed_does_not_hang(tmp_path: Path) -> None:
+    _write_big_case(tmp_path)
+    completed = subprocess.run(
+        [sys.executable, "-c", _FINALIZED_SCRIPT, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=_TIMEOUT,
+    )
+    assert (completed.returncode, completed.stdout) == (0, "chr1\ncollected\n")
+    assert "Error" not in completed.stderr
+    assert "Exception" not in completed.stderr
+
+
+class _CountedFastas:
+    """A stand-in for IndexedFasta in pvc_eval.compare that keeps every handle opened, so
+    that a test can count those never closed; its lock keeps the list whole when threads
+    open handles at once."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._opened: list[IndexedFasta] = []
+        self._closed: set[int] = set()
+        counted = self
+
+        class CountedFasta(IndexedFasta):
+            def __init__(self, path: Path) -> None:
+                super().__init__(path)
+                with counted._lock:
+                    counted._opened.append(self)
+
+            def close(self) -> None:
+                super().close()
+                with counted._lock:
+                    counted._closed.add(id(self))
+
+        self.fasta_class = CountedFasta
+
+    def count_open(self) -> int:
+        with self._lock:
+            return sum(id(fasta) not in self._closed for fasta in self._opened)
+
+
+@pytest.mark.parametrize(
+    ("reader", "error"),
+    [
+        ("pvc_eval reader B", RuntimeError),
+        ("pvc_eval reader A", KeyboardInterrupt),
+        ("pvc_eval finder 2", RuntimeError),
+        ("pvc_eval finder 1", KeyboardInterrupt),
+    ],
+    ids=[
+        "reader B cannot start",
+        "Ctrl-C at reader A's start",
+        "finder thread 2 cannot start",
+        "Ctrl-C at finder thread 1's start",
+    ],
+)
+def test_thread_that_does_not_start_leaves_no_reference_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reader: str, error: type[BaseException]
+) -> None:
+    case = write_compare_case(tmp_path)
+    fastas = _CountedFastas()
+    monkeypatch.setattr(compare_module, "IndexedFasta", fastas.fasta_class)
+    start = threading.Thread.start
+
+    def start_or_fail(thread: threading.Thread) -> None:
+        if thread.name == reader:
+            raise error("can't start new thread")
+        start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start_or_fail)
+    threads_before = set(threading.enumerate())
+    future = _start_call(lambda: list(compare(case.a, case.b, case.reference, finder_threads=2)))
+    with pytest.raises(error, match="can't start new thread"):
+        _get_result(future)
+    # Every thread of compare() that started ends, and closes what it opened.
+    assert _join_threads(threads_before, "pvc_eval", 5) == []
+    assert fastas.count_open() == 0

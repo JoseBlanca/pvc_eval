@@ -96,7 +96,7 @@ the contigs whose loci need STR regions.
 |---|---|
 | `--reference` | FASTA with its `.fai`. Contig names and order come from the `.fai`. |
 | `--a`, `--b` | the two VCFs, plain or bgzipped. |
-| `--regions` | compare only the loci that overlap these regions, by at least one position; every other locus is skipped and gets no row, nor a count in the summary. A locus that overlaps is compared whole, its VCF records outside the regions included, since loci are built from all VCF records (§5.3). Without it, every locus is compared. |
+| `--regions` | compare only the loci that overlap these regions, by at least one position; every other locus is skipped and gets no row, nor a count in the summary. A locus that overlaps is compared whole, its VCF records outside the regions included, since loci are built from all VCF records (§5.3). The VCF records of a contig it does not name are not read beyond their contig and position (`doc/specs/regions_read.md`). Without it, every locus is compared. |
 | `--strata` | BED with a fourth column naming each interval's class; a locus takes the class of the intervals it overlaps (several are joined with `,`; none gives `.`). The word `pvc` instead of a path gives each locus one region type from the STR regions it holds — `satellite`, `str-bundle`, `str` or `generic` — with no BED needed (§5.7); a file named `pvc` is given as `./pvc`. |
 | `--str-regions` | BED of STR regions to use instead of running the STR finder. |
 | `--sample-map` | two columns: a sample of A, a sample of B. Without it, samples are paired by name. |
@@ -364,7 +364,8 @@ with `A` or `G`, `A` only with codes that include `A`; so a reference that write
 site where the VCF has a plain base, as some references and callers do, is no difference, while a
 VCF made on another build still is (decided by the owner on 19 October 2026). The error says how
 many records of the file agreed with the reference before the failing one, which tells a wrong
-reference (none) from a damaged line (many). A record with a symbolic allele (§9) is checked only
+reference (none) from a damaged line (many); with `--regions`, only the records of the contigs it
+names are compared with the reference and counted (`doc/specs/regions_read.md`). A record with a symbolic allele (§9) is checked only
 for its contig and its order, not for its REF or its length, since it is skipped and nothing is
 compared from it (decided by the owner on 19 October 2026); a file made on another reference still
 stops at its first record with plain alleles.

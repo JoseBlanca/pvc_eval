@@ -479,14 +479,10 @@ def test_setting_at_its_edge_gives_rows(
                 "chr3: 2 loci compared; ",
             ],
         ),
-        (
-            "--regions chr3 0 300",
-            [
-                "chr1: 0 loci compared, 3 skipped by --regions; ",
-                "chr2: 0 loci compared, 2 skipped by --regions; ",
-                "chr3: 2 loci compared, 0 skipped by --regions; ",
-            ],
-        ),
+        # doc/specs/regions_read.md: a contig --regions does not name is not read, so it
+        # has no locus and no line.
+        ("--regions chr3 0 300", ["chr3: 2 loci compared, 0 skipped by --regions; "]),
+        ("--regions chr3 200 300", ["chr3: 1 locus compared, 1 skipped by --regions; "]),
     ],
 )
 def test_contig_done_line_counts_its_loci(
@@ -511,6 +507,64 @@ def test_contig_done_line_for_one_locus_says_locus(
     done_lines = _get_messages(caplog, "compared")
     assert len(done_lines) == 1
     assert re.fullmatch(r"chr1: 1 locus compared; " + _TIME, done_lines[0])
+
+
+# doc/specs/regions_read.md: chr1:50 of file A with a REF of G where the reference has T,
+# and chr4:51 with G where it has C.
+_LINE_REF_DIFFERS_ON_CHR1 = "chr1 50 G C 50 0/1:40 1/1:35"
+_LINE_REF_DIFFERS_ON_CHR4 = "chr4 51 G A 30 0/1:30 0/0:30"
+# The regions that name contig 3 alone: whole, and cut inside it before, at and after its
+# loci, 101-120 and 250 (1-based).
+_REGIONS_NAMING_CHR3 = ["chr3 0 300", "chr3 0 50", "chr3 100 101", "chr3 200 300"]
+
+
+# File A of the four-contig case with chr1:50's REF wrong, and with chr4:51's added.
+_LINES_A_REF_DIFFERS_ON_CHR1 = (_LINE_REF_DIFFERS_ON_CHR1, *LINES_A[1:])
+_LINES_A_REF_DIFFERS_ON_CHR4 = (*LINES_A, _LINE_REF_DIFFERS_ON_CHR4)
+
+
+@pytest.mark.parametrize("bed_line", _REGIONS_NAMING_CHR3)
+def test_ref_that_differs_on_contig_1_does_not_stop_a_run_with_regions_naming_contig_3(
+    tmp_path: Path, bed_line: str
+) -> None:
+    (tmp_path / "differs").mkdir()
+    (tmp_path / "agrees").mkdir()
+    case = write_compare_case(tmp_path / "differs", lines_a=_LINES_A_REF_DIFFERS_ON_CHR1)
+    agreeing_case = write_compare_case(tmp_path / "agrees")
+    config = _make_config(f"--regions {bed_line}", tmp_path)
+    expected = _run_nine_steps(agreeing_case, config, _CONTIGS_WITH_RECORDS)
+    assert expected[1] is None
+    _check_same_run(_run_compare(case, config), expected)
+
+
+def test_ref_that_differs_on_contig_1_stops_a_run_without_regions(tmp_path: Path) -> None:
+    case = write_compare_case(tmp_path, lines_a=_LINES_A_REF_DIFFERS_ON_CHR1)
+    rows, error = _run_compare(case, CompareConfig())
+    assert rows == []
+    assert str(error) == (
+        f"{case.a}, line 3: the REF of chr1:50 is 'G', and the reference, read in upper case,"
+        " has 'T' there. It is the first record read with no symbolic allele, so the VCF"
+        " looks made on another reference: compare against the reference it was called on,"
+        " and run again."
+    )
+
+
+def test_bed_line_past_the_end_of_contig_4_reads_no_record_of_it(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # chr4 has 200 bases, so the BED line at 300-400 names no contig, and chr4:51's REF,
+    # which differs from the reference, is not read.
+    (tmp_path / "differs").mkdir()
+    (tmp_path / "agrees").mkdir()
+    case = write_compare_case(tmp_path / "differs", lines_a=_LINES_A_REF_DIFFERS_ON_CHR4)
+    agreeing_case = write_compare_case(tmp_path / "agrees")
+    regions = write_bed(tmp_path / "regions.bed", ["chr3 0 300", "chr4 300 400"])
+    config = CompareConfig(regions=regions)
+    expected = _run_nine_steps(agreeing_case, config, _CONTIGS_WITH_RECORDS)
+    assert len(expected[0]) == 2
+    caplog.set_level(logging.INFO, logger=_LOGGER)
+    _check_same_run(_run_compare(case, config), expected)
+    assert _get_scan_messages(caplog) == ["chr3: finding STR regions in 300 bases."]
 
 
 @pytest.mark.parametrize(
