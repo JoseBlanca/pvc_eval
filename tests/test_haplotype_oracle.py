@@ -339,6 +339,21 @@ def test_two_spellings_of_the_same_haplotypes_pass(
     assert _check(tmp_path, reference, lines_a, lines_b) == comparison
 
 
+# doc/specs/reconciliation.md R10: the `*` is covered by the deletion of 16-19, which deletes
+# a position of its record's REF as written, 10-16, and none of its REF once trimmed, 12-14.
+# File B writes the same haplotypes without the `*`.
+def test_a_padded_star_record_is_measured_against_its_ref_as_written(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    reference = case_files.write_reference(10, "TATACACATAGG")
+    lines_a = ["10 TATACAC TATAC,* 1/2", "15 ACATA A 0/1"]
+    lines_b = ["12 TAC T 0|1", "15 ACATA A 1|0"]
+
+    comparison = _check(tmp_path, reference, lines_a, lines_b)
+
+    assert comparison == HaplotypeComparison(num_windows=1, num_linked_pairs=0, num_over_cap=0)
+
+
 def test_ploidy_1_gives_one_genotype_a_window(case_files: CaseFiles, tmp_path: Path) -> None:
     reference = case_files.write_reference(1, _O_BASES)
     # The records at 2-3 and 4 lie next to each other: one window, 2-4.

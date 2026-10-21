@@ -21,7 +21,7 @@ import re
 import struct
 import sys
 import zlib
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
@@ -570,11 +570,13 @@ class _RecordEdits:
 
 @dataclass(frozen=True, slots=True)
 class _ContigEdits:
-    """The records of a contig with an ALT, with their edits, sorted by REF start; and for
-    each, the furthest end of the REFs up to it, so that a search for the REFs that touch a
-    stretch stops where no REF before reaches it."""
+    """The records of a contig with an ALT, with their edits, sorted by the start of their
+    REF, or of their REF as written where the index is of the records with a `*` ALT; and
+    for each, that stretch and the furthest end of the stretches up to it, so that a search
+    for the stretches that touch another stops where none before reaches it."""
 
     record_edits: tuple[_RecordEdits, ...]
+    refs: tuple[Span, ...]
     starts: tuple[int, ...]
     furthest_ends: tuple[int, ...]
 
@@ -587,6 +589,7 @@ class _RecordIndex:
 
     by_place: Mapping[int, _RecordEdits]
     by_contig: Mapping[str, _ContigEdits]
+    # By the REF as written (§2.2), which a `*` is measured against.
     spanning_deletions: Mapping[str, _ContigEdits]
     touched_places: set[int]
 
@@ -599,47 +602,63 @@ def _make_record_index(input_records: Iterable[_InputRecord]) -> _RecordIndex:
         for input_record in input_records
         if input_record.vcf_record is not None and len(input_record.vcf_record.alleles) > 1
     }
-    by_contig = _make_contig_edits(by_place.values())
+    by_contig = _make_contig_edits(by_place.values(), _get_ref)
     return _RecordIndex(
         by_place=by_place,
         by_contig=by_contig,
         spanning_deletions=_make_contig_edits(
-            record_edits
-            for record_edits in by_place.values()
-            if _SPANNING_DELETION in record_edits.vcf_record.alleles[1:]
+            (
+                record_edits
+                for record_edits in by_place.values()
+                if _SPANNING_DELETION in record_edits.vcf_record.alleles[1:]
+            ),
+            _get_written_ref,
         ),
         touched_places=_find_touched_places(by_contig),
     )
 
 
-def _make_contig_edits(record_edits: Iterable[_RecordEdits]) -> dict[str, _ContigEdits]:
-    """Records with their edits, by contig, sorted by REF start."""
+def _make_contig_edits(
+    record_edits: Iterable[_RecordEdits], get_stretch: Callable[[VcfRecord], Span]
+) -> dict[str, _ContigEdits]:
+    """Records with their edits, by contig, sorted by the start of the stretch get_stretch
+    gives each."""
     by_contig: dict[str, list[_RecordEdits]] = {}
     for one_record_edits in record_edits:
         by_contig.setdefault(one_record_edits.vcf_record.contig, []).append(one_record_edits)
     contig_edits = {}
     for contig, contig_records in by_contig.items():
-        contig_records.sort(key=lambda record_edits: record_edits.vcf_record.start)
-        furthest_ends = itertools.accumulate(
-            (record_edits.vcf_record.end for record_edits in contig_records), max
-        )
+        contig_records.sort(key=lambda record_edits: get_stretch(record_edits.vcf_record)[0])
+        refs = tuple(get_stretch(record_edits.vcf_record) for record_edits in contig_records)
         contig_edits[contig] = _ContigEdits(
             record_edits=tuple(contig_records),
-            starts=tuple(record_edits.vcf_record.start for record_edits in contig_records),
-            furthest_ends=tuple(furthest_ends),
+            refs=refs,
+            starts=tuple(start for start, _ in refs),
+            furthest_ends=tuple(itertools.accumulate((end for _, end in refs), max)),
         )
     return contig_edits
 
 
+def _get_ref(vcf_record: VcfRecord) -> Span:
+    return vcf_record.start, vcf_record.end
+
+
+def _get_written_ref(vcf_record: VcfRecord) -> Span:
+    """The REF as the file wrote it, which parse_vcf gives every record."""
+    assert vcf_record.written_ref is not None, "parse_vcf sets written_ref"
+    return vcf_record.written_ref
+
+
 def _find_ref_touching_records(contig_edits: _ContigEdits, stretch: Span) -> Iterator[_RecordEdits]:
-    """The records whose REF overlaps stretch or lies next to it, from the right. Every edit
-    that touches stretch is one of theirs, since an edit lies within its REF, ends included."""
+    """The records whose REF, or REF as written in the index of the records with a `*` ALT,
+    overlaps stretch or lies next to it, from the right. Every edit that touches stretch is
+    one of theirs, since an edit lies within its REF, ends included."""
     stretch_start, stretch_end = stretch
     index = bisect.bisect_right(contig_edits.starts, stretch_end) - 1
     while index >= 0 and contig_edits.furthest_ends[index] >= stretch_start:
-        record_edits = contig_edits.record_edits[index]
-        if record_edits.vcf_record.end >= stretch_start:
-            yield record_edits
+        _, ref_end = contig_edits.refs[index]
+        if ref_end >= stretch_start:
+            yield contig_edits.record_edits[index]
         index -= 1
 
 
@@ -699,7 +718,7 @@ def _is_near_spanning_deletion(
     reference: IndexedFasta,
 ) -> bool:
     """§2.2: the reach of a record of contig, or of a record its rewriting would write,
-    touches the REF of a record with a `*` ALT.
+    touches the REF as written of a record with a `*` ALT.
 
     written: the input record and those its rewriting would write, each as its start,
         0-based, and its alleles, trimmed as parse_vcf trims them.

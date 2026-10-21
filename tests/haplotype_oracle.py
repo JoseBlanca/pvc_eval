@@ -393,7 +393,13 @@ def _find_haplotype_value(
             is_missing = True
             missing_edits.extend(_make_alt_edits(vcf_record))
         elif vcf_record.alleles[allele] == _SPANNING_DELETION:
-            star_refs.append((vcf_record.start, vcf_record.end))
+            # A `*` is measured against its record's REF as the file wrote it, or, for a
+            # record built without it, its REF (doc/specs/reconciliation.md §4.2 and §7).
+            star_refs.append(
+                (vcf_record.start, vcf_record.end)
+                if vcf_record.written_ref is None
+                else vcf_record.written_ref
+            )
         elif allele != 0:
             edit = _make_edit(vcf_record, vcf_record.alleles[allele])
             if edit is not None:
@@ -444,7 +450,7 @@ def _is_colliding(edit: _Edit, other: _Edit) -> bool:
 
 
 def _is_covered(star_ref: tuple[int, int], edits: Sequence[_Edit]) -> bool:
-    """Whether an edit, as written, replaces a position of a `*` record's REF."""
+    """Whether an edit, as written, replaces a position of a `*` record's REF as written."""
     star_start, star_end = star_ref
     return any(edit.deleted and edit.start < star_end and star_start < edit.end for edit in edits)
 

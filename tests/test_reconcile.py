@@ -5,6 +5,7 @@ The cases give positions 1-based and inclusive, as the spec does; a Locus is 0-b
 half-open, so a locus 9-12 of the spec is Locus(start=8, end=12).
 """
 
+import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -184,6 +185,17 @@ CASES = {
         alleles=("TAAAA",),
         result_a=CONTRADICTING,
         span_limit=2,
+    ),
+    # R10, reference 10-21 TATACACATAGG, locus 12-19: the `*` record is normalised to
+    # 12 TAC T,*, and both placements of the deletion of 16-19, as written or slid to 15-18,
+    # delete a position of its REF as written, 10-16.
+    "R10-padded-star-covered-by-its-ref-as-written": Case(
+        ref_start=10,
+        bases="TATACACATAGG",
+        locus=(12, 19),
+        lines_a=["10 TATACAC TATAC,* 1/2", "15 ACATA A 0/1"],
+        alleles=("TACACATA", "TACATA", "TACA"),
+        result_a=((1, 2),),
     ),
     # R3, reference 21-26 CAGAGT, locus 21-25.
     "R3-as-written": Case(
@@ -370,6 +382,26 @@ def test_reconcile_gives_the_locus_alleles_and_possible_genotypes_of_each_case(
         results_a={0: case.result_a},
         results_b={0: case.result_b},
     )
+
+
+# §7: a record built without written_ref is measured against its REF, here R10's normalised
+# REF, 12-14, which no placement of the deletion reaches.
+def test_reconcile_measures_a_star_without_written_ref_against_its_ref(
+    case_files: CaseFiles,
+) -> None:
+    reference = case_files.write_reference(10, "TATACACATAGG")
+    records = tuple(
+        dataclasses.replace(vcf_record, written_ref=None)
+        for vcf_record in case_files.write_and_parse_records(
+            reference, ["10 TATACAC TATAC,* 1/2", "15 ACATA A 0/1"]
+        )
+    )
+    locus = make_locus((12, 19), records)
+
+    reconciled = reconcile(locus, get_locus_bases(reference, locus), pair_samples(1))
+
+    assert reconciled.alleles == ("TACACATA",)
+    assert reconciled.results_a == {0: CONTRADICTING}
 
 
 # doc/specs/reconciliation.md §9: two records of one haplotype whose edits touch give a file
