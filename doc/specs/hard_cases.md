@@ -64,9 +64,11 @@ the two agree on all 50:
 2. **From `compare()`**, on the excerpt and the two VCF files, with the default `CompareConfig` and
    `finder_threads=0`.
 
-Then the owner changed the rule for a `*` in a padded record (§6), which changes the rows of S11 and
-E5 and no other. Their expected rows are those of the oracle with that rule, worked by this spec's
-writer and again by its reviewer; `compare()` will give them once the code follows the rule (§7).
+Then the owner changed the rules for a `*` in a padded record (§6), which change the outcome of S11
+and E5 and the locus of E3, E15 and E16, and no other row. The expected rows are those the oracle
+and `compare()` both give under those rules, at commit 5590a35 of this branch, where the code
+follows them; S11's and E5's were first worked with a copy of the oracle changed so, by this
+spec's writer and again by its reviewer.
 
 The oracle and pvc_eval read records by the rules of §5.4, with one difference: the oracle counts a
 `*` as covered only by an edit as written, where pvc_eval also counts every placement of a deletion.
@@ -214,7 +216,7 @@ GIAB file: file A is GATK, file B pvc.
 |---|---|---|---|---|---|
 | E1 | chr5:7613158–7613171 | TR | pvc-touch30 | same genotype | 0/1, 0/1 |
 | E2 | chr13:31685219–31685246 | TR | pvc-touch30 | same genotype | 1/1, 1/1 |
-| E3 | chr20:3029116–3029159 | TR | pvc-touch30 | same genotype | 1/1, 1/1 |
+| E3 | chr20:3029115–3029159 | TR | pvc-touch30 | same genotype | 1/1, 1/1 |
 | E4 | chr20:3029115–3029159 | TR | pvc-base30 | same genotype | 1/1, 1/1 |
 | E5 | chr8:104588961–104588997 | TR | pvc-touch30 | same genotype | 1/2, 1/2 |
 | E6 | chr12:13880994–13881016 | TR | pvc-touch30 | same genotype | 1/2, 1/2 |
@@ -226,8 +228,8 @@ GIAB file: file A is GATK, file B pvc.
 | E12 | SL4.0ch05:576140–576154 | GATK-tomato | pvc-tomato | same genotype | 1/1, 1/1 |
 | E13 | SL4.0ch05:576140–576154 | GATK-tomato | pvc-tomato | same alleles, other genotype | 1/1, 0/1 |
 | E14 | SL4.0ch05:576140–576154 | GATK-tomato | pvc-tomato | same alleles, other genotype | 1/1, 0/1 |
-| E15 | SL4.0ch05:58429419–58429434 | GATK-tomato | pvc-tomato | different | 1/1, 1/2 |
-| E16 | SL4.0ch05:58429419–58429434 | GATK-tomato | pvc-tomato | different | 1/1, 2/2 |
+| E15 | SL4.0ch05:58429419–58429436 | GATK-tomato | pvc-tomato | different | 1/1, 1/2 |
+| E16 | SL4.0ch05:58429419–58429436 | GATK-tomato | pvc-tomato | different | 1/1, 2/2 |
 
 ### 4.3 HipSTR's whole-repeat records
 
@@ -552,9 +554,9 @@ A  TR:34239  3029134 G T 1|1
 A  TR:34240  3029135 T TTTG 1|1
 B  pvc-touch30:21736  3029115 GA GG,* 1/2
 B  pvc-touch30:21737  3029116 ATTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTG GTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG,ATTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG 1/2
-locus    chr20:3029116-3029159 (excerpt 132-175), kind STR; STR regions: 3029117-3029159 str-bundle
-  0  ATTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTG
-  1  GTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG
+locus    chr20:3029115-3029159 (excerpt 131-175), kind STR; STR regions: 3029117-3029159 str-bundle
+  0  GATTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTG
+  1  GGTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG
 possible genotypes  A: 1/1   B: 1/1
 row  A 1/1  B 1/1  possible 1, 1  records 4, 2  -> same genotype
 ```
@@ -765,10 +767,10 @@ A  GATK-tomato:74914  58429429 T A,* 2/2
 A  GATK-tomato:74915  58429433 T A,* 2/2
 B  pvc-tomato:83029  58429420 AAAAAAAAAT AAAAAAAA,AAAAAT,AAAAAAA 0/2
 B  pvc-tomato:83030  58429429 TAAATAAA AAAAAAA,AAA,* 2/2
-locus    SL4.0ch05:58429419-58429434 (excerpt 142-157), kind STR; STR regions: 58429420-58429428 str A
-  0  CAAAAAAAAATAAATA
-  1  CAAAAAAAAAA
-  2  CAAAAAA
+locus    SL4.0ch05:58429419-58429436 (excerpt 142-159), kind STR; STR regions: 58429420-58429428 str A
+  0  CAAAAAAAAATAAATAAA
+  1  CAAAAAAAAAAAA
+  2  CAAAAAAAA
 possible genotypes  A: 1/1   B: 1/2
 row  A 1/1  B 1/2  possible 1, 1  records 3, 2  -> different
 ```
@@ -783,10 +785,10 @@ A  GATK-tomato:74914  58429429 T A,* 1|1:58429429
 A  GATK-tomato:74915  58429433 T A,* 1|1:58429429
 B  pvc-tomato:83029  58429420 AAAAAAAAAT AAAAAAAA,AAAAAT,AAAAAAA 0/0
 B  pvc-tomato:83030  58429429 TAAATAAA AAAAAAA,AAA,* 2/2
-locus    SL4.0ch05:58429419-58429434 (excerpt 142-157), kind STR; STR regions: 58429420-58429428 str A
-  0  CAAAAAAAAATAAATA
-  1  CAAAAAAAAAAAAAAA
-  2  CAAAAAAAAAA
+locus    SL4.0ch05:58429419-58429436 (excerpt 142-159), kind STR; STR regions: 58429420-58429428 str A
+  0  CAAAAAAAAATAAATAAA
+  1  CAAAAAAAAAAAAAAAAA
+  2  CAAAAAAAAAAAA
 possible genotypes  A: 1/1   B: 2/2
 row  A 1/1  B 2/2  possible 1, 1  records 3, 2  -> different
 ```
@@ -1180,6 +1182,14 @@ and neither do `doc/specs/reconciliation.md` R1 and R2, whose `*` records are no
 with a copy of the oracle changed so, by this spec's writer on S11, E5, E2, E3, E6 and S1, and by
 its reviewer on every case. A file can now cover a `*` with a deletion of a flank base it padded
 the REF over; no case here does.
+
+The review of the code that follows the rule found that a deletion in the padding could still fall
+in another locus than the `*` record, which is chained by its span, built from its trimmed REF;
+the `*` was then judged uncovered there. So the owner decided, the same day, that the span of a
+record with a `*` holds its REF as written (`doc/spec.md` §5.2). That moves the locus of three
+cases, whose padded `*` record reaches past it, and changes no outcome or genotype: E3 starts at
+3029115 in place of 3029116, and E15 and E16 end at 58429436 in place of 58429434; their locus
+alleles hold the bases added.
 
 ## 7. Changes to other specs and to the code
 
