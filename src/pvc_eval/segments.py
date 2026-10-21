@@ -335,7 +335,11 @@ def _find_candidates(
       binary search, for all the candidates of a block at once.
     - pvc and the oracle test the motifs one by one; here every motif of a block at once.
 
-    <NUMBERS>
+    Against the oracle's step 1 in str-regions, in alternating pairs (21 October 2026, Apple
+    M5 Pro, CPython 3.15t, numpy 2.5.4): 4 Mb of chr1 in 0.304 of the time, 16 Mb in 0.278,
+    64 Mb in 0.291, all of chr1 in 24.9 s instead of 79.2 s, and GRCh38 on one thread in 376 s
+    instead of 1,170 s, at about 20 MB more peak RSS per contig
+    (doc/reports/perf-str-finder-numpy.md, P1 and P4).
     """
     # A function of the module once per contig (numpy's functions and threads).
     canonical = np.frombuffer(bases.encode("ascii").translate(_CANONICAL), np.uint8)
