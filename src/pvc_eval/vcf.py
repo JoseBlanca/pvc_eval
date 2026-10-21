@@ -18,6 +18,7 @@ import heapq
 import logging
 import math
 import re
+import string
 import sys
 import threading
 from collections.abc import Callable, Collection, Generator, Iterable, Iterator, Sequence
@@ -538,6 +539,10 @@ _AGREEING_CODES = frozenset(
     for other_code, other_bases in _IUPAC_BASES.items()
     if set(bases) & set(other_bases)
 )
+# §5.2: only the letters of ASCII are upper-cased for the comparison with the reference.
+# str.upper would make `ß` the two letters `SS` and the long s, U+017F, the code `S`; left as
+# they are, they are no IUPAC code and differ from every base.
+_ASCII_UPPER_CASE = str.maketrans(string.ascii_lowercase, string.ascii_uppercase)
 
 
 def _check_ref(
@@ -551,14 +556,15 @@ def _check_ref(
 ) -> None:
     """§5.2: a REF that differs from the reference means the VCF was made on another
     reference, or is damaged. Two bases agree, whatever their case, when the bases their
-    IUPAC codes stand for overlap; the window gives the reference in upper case.
+    IUPAC codes stand for overlap; only ASCII letters are upper-cased, so a letter outside
+    ASCII agrees with no base. The window gives the reference in upper case.
 
     pos: the 0-based position of POS; the REF lies within the contig.
     num_agreeing: the records read with no symbolic allele before this one, all of which
         agreed with the reference; a record on a contig not read is not compared.
     """
     ref_bases = reference_window.get_bases(contig, pos, pos + len(ref))
-    ref_upper = ref.upper()
+    ref_upper = ref.translate(_ASCII_UPPER_CASE)
     # Equal codes agree, so only a letter that is no code needs the pairs then.
     if ref_upper == ref_bases and _IUPAC_CODES.issuperset(ref_upper):
         return
@@ -609,7 +615,7 @@ def _format_ref_difference(
     pos: the 0-based position of POS. first_differing: the index in the REF of the first
     base that does not agree.
     """
-    differing_pair = (ref[first_differing].upper(), ref_bases[first_differing])
+    differing_pair = (ref[first_differing].translate(_ASCII_UPPER_CASE), ref_bases[first_differing])
     no_code = next((base for base in differing_pair if base not in _IUPAC_CODES), None)
     note = "" if no_code is None else f" ('{no_code}' is no IUPAC code)"
     if len(ref) <= _MAX_REF_WRITTEN:
@@ -901,7 +907,8 @@ def _parse_line_without_samples(
     pos: the 0-based position of POS; the REF lies within the contig and agrees with the
     reference.
     """
-    # VCF bases are case-insensitive.
+    # VCF bases are case-insensitive. The REF agrees with the reference, so it holds only
+    # ASCII letters, and str.upper gives the bases _check_ref compared.
     alleles = (fields[3].upper(), *(alt.upper() for alt in alts))
     start, trimmed = _trim(pos, alleles)
     span = _find_span_in_window(start, trimmed, reference_window, contig, contig_length, span_limit)

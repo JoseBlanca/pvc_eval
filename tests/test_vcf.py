@@ -1190,6 +1190,51 @@ def test_iupac_codes_that_share_no_base_differ(
     )
 
 
+# Written by its name, since ruff takes the letter itself for an f.
+LONG_S = "\N{LATIN SMALL LETTER LONG S}"
+
+
+@pytest.mark.parametrize(
+    ("reference_bases", "ref", "found"),
+    [
+        (
+            "G",
+            "ß",
+            "is 'ß', and the reference, read in upper case, has 'G' there ('ß' is no IUPAC code).",
+        ),
+        (
+            "G",
+            LONG_S,
+            f"is '{LONG_S}', and the reference, read in upper case, has 'G' there"
+            f" ('{LONG_S}' is no IUPAC code).",
+        ),
+        (
+            "AGT",
+            "AßT",
+            "is 'AßT', and the reference, read in upper case, has 'AGT' there"
+            " ('ß' is no IUPAC code).",
+        ),
+    ],
+    ids=["sharp_s_against_g", "long_s_against_g", "sharp_s_inside_a_longer_ref"],
+)
+def test_ref_letter_outside_ascii_differs_from_the_reference(
+    tmp_path: Path, make_reference: MakeReference, reference_bases: str, ref: str, found: str
+) -> None:
+    # Upper-cased by Python's rules, ß would be SS, one base longer, and the long s would be
+    # S, the code for C or G; only ASCII letters are upper-cased, so each is no IUPAC code.
+    path = write_vcf(tmp_path, f"chr1\t3\t.\t{ref}\t.\t.\t.\t.\tGT\t0/0\t0/0\n")
+    reference = make_reference(*make_fasta({"chr1": f"GG{reference_bases}GG"}))
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == (
+        f"{path}, line 3: the REF of chr1:3 {found} It is the first record read with no"
+        " symbolic allele, so the VCF looks made on another reference: compare against the"
+        " reference it was called on, and run again."
+    )
+
+
 @pytest.mark.parametrize(
     ("line", "found"),
     [
