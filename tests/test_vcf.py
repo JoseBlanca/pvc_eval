@@ -3,10 +3,12 @@ import itertools
 import logging
 import random
 import re
+import struct
 import subprocess
 import sys
 import threading
 import time
+import zlib
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import ExitStack
 from pathlib import Path
@@ -747,6 +749,57 @@ def test_every_damaged_byte_of_a_gzip_vcf_that_stops_the_read_is_reported_damage
     }
     # The padding bits after the end of the last deflate block, which zlib does not read.
     assert num_read_whole <= 1
+
+
+def make_bgzf_block(text: bytes) -> bytes:
+    """A BGZF block of text, as bgzip writes one: a gzip member whose header holds the BC
+    subfield, which gives the size of the block less 1 (SAM/BAM format specification,
+    4.1)."""
+    compressor = zlib.compressobj(6, zlib.DEFLATED, -15)
+    deflated = compressor.compress(text) + compressor.flush()
+    block_size = 18 + len(deflated) + 8
+    header = b"\x1f\x8b\x08\x04\x00\x00\x00\x00\x00\xff\x06\x00BC\x02\x00"
+    trailer = struct.pack("<II", zlib.crc32(text), len(text))
+    return header + struct.pack("<H", block_size - 1) + deflated + trailer
+
+
+# The empty block that ends a BGZF file, the 28 bytes the specification gives.
+BGZF_END = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
+BGZF_BLOCKS = [
+    make_bgzf_block((HEADER + "chr1\t9\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n").encode()),
+    make_bgzf_block(b"chr1\t12\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n"),
+]
+
+
+def test_empty_bgzf_block_is_the_end_block_of_the_specification() -> None:
+    assert make_bgzf_block(b"") == BGZF_END
+
+
+def test_bgzf_file_with_its_end_block_is_read(tmp_path: Path, reference: IndexedFasta) -> None:
+    path = tmp_path / "a.vcf.gz"
+    path.write_bytes(b"".join(BGZF_BLOCKS) + BGZF_END)
+
+    assert [record.start for record in parse_vcf(path, reference)] == [8, 11]
+
+
+@pytest.mark.parametrize("num_blocks", [1, 2], ids=["cut_after_block_1", "cut_after_block_2"])
+def test_bgzf_file_cut_between_blocks_is_cut_short(
+    tmp_path: Path, reference: IndexedFasta, num_blocks: int
+) -> None:
+    path = tmp_path / "a.vcf.gz"
+    path.write_bytes(b"".join(BGZF_BLOCKS[:num_blocks]))
+    message = (
+        f"{path} is a gzip file cut short or damaged: it is in BGZF, as bgzip and bcftools"
+        " write, and lacks the empty block that ends such a file. Copy or compress the file"
+        " again from its source, and run again."
+    )
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+    assert str(raised.value) == message
+    with pytest.raises(PvcEvalInputError) as raised:
+        parse_vcf_samples(path)
+    assert str(raised.value) == message
 
 
 _BYTE_ORDER_MARK_VCF = ("﻿" + HEADER + "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n").encode()

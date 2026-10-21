@@ -338,6 +338,21 @@ def test_parse_bed_gives_the_message_of_a_bed_gone_before_the_whole_check(
     )
 
 
+def test_parse_bed_refuses_a_bgzipped_bed_without_its_end_block(tmp_path: Path) -> None:
+    # A BGZF file ends with an empty block of 28 bytes; cut between blocks, it would read as
+    # a whole shorter file.
+    path = write_compressed_bed(tmp_path, _BGZIPPED_BED[:-28])
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_bed(path, _CONTIGS))
+
+    assert str(raised.value) == (
+        f"{path} is a gzip file cut short or damaged: it is in BGZF, as bgzip and bcftools"
+        " write, and lacks the empty block that ends such a file. Copy or compress the file"
+        " again from its source, and run again."
+    )
+
+
 def test_parse_bed_refuses_a_line_separated_by_spaces(tmp_path: Path) -> None:
     path = write_bed(tmp_path, ["chr1\t0\t10", "chr1 100  200"])
 

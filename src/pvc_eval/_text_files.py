@@ -21,6 +21,13 @@ from pvc_eval.errors import PvcEvalInputError
 
 # The first two bytes of a gzip file, and so of a bgzipped one.
 _GZIP_MAGIC = b"\x1f\x8b"
+# A BGZF block, as bgzip and bcftools write it, is a gzip member that starts with the magic,
+# deflate and FEXTRA set, and whose extra field, from byte 12, starts with the BC subfield of
+# 2 bytes (SAM/BAM format specification, 4.1).
+_BGZF_MAGIC = b"\x1f\x8b\x08\x04"
+_BGZF_SUBFIELD = b"BC\x02\x00"
+# The empty block that ends a BGZF file (SAM/BAM format specification, 4.1.2).
+_BGZF_END = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
 # The level an output is gzipped at (doc/specs/compare.md, "Writing the files", decided by
 # the owner on 20 October 2026).
 _GZIP_LEVEL = 6
@@ -119,6 +126,14 @@ def _read_numbered_lines(
     # last line read, and only that is known.
     try:
         with _open_text(path) as lines:
+            # doc/spec.md §5.2: a BGZF file cut between two blocks reads as a whole shorter
+            # file, and only its missing end block tells.
+            if _is_bgzf_without_end(path):
+                raise PvcEvalInputError(
+                    f"{path} is a gzip file cut short or damaged: it is in BGZF, as bgzip and"
+                    " bcftools write, and lacks the empty block that ends such a file. Copy or"
+                    " compress the file again from its source, and run again."
+                )
             for line_number, line in enumerate(lines, start=1):
                 place.line_number = line_number
                 yield line_number, line
@@ -162,6 +177,17 @@ def _make_damaged_error(path: Path, line_number: int | None) -> PvcEvalInputErro
         " from the file's content. Copy or compress the file again from its source, and run"
         " again."
     )
+
+
+def _is_bgzf_without_end(path: Path) -> bool:
+    """Whether a file starts as a BGZF block does and does not end with BGZF's end block."""
+    with path.open("rb") as raw:
+        start = raw.read(16)
+        if not (start.startswith(_BGZF_MAGIC) and start[12:] == _BGZF_SUBFIELD):
+            return False
+        size = raw.seek(0, io.SEEK_END)
+        raw.seek(max(size - len(_BGZF_END), 0))
+        return raw.read() != _BGZF_END
 
 
 def _is_gzipped(path: Path) -> bool:
