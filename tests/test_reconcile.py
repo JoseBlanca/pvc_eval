@@ -197,6 +197,17 @@ CASES = {
         alleles=("TACACATA", "TACATA", "TACA"),
         result_a=((1, 2),),
     ),
+    # Beside R10, reference 9-21 GTATACACATAGG, locus 10-17: the deletion of the A at 11 lies
+    # in the padding on the left of the `*` record's trimmed REF, 12-14, and in its REF as
+    # written, 10-16, so it covers the `*`.
+    "R10-beside-star-covered-by-a-deletion-in-the-left-padding": Case(
+        ref_start=9,
+        bases="GTATACACATAGG",
+        locus=(10, 17),
+        lines_a=["10 TA T 0/1", "10 TATACAC TATAC,* 0/2"],
+        alleles=("TATACACA", "TTACACA"),
+        result_a=((0, 1),),
+    ),
     # R3, reference 21-26 CAGAGT, locus 21-25.
     "R3-as-written": Case(
         ref_start=21,

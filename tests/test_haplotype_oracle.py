@@ -354,6 +354,43 @@ def test_a_padded_star_record_is_measured_against_its_ref_as_written(
     assert comparison == HaplotypeComparison(num_windows=1, num_linked_pairs=0, num_over_cap=0)
 
 
+# A deletion in the padding on the left of a `*` record's trimmed REF covers the `*`: the A
+# at 11, in the REF as written 10-16 of `10 TATACAC TATAC,*`, trimmed to 12-14; and the A at
+# 2, in the REF as written 2-4 of `2 ACT AGT,*`, trimmed to 3.
+@pytest.mark.parametrize(
+    ("ref_start_1based", "bases", "lines_a", "lines_b"),
+    [
+        pytest.param(
+            9,
+            "GTATACACATAGG",
+            ["10 TA T 0/1", "10 TATACAC TATAC,* 0/2"],
+            ["10 TA T 0|1"],
+            id="a-deletion-at-11",
+        ),
+        pytest.param(
+            1,
+            "GACTGCATCAGGTCAAC",
+            ["1 GA G 0/1", "2 ACT AGT,* 1/2"],
+            ["1 GA G 0|1", "3 C G 1|0"],
+            id="a-deletion-at-2",
+        ),
+    ],
+)
+def test_a_deletion_in_the_left_padding_of_a_star_record_covers_it(
+    case_files: CaseFiles,
+    tmp_path: Path,
+    ref_start_1based: int,
+    bases: str,
+    lines_a: Sequence[str],
+    lines_b: Sequence[str],
+) -> None:
+    reference = case_files.write_reference(ref_start_1based, bases)
+
+    comparison = _check(tmp_path, reference, lines_a, lines_b)
+
+    assert comparison == HaplotypeComparison(num_windows=1, num_linked_pairs=0, num_over_cap=0)
+
+
 def test_ploidy_1_gives_one_genotype_a_window(case_files: CaseFiles, tmp_path: Path) -> None:
     reference = case_files.write_reference(1, _O_BASES)
     # The records at 2-3 and 4 lie next to each other: one window, 2-4.
