@@ -424,7 +424,10 @@ two spellings of one event always overlap (§5.3):
   cannot slide, so that `C → CT` at 10 overlaps a record at 11 (the third case below).
 - A record with several ALTs spans the union of its ALTs' spans.
 - A span always holds the record's trimmed REF, since its locus alleles are built where it was
-  written.
+  written. The span of a record with a `*` allele also holds its REF as the file wrote it, before
+  trimming, also when the span limit cuts the span back: a `*` names those bases (§5.4), and the
+  deletion that covers it must fall in the same locus (decided by the owner on 21 October 2026,
+  over leaving such a deletion to another locus, where the `*` was judged uncovered).
 - At the ends of a contig a span stops at the contig: an insertion after its last base has no base
   after it in its span, and a deletion slid to its first base has no anchor before it.
 
