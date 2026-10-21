@@ -557,10 +557,16 @@ _R10_BASES = "TATACACATAGG"  # doc/specs/reconciliation.md R10, from position 10
 
 
 def _find(
-    directory: Path, reference: IndexedFasta, lines: Sequence[str], start: int, end: int
+    directory: Path,
+    reference: IndexedFasta,
+    lines: Sequence[str],
+    start: int,
+    end: int,
+    *,
+    sample: int = 0,
 ) -> frozenset[tuple[str, ...]] | None:
     vcf = write_case_vcf(directory / "a.vcf", lines, fills_ps=False)
-    return find_possible_genotypes(vcf, reference, "chr1", start, end, 0)
+    return find_possible_genotypes(vcf, reference, "chr1", start, end, sample)
 
 
 def test_find_possible_genotypes_gives_r10s_genotype(case_files: CaseFiles, tmp_path: Path) -> None:
@@ -591,13 +597,73 @@ def test_find_possible_genotypes_takes_the_windows_of_a_phase_set_together(
     )
 
 
-def test_find_possible_genotypes_gives_none_for_an_invalid_sample(
+@pytest.mark.parametrize(
+    ("ref_start_1based", "bases", "lines", "start", "end", "possible_genotypes"),
+    [
+        # The window of the SNP at 11 lies wholly before the stretch 15-19 (1-based), and
+        # adds nothing; the SNP at 17 turns ACATA into ACCTA on both haplotypes.
+        pytest.param(
+            10,
+            _R10_BASES,
+            ["11 A G 0/1", "17 A C 1/1"],
+            14,
+            19,
+            frozenset({("ACCTA", "ACCTA")}),
+            id="a-window-before-the-stretch",
+        ),
+        # The window of the SNP at 16 starts where the stretch 12-15 (1-based), GTAC, ends.
+        pytest.param(
+            1,
+            "TATACACATAGGTACGTACG",
+            ["12 G A 0/1", "16 G T 0/1"],
+            11,
+            15,
+            frozenset({("ATAC", "GTAC")}),
+            id="a-window-next-to-the-stretchs-end",
+        ),
+    ],
+)
+def test_find_possible_genotypes_leaves_out_the_windows_outside_the_stretch(
+    case_files: CaseFiles,
+    tmp_path: Path,
+    ref_start_1based: int,
+    bases: str,
+    lines: Sequence[str],
+    start: int,
+    end: int,
+    possible_genotypes: frozenset[tuple[str, ...]],
+) -> None:
+    reference = case_files.write_reference(ref_start_1based, bases)
+
+    assert _find(tmp_path, reference, lines, start, end) == possible_genotypes
+
+
+def test_find_possible_genotypes_reads_the_sample_it_is_given(
     case_files: CaseFiles, tmp_path: Path
 ) -> None:
-    # A `*` on both haplotypes and no deletion to cover it: contradicting records.
+    # Sample 1 carries the SNP at 13 on both haplotypes; sample 0 would give the reference.
     reference = case_files.write_reference(10, _R10_BASES)
 
-    assert _find(tmp_path, reference, ["10 TATACAC TATAC,* 2/2"], 9, 19) is None
+    possible_genotypes = _find(tmp_path, reference, ["13 A G 0/0 1/1"], 9, 19, sample=1)
+
+    assert possible_genotypes == frozenset({("TATGCACATA", "TATGCACATA")})
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        # A `*` on both haplotypes and no deletion to cover it: contradicting records.
+        pytest.param(["10 TATACAC TATAC,* 2/2"], id="contradicting-records"),
+        pytest.param(["13 A G 0/x"], id="a-malformed-gt"),
+        pytest.param(["13 A G 0/1/1"], id="a-gt-of-another-ploidy"),
+    ],
+)
+def test_find_possible_genotypes_gives_none_for_an_invalid_sample(
+    case_files: CaseFiles, tmp_path: Path, lines: Sequence[str]
+) -> None:
+    reference = case_files.write_reference(10, _R10_BASES)
+
+    assert _find(tmp_path, reference, lines, 9, 19) is None
 
 
 @pytest.mark.parametrize(
@@ -610,6 +676,10 @@ def test_find_possible_genotypes_gives_none_for_an_invalid_sample(
             15,
             "crosses",
             id="a-window-across-the-end",
+        ),
+        # The deletion of 13-15 (1-based) starts before the stretch 14-19.
+        pytest.param(
+            _R10_BASES, ["12 TACA T 0/1"], 13, 19, "crosses", id="a-window-across-the-start"
         ),
         pytest.param(_R10_BASES, ["13 A G ./1"], 9, 19, "missing", id="a-missing-haplotype"),
         # Fourteen unphased heterozygous SNPs in one window: 2^13 phase assignments.
