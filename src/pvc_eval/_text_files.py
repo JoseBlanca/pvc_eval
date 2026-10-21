@@ -3,7 +3,8 @@ and the temporary file an output is written to before it is renamed.
 
 Public, to pvc_eval's own modules: open_numbered_lines, which gives a file's lines with
 their numbers; check_gzip_whole, which a reader's caller runs on a fault it finds in a line;
-open_temporary_output, which opens the temporary file of an output.
+open_temporary_output, which opens the temporary file of an output; make_write_error, the
+error of a fault of the system while an output is written.
 """
 
 import errno
@@ -50,9 +51,10 @@ def open_numbered_lines(
 
     Raises PvcEvalInputError, naming the file, for a path that does not exist, is a
     directory or cannot be read, for a file that is not UTF-8 text once decompressed, and
-    for a gzip file cut short or damaged. When reading a gzip file stops at a fault of its
-    content, text that is not UTF-8 or a PvcEvalInputError raised in the with block before
-    the last line, the file is checked whole, and if gzip finds it cut short or damaged the
+    for a gzip file cut short or damaged, a BGZF file without its end block among them. When
+    reading a gzip file stops at a fault of its content, text that is not UTF-8 or a
+    PvcEvalInputError raised in the with block before the read reached the end of the file,
+    the file is checked whole, and if gzip finds it cut short or damaged the
     error says so in place of the fault, which is kept as its cause (doc/spec.md §5.2).
     """
     place = _ReadPlace()
@@ -120,8 +122,9 @@ class _ReadPlace:
 def _read_numbered_lines(
     path: Path, file_kind: str, not_utf8_advice: str, place: _ReadPlace
 ) -> Generator[tuple[int, str]]:
-    """The lines of open_numbered_lines, which raises what it says for the file itself,
-    and for text that is not UTF-8 checks a gzip file whole."""
+    """The numbered lines that open_numbered_lines gives, each line's number also kept in
+    place. Raises the errors open_numbered_lines names for the file itself; for text that is
+    not UTF-8, it first checks a gzip file whole."""
     # Text is decoded and decompressed in blocks, so a fault is found somewhere after the
     # last line read, and only that is known.
     try:
