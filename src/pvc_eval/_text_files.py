@@ -2,7 +2,8 @@
 and the temporary file an output is written to before it is renamed.
 
 Public, to pvc_eval's own modules: open_numbered_lines, which gives a file's lines with
-their numbers; open_temporary_output, which opens the temporary file of an output.
+their numbers; check_gzip_whole, which a reader's caller runs on a fault it finds in a line;
+open_temporary_output, which opens the temporary file of an output.
 """
 
 import errno
@@ -55,13 +56,26 @@ def open_numbered_lines(
         # gzip checks its data only at the end of each member, so a line read before the
         # end may be made of damaged bytes. A read that reached the end, and an error of
         # the reader's own, which closes it, have had every byte checked.
-        is_suspended = inspect.getgeneratorstate(numbered_lines) == inspect.GEN_SUSPENDED
-        if is_suspended and _is_damaged_gzip(path):
+        if inspect.getgeneratorstate(numbered_lines) == inspect.GEN_SUSPENDED:
             # The fault is of the line last read.
-            raise _make_damaged_error(path, place.line_number) from err
+            check_gzip_whole(err, path, place.line_number)
         raise
     finally:
         numbered_lines.close()
+
+
+def check_gzip_whole(fault: Exception, path: Path, line_number: int | None) -> None:
+    """Raise PvcEvalInputError, with fault as its cause, when path is a gzip file that gzip,
+    decompressing it whole, finds cut short or damaged; return otherwise.
+
+    For a fault of the content of a file found before the end of its reading, by its reader
+    or by a caller in a line the reader gave: gzip checks its data only at the end of each
+    member, so damaged bytes reach the reader as text first (doc/spec.md §5.2).
+
+    line_number: the line of the fault, or None when it is not known.
+    """
+    if _is_damaged_gzip(path):
+        raise _make_damaged_error(path, line_number) from fault
 
 
 @dataclass(slots=True)
@@ -95,8 +109,7 @@ def _read_numbered_lines(
         ) from None
     except UnicodeDecodeError as err:
         # The byte is somewhere after the last line read, on no line known.
-        if _is_damaged_gzip(path):
-            raise _make_damaged_error(path, None) from err
+        check_gzip_whole(err, path, None)
         raise PvcEvalInputError(
             f"{path} is not UTF-8 text: a byte at or after line {place.line_number + 1} cannot be read"
             f" as UTF-8. {not_utf8_advice}"
