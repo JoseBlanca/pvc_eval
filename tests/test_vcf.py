@@ -40,10 +40,11 @@ HEADER = (
 )
 
 # Written by their names, since ruff takes the long s for an f and the Kelvin sign for a K,
-# and a combining mark joins the character before it.
+# a combining mark joins the character before it, and a no-break space looks like a space.
 LONG_S = "\N{LATIN SMALL LETTER LONG S}"
 KELVIN_SIGN = "\N{KELVIN SIGN}"
 COMBINING_ACUTE = "\N{COMBINING ACUTE ACCENT}"
+NO_BREAK_SPACE = "\N{NO-BREAK SPACE}"
 
 type MakeReference = Callable[[str, str], IndexedFasta]
 
@@ -1037,8 +1038,16 @@ def test_alt_dot_written_with_more_than_one_character_stops_the_run(
         ("A,ß", "'ß' (U+00DF)"),
         ("ß,*", "'ß' (U+00DF)"),
         (f"A{COMBINING_ACUTE}", f"'{COMBINING_ACUTE}' (U+0301)"),
+        (f"A{NO_BREAK_SPACE}", f"'{NO_BREAK_SPACE}' (U+00A0)"),
     ],
-    ids=["alone", "after_a_base", "second_alt", "beside_a_star", "combining_mark_after_a_base"],
+    ids=[
+        "alone",
+        "after_a_base",
+        "second_alt",
+        "beside_a_star",
+        "combining_mark_after_a_base",
+        "no_break_space_after_a_base",
+    ],
 )
 def test_alt_holding_a_letter_outside_ascii_stops_the_run(
     tmp_path: Path, reference: IndexedFasta, alts: str, letter: str
@@ -1051,7 +1060,7 @@ def test_alt_holding_a_letter_outside_ascii_stops_the_run(
         list(parse_vcf(path, reference))
 
     assert str(raised.value) == (
-        f"{path}, line 3: ALT '{alts}' of chr1:1 holds {letter}, a letter outside ASCII,"
+        f"{path}, line 3: ALT '{alts}' of chr1:1 holds {letter}, a character outside ASCII,"
         " which is no base, so the line looks damaged. Correct it or remove it, and run"
         " again."
     )

@@ -897,7 +897,7 @@ def _parse_alts(fields: list[str], path: Path, line_number: int) -> tuple[str, .
 def _check_alt_letters(
     alt_field: str, contig: str, pos_1based: int, path: Path, line_number: int
 ) -> None:
-    """§5.2: an ALT of bases that holds a letter outside ASCII comes from a damaged file.
+    """§5.2: an ALT of bases that holds a character outside ASCII comes from a damaged file.
     Python would upper-case `ß` to `SS`, which could agree with another file's `SS`.
 
     alt_field: the ALT column of a record with no symbolic allele, as written.
@@ -908,7 +908,7 @@ def _check_alt_letters(
     letter = next(letter for letter in alt_field if not letter.isascii())
     raise PvcEvalInputError(
         f"{path}, line {line_number}: ALT '{alt_field}' of {contig}:{pos_1based} holds"
-        f" {_format_letters(letter)}, a letter outside ASCII, which is no base, so the line"
+        f" {_format_letters(letter)}, a character outside ASCII, which is no base, so the line"
         " looks damaged. Correct it or remove it, and run again."
     )
 
