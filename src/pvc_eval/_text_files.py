@@ -1,15 +1,17 @@
 """The lines of a text file, plain, gzipped or bgzipped, for the readers of VCFs and BEDs,
 and the temporary file an output is written to before it is renamed.
 
-Public, to pvc_eval's own modules: read_numbered_lines, which yields a file's lines with
+Public, to pvc_eval's own modules: open_numbered_lines, which gives a file's lines with
 their numbers; open_temporary_output, which opens the temporary file of an output.
 """
 
 import errno
 import gzip
+import inspect
 import io
 import zlib
 from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TextIO
 
@@ -20,13 +22,17 @@ _GZIP_MAGIC = b"\x1f\x8b"
 # The level an output is gzipped at (doc/specs/compare.md, "Writing the files", decided by
 # the owner on 20 October 2026).
 _GZIP_LEVEL = 6
+# How many bytes a gzip file checked whole is decompressed by at a time.
+_CHECK_CHUNK_BYTES = 1 << 20
 
 
-def read_numbered_lines(
+@contextmanager
+def open_numbered_lines(
     path: Path, file_kind: str, not_utf8_advice: str
-) -> Generator[tuple[int, str]]:
+) -> Generator[Generator[tuple[int, str]]]:
     """The lines of a file, plain, gzipped or bgzipped, each with its 1-based number, read
-    as UTF-8 text with a byte-order mark at the start of the text dropped.
+    as UTF-8 text with a byte-order mark at the start of the text dropped; the file is
+    closed when the with block ends.
 
     file_kind: what the file is, "VCF" or "BED", for the message of a path that is a
         directory.
@@ -35,8 +41,31 @@ def read_numbered_lines(
 
     Raises PvcEvalInputError, naming the file, for a path that does not exist, is a
     directory or cannot be read, for a file that is not UTF-8 text once decompressed, and
-    for a gzip file cut short or damaged.
+    for a gzip file cut short or damaged. When reading a gzip file stops at a fault of its
+    content, text that is not UTF-8 or a PvcEvalInputError raised in the with block before
+    the last line, the file is checked whole, and if gzip finds it cut short or damaged the
+    error says so in place of the fault, which is kept as its cause (doc/spec.md §5.2).
     """
+    numbered_lines = _read_numbered_lines(path, file_kind, not_utf8_advice)
+    try:
+        yield numbered_lines
+    except PvcEvalInputError as err:
+        # gzip checks its data only at the end of each member, so a line read before the
+        # end may be made of damaged bytes. A read that reached the end, and an error of
+        # the reader's own, which closes it, have had every byte checked.
+        is_suspended = inspect.getgeneratorstate(numbered_lines) == inspect.GEN_SUSPENDED
+        if is_suspended and _is_damaged_gzip(path):
+            raise _make_damaged_error(path) from err
+        raise
+    finally:
+        numbered_lines.close()
+
+
+def _read_numbered_lines(
+    path: Path, file_kind: str, not_utf8_advice: str
+) -> Generator[tuple[int, str]]:
+    """The lines of open_numbered_lines, which raises what it says for the file itself,
+    and for text that is not UTF-8 checks a gzip file whole."""
     # Text is decoded and decompressed in blocks, so a fault is found somewhere after the
     # last line read, and only that is known.
     line_number = 0
@@ -55,6 +84,8 @@ def read_numbered_lines(
             f"{path} cannot be read: permission denied. Allow reading it and run again."
         ) from None
     except UnicodeDecodeError as err:
+        if _is_damaged_gzip(path):
+            raise _make_damaged_error(path) from err
         raise PvcEvalInputError(
             f"{path} is not UTF-8 text: a byte at or after line {line_number + 1} cannot be read"
             f" as UTF-8. {not_utf8_advice}"
@@ -66,16 +97,43 @@ def read_numbered_lines(
         ) from err
 
 
+def _is_damaged_gzip(path: Path) -> bool:
+    """Whether a file is a gzip file that gzip, decompressing it whole and checking the
+    CRC-32 and the length of each member, finds cut short or damaged."""
+    if not _is_gzipped(path):
+        return False
+    try:
+        with gzip.open(path, "rb") as decompressed:
+            while decompressed.read(_CHECK_CHUNK_BYTES):
+                pass
+    except EOFError, gzip.BadGzipFile, zlib.error:
+        return True
+    return False
+
+
+def _make_damaged_error(path: Path) -> PvcEvalInputError:
+    """The error of a gzip file whose damage was read as text before gzip found it."""
+    return PvcEvalInputError(
+        f"{path} is a gzip file cut short or damaged: it fails gzip's check when decompressed"
+        " whole, and the damage garbled its text before gzip could find it. Compress or copy"
+        " it again, and run again."
+    )
+
+
+def _is_gzipped(path: Path) -> bool:
+    """Whether a file is gzipped, known by its first two bytes."""
+    with path.open("rb") as raw:
+        return raw.read(len(_GZIP_MAGIC)) == _GZIP_MAGIC
+
+
 def _open_text(path: Path) -> TextIO:
     """Open a file, plain or gzipped, known by its first two bytes, as UTF-8 text, with a
     byte-order mark at the start of the text dropped and one anywhere else kept.
     """
-    with path.open("rb") as raw:
-        is_gzipped = raw.read(len(_GZIP_MAGIC)) == _GZIP_MAGIC
     # utf-8-sig drops the byte-order mark only at the start of the text; kept, it would
     # become part of the first line, a BED's first contig or a VCF's ##fileformat
     # (doc/specs/loci.md, Regions).
-    if is_gzipped:
+    if _is_gzipped(path):
         return gzip.open(path, "rt", encoding="utf-8-sig")
     return path.open(encoding="utf-8-sig")
 

@@ -271,6 +271,46 @@ def test_parse_bed_refuses_a_damaged_gzip(
     )
 
 
+# A BED of two lines, and the change that makes the end of its second one no number.
+_TWO_BED_LINES = b"chr1\t0\t10\nchr1\t20\t30\n"
+_END_NOT_A_NUMBER = (b"\t20\t30\n", b"\t20\tX0\n")
+
+
+def test_parse_bed_reports_a_damaged_gzip_read_as_a_fault_of_a_line_as_damaged(
+    tmp_path: Path,
+) -> None:
+    # Stored deflate blocks hold the text as it is, so the change, made after gzip took its
+    # CRC-32, reaches the reader as text, and gzip finds the damage only at the end.
+    compressed = gzip.compress(_TWO_BED_LINES, compresslevel=0, mtime=0)
+    path = write_compressed_bed(tmp_path, compressed.replace(*_END_NOT_A_NUMBER))
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_bed(path, _CONTIGS))
+
+    assert str(raised.value) == (
+        f"{path} is a gzip file cut short or damaged: it fails gzip's check when decompressed"
+        " whole, and the damage garbled its text before gzip could find it. Compress or copy"
+        " it again, and run again."
+    )
+    assert "line 2: the end, 'X0', is not a whole number" in str(raised.value.__cause__)
+
+
+@pytest.mark.parametrize("gzipped", [False, True], ids=["plain", "gzipped_whole"])
+def test_parse_bed_keeps_the_message_of_a_line_of_an_undamaged_file(
+    tmp_path: Path, gzipped: bool
+) -> None:
+    text = _TWO_BED_LINES.replace(*_END_NOT_A_NUMBER)
+    path = write_compressed_bed(tmp_path, gzip.compress(text) if gzipped else text)
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_bed(path, _CONTIGS))
+
+    assert str(raised.value) == (
+        f"{path}, line 2: the end, 'X0', is not a whole number. A BED line gives its start"
+        " and its end as whole numbers of 0 or more; correct the line and run again."
+    )
+
+
 def test_parse_bed_refuses_a_line_separated_by_spaces(tmp_path: Path) -> None:
     path = write_bed(tmp_path, ["chr1\t0\t10", "chr1 100  200"])
 

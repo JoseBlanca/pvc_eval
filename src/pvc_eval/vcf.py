@@ -25,7 +25,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-from pvc_eval._text_files import read_numbered_lines
+from pvc_eval._text_files import open_numbered_lines
 from pvc_eval.errors import PvcEvalInputError, format_count
 from pvc_eval.fasta import BLOCK_BASES, FastaWindow, IndexedFasta
 
@@ -149,7 +149,7 @@ def parse_vcf_samples(path: Path) -> tuple[str, ...]:
     read, for a file that is not UTF-8 text once decompressed or is a gzip file cut short or
     damaged, when the file has no #CHROM line after its ## lines, and for an empty sample name.
     """
-    with closing(read_numbered_lines(path, "VCF", _NOT_UTF8_ADVICE)) as numbered_lines:
+    with open_numbered_lines(path, "VCF", _NOT_UTF8_ADVICE) as numbered_lines:
         return _parse_samples(numbered_lines, path)
 
 
@@ -203,7 +203,8 @@ def parse_vcf(
     of the `.fai`'s contig order or out of position order, for a path that does not exist,
     is a directory or cannot be read, for a file that is not UTF-8 text once decompressed or
     is a gzip file cut short or damaged, for a file with no #CHROM line after its ## lines, for
-    an empty sample name in it, for a line that does not hold a VCF record, and for one whose
+    an empty sample name in it, for a line that does not hold a VCF record or has an ALT `.`
+    among other ALTs, and for one whose
     number of sample columns differs from the number of samples the #CHROM line names. A
     blank line is skipped. A record with a symbolic allele is skipped once its contig and
     its order are checked, and its REF is not; the number skipped is logged as a warning
@@ -419,7 +420,7 @@ def _parse_lines_without_samples(
     # The records with no symbolic allele whose REF agreed with the reference, which tells
     # a VCF made on another reference from a damaged line (§5.2).
     num_agreeing = 0
-    with closing(read_numbered_lines(path, "VCF", _NOT_UTF8_ADVICE)) as numbered_lines:
+    with open_numbered_lines(path, "VCF", _NOT_UTF8_ADVICE) as numbered_lines:
         num_samples = len(_parse_samples(numbered_lines, path))
         for line_number, line in numbered_lines:
             if line.startswith("#") or not line.strip():
@@ -813,7 +814,7 @@ def _make_pos_error(pos: str, path: Path, line_number: int) -> PvcEvalInputError
 
 def _parse_alts(fields: list[str], path: Path, line_number: int) -> tuple[str, ...]:
     """The ALTs of a line, () for `.`, after checking that REF and every ALT hold
-    something."""
+    something, and that no ALT is `.` beside others (§5.2)."""
     if not fields[3]:
         raise PvcEvalInputError(
             f"{path}, line {line_number}: REF is empty, and it must hold at least one base."
@@ -827,6 +828,13 @@ def _parse_alts(fields: list[str], path: Path, line_number: int) -> tuple[str, .
             f"{path}, line {line_number}: ALT '{fields[4]}' has an empty allele; each ALT"
             " must hold at least one base, and a record with no ALT has `.`. Correct the"
             " line or remove it, and run again."
+        )
+    # A single breakend, `A.` or `.A`, is an ALT of its own and symbolic.
+    if "." in alts:
+        raise PvcEvalInputError(
+            f"{path}, line {line_number}: ALT '{fields[4]}' has `.` among other alleles; `.`"
+            " alone stands for a record with no ALT, and beside other ALTs it means nothing."
+            " Correct the line or remove it, and run again."
         )
     return alts
 

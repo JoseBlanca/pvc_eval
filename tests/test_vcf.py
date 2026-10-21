@@ -2,6 +2,7 @@ import gzip
 import itertools
 import logging
 import random
+import re
 import subprocess
 import sys
 import threading
@@ -317,13 +318,15 @@ def test_contig_missing_from_the_reference_stops_the_run(
 
 @pytest.mark.parametrize(
     "alt",
-    ["<DEL>", "A]chr2:20]", "[chr2:20[A", "A.", ".A"],
+    ["<DEL>", "A]chr2:20]", "[chr2:20[A", "A.", ".A", "T,A.", ".A,T"],
     ids=[
         "symbolic",
         "breakend_right",
         "breakend_left",
         "single_breakend_right",
         "single_breakend_left",
+        "single_breakend_among_other_alts",
+        "single_breakend_before_other_alts",
     ],
 )
 def test_symbolic_alleles_are_skipped_and_counted(
@@ -585,6 +588,149 @@ def test_gzip_file_with_damaged_compressed_data_stops_the_run(
     )
 
 
+# Two records of the reference above, and a change to each that makes one of them a fault of
+# the file's content: the second record out of order, or the first with its two sample
+# columns made one.
+TWO_RECORDS = "chr1\t9\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\nchr1\t12\t.\tG\tT\t.\t.\t.\tGT\t0/1\t0/1\n"
+CONTENT_FAULTS = [
+    (b"chr1\t12\t", b"chr1\t02\t", r"is not sorted: chr1:2 \(line 4\) comes after chr1:9"),
+    (
+        b"0/1\t0/1\nchr1\t12",
+        b"0/1 0/1\nchr1\t12",
+        r"line 3: the line has 1 sample column, and the #CHROM line names 2 samples",
+    ),
+]
+CONTENT_FAULT_IDS = ["not_sorted", "sample_columns"]
+
+
+def write_damaged_gzip(path: Path, text: str, old: bytes, new: bytes) -> Path:
+    """Write text gzipped in stored deflate blocks, which hold the text as it is, with old,
+    found once, replaced by new of the same length after gzip has taken its CRC-32: gzip
+    gives the changed text, and finds the damage only at the end of the file."""
+    compressed = gzip.compress(text.encode(), compresslevel=0, mtime=0)
+    assert compressed.count(old) == 1
+    assert len(old) == len(new)
+    path.write_bytes(compressed.replace(old, new))
+    return path
+
+
+def make_damaged_message(path: Path) -> str:
+    return (
+        f"{path} is a gzip file cut short or damaged: it fails gzip's check when decompressed"
+        " whole, and the damage garbled its text before gzip could find it. Compress or copy"
+        " it again, and run again."
+    )
+
+
+@pytest.mark.parametrize("num_threads", [1, 4])
+@pytest.mark.parametrize(("old", "new", "message"), CONTENT_FAULTS, ids=CONTENT_FAULT_IDS)
+def test_damaged_gzip_read_as_a_fault_of_a_line_is_reported_damaged(
+    tmp_path: Path, reference: IndexedFasta, old: bytes, new: bytes, message: str, num_threads: int
+) -> None:
+    path = write_damaged_gzip(tmp_path / "a.vcf.gz", HEADER + TWO_RECORDS, old, new)
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference, num_threads=num_threads))
+
+    assert str(raised.value) == make_damaged_message(path)
+    # The fault of the line the damage made is kept as the cause.
+    assert re.search(message, str(raised.value.__cause__))
+
+
+@pytest.mark.parametrize("gzipped", [False, True], ids=["plain", "gzipped_whole"])
+@pytest.mark.parametrize(("old", "new", "message"), CONTENT_FAULTS, ids=CONTENT_FAULT_IDS)
+def test_undamaged_file_with_a_fault_of_a_line_keeps_its_message(
+    tmp_path: Path, reference: IndexedFasta, old: bytes, new: bytes, message: str, gzipped: bool
+) -> None:
+    path = write_vcf(tmp_path, TWO_RECORDS.replace(old.decode(), new.decode()), gzipped=gzipped)
+
+    with pytest.raises(PvcEvalInputError, match=message):
+        list(parse_vcf(path, reference))
+
+
+@pytest.mark.parametrize("num_threads", [1, 4])
+def test_damaged_gzip_found_while_threads_parse_samples_is_reported_damaged(
+    tmp_path: Path, make_reference: MakeReference, num_threads: int
+) -> None:
+    fasta, lines = make_threaded_input(random.Random(1))
+    # The POS of line 2,503 moved back by 1,000 bases, behind the line before it, once
+    # several batches have gone to the threads.
+    path = write_damaged_gzip(
+        tmp_path / "a.vcf.gz", HEADER + lines, b"\nchr1\t25011\t", b"\nchr1\t24011\t"
+    )
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, make_reference(*fasta), num_threads=num_threads))
+
+    assert str(raised.value) == make_damaged_message(path)
+
+
+def test_damaged_gzip_read_as_a_fault_of_the_header_is_reported_damaged(
+    tmp_path: Path,
+) -> None:
+    path = write_damaged_gzip(
+        tmp_path / "a.vcf.gz", HEADER + TWO_RECORDS, b"##fileformat", b"#Xfileformat"
+    )
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        parse_vcf_samples(path)
+
+    assert str(raised.value) == make_damaged_message(path)
+    assert "line 1: a VCF file has a #CHROM line" in str(raised.value.__cause__)
+
+
+def test_damaged_gzip_read_as_text_that_is_not_utf8_is_reported_damaged(
+    tmp_path: Path, reference: IndexedFasta
+) -> None:
+    path = write_damaged_gzip(tmp_path / "a.vcf.gz", HEADER + TWO_RECORDS, b"HG003", b"HG\xff03")
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == make_damaged_message(path)
+    assert isinstance(raised.value.__cause__, UnicodeDecodeError)
+
+
+# A VCF of 60 SNPs on a reference of 64 As, gzipped as gzip writes it.
+SMALL_VCF = HEADER + "".join(
+    f"chr1\t{pos_1based}\t.\tA\tC\t.\t.\t.\tGT\t0/1\t1|0\n" for pos_1based in range(1, 61)
+)
+
+
+def test_every_damaged_byte_of_a_gzip_vcf_that_stops_the_read_is_reported_damaged(
+    tmp_path: Path, make_reference: MakeReference
+) -> None:
+    reference = make_reference(*make_fasta({"chr1": "A" * 64}))
+    compressed = gzip.compress(SMALL_VCF.encode(), mtime=0)
+    path = tmp_path / "a.vcf.gz"
+    messages: set[str] = set()
+    num_read_whole = 0
+    # Every byte after the gzip header of 10, which gzip does not check whole: a change to
+    # its first two makes the file no gzip file, and one to its time or its last two bytes
+    # changes nothing that is read.
+    for offset in range(10, len(compressed)):
+        damaged = bytearray(compressed)
+        damaged[offset] ^= 0x40
+        path.write_bytes(damaged)
+        try:
+            records = list(parse_vcf(path, reference))
+        except PvcEvalInputError as err:
+            # The line number of gzip's own message is dropped, so that it counts once.
+            messages.add(re.sub(r"at or after line \d+", "at or after line N", str(err)))
+            continue
+        # A read with no error has had gzip check every byte, so it gives the records.
+        assert len(records) == 60
+        num_read_whole += 1
+
+    assert messages <= {
+        make_damaged_message(path),
+        f"{path} is a gzip file cut short or damaged at or after line N. Compress or copy it"
+        " again, and run again.",
+    }
+    # The padding bits after the end of the last deflate block, which zlib does not read.
+    assert num_read_whole <= 1
+
+
 _BYTE_ORDER_MARK_VCF = ("﻿" + HEADER + "chr1\t5\t.\tA\tT\t.\t.\t.\tGT\t0/1\t0/1\n").encode()
 
 
@@ -722,6 +868,22 @@ def test_alt_dot_gives_a_record_with_ref_only(tmp_path: Path, reference: Indexed
     (record,) = parse_vcf(path, reference)
 
     assert (record.start, record.alleles) == (4, ("A",))
+
+
+@pytest.mark.parametrize("alts", ["T,.", ".,T"], ids=["dot_last", "dot_first"])
+def test_alt_dot_among_other_alts_stops_the_run(
+    tmp_path: Path, reference: IndexedFasta, alts: str
+) -> None:
+    path = write_vcf(tmp_path, f"chr1\t5\t.\tA\t{alts}\t.\t.\t.\tGT\t0/1\t0/0\n")
+
+    with pytest.raises(PvcEvalInputError) as raised:
+        list(parse_vcf(path, reference))
+
+    assert str(raised.value) == (
+        f"{path}, line 3: ALT '{alts}' has `.` among other alleles; `.` alone stands for a"
+        " record with no ALT, and beside other ALTs it means nothing. Correct the line or"
+        " remove it, and run again."
+    )
 
 
 def test_records_at_the_same_pos_both_come_out(tmp_path: Path, reference: IndexedFasta) -> None:

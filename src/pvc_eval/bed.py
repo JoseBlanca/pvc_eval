@@ -6,11 +6,10 @@ Public: BedLine, one interval of a BED; parse_bed, which yields them.
 """
 
 from collections.abc import Iterator, Sequence
-from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-from pvc_eval._text_files import read_numbered_lines
+from pvc_eval._text_files import open_numbered_lines
 from pvc_eval.errors import PvcEvalInputError
 
 # The first word of the header lines of a BED that is not a comment; the STR finder's spec
@@ -58,7 +57,7 @@ def parse_bed(path: Path, contigs: Sequence[str]) -> Iterator[BedLine]:
     """
     reference_contigs = frozenset(contigs)
     has_bed_line = False
-    with closing(read_numbered_lines(path, "BED", _NOT_UTF8_ADVICE)) as numbered_lines:
+    with open_numbered_lines(path, "BED", _NOT_UTF8_ADVICE) as numbered_lines:
         for line_number, line in numbered_lines:
             if _is_skipped(line):
                 continue
