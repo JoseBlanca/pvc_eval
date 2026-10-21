@@ -790,10 +790,11 @@ Nothing about pvc_eval is trusted until these pass.
    spelling (decided by the owner on 19 October 2026, over collision rules that do not depend on
    it). The re-spelling program is part of the tests; its spec is `doc/specs/respell.md`.
    `bcftools norm` is not one of the re-spellings, since it can change a haplotype (§5.2).
-5. **The hard cases from pvc's STR work:** the VCF records behind the cases recorded in pvc's
-   reports (GIAB's split indel-plus-SNP truth records against pvc's single repeat record; GATK's
-   overlapping records at STR edge deletions; HipSTR's whole-repeat records). They are copied into
-   this spec, each with the outcome it must give, before it is approved (**Open 3**).
+5. **The hard cases from pvc's STR work:** 50 cases, each the VCF records of two real files at one
+   locus from pvc's reports, with a few hundred bases of the reference and the row `compare()` must
+   give: GIAB's split records against pvc's one repeat record, deletions at a repeat's edge written
+   with overlapping records, HipSTR's whole-repeat records, and other spellings. They are given,
+   with their outcomes, in `doc/specs/hard_cases.md`, approved by the owner on 21 October 2026.
 
 ## 8. Comparing evaluators
 
@@ -836,6 +837,5 @@ Open 1, haploid genotypes, and Open 2, the phasing cap's default, were answered 
 19 October 2026: each file is read with one ploidy, 1 or 2, and a GT of another ploidy makes the
 sample invalid (§5.4); the cap stays at 4096, to be lowered if it costs too much time.
 
-**Open 3. The hard cases of §7.5.** The VCF records of the cases in pvc's reports, and the outcome
-each must give, are to be copied into §7 from pvc's reports. Until then §7.5 checks nothing; the
-implementer leaves it out of the first plan.
+Open 3, the hard cases of §7.5, was answered by the owner on 21 October 2026: the 50 cases of
+`doc/specs/hard_cases.md`, each with the outcome it must give.
