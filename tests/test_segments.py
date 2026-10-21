@@ -12,6 +12,12 @@ from pathlib import Path
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from tests import pure_python_step_one
+from tests.pure_python_step_one import (
+    _drop_under_copy_floor,
+    _find_maximal_scoring_subsequences,
+    _make_comparisons,
+)
 
 from pvc_eval.errors import PvcEvalInputError
 from pvc_eval.fasta import IndexedFasta
@@ -23,11 +29,9 @@ from pvc_eval.segments import (
     _BundleMember,
     _Candidate,
     _drop_near_contig_ends,
-    _drop_under_copy_floor,
     _find_bundles,
     _find_candidates,
     _find_cut,
-    _find_maximal_scoring_subsequences,
     _find_requested_str_regions,
     _find_segments,
     _find_str_segments,
@@ -37,7 +41,6 @@ from pvc_eval.segments import (
     _is_in_cluster,
     _make_bundle_member,
     _make_clusters,
-    _make_comparisons,
     _make_grown_satellites,
     _make_repeat_runs,
     _make_runs,
@@ -205,6 +208,31 @@ def _find_rt_subsequences(scores: list[int], block_length: int) -> list[tuple[in
     return sorted(subsequences)
 
 
+def _find_rt_subsequences_on_arrays(
+    scores: list[int], chunk_bases: int
+) -> list[tuple[int, int, int]]:
+    """pvc's rt_segments through _find_candidates, in chunks of chunk_bases bases. The
+    scores, two values as in _find_rt_subsequences, are the period-1 comparisons of bases
+    made for them: each base is the one before it for a match, and the other of A and C for
+    a mismatch. With period 1 alone, a scan_min_copies of 1 and no copy floor, the
+    subsequence of the scores `[k0, k1)` is the candidate `[k0, k1 + 1)`."""
+    reward = max((score for score in scores if score > 0), default=1)
+    penalty = -min((score for score in scores if score < 0), default=-1)
+    assert set(scores) <= {reward, -penalty}, scores
+    letters = ["A"]
+    for score in scores:
+        letters.append(letters[-1] if score > 0 else {"A": "C", "C": "A"}[letters[-1]])
+    parameters = StrFinderParameters(
+        scan_max_period=1,
+        match_reward=reward,
+        mismatch_penalty=penalty,
+        scan_min_copies=1,
+        copy_floors=_ZERO_FLOORS,
+    )
+    got = _find_candidates("".join(letters), parameters, chunk_bases=chunk_bases)
+    return [(candidate.start, candidate.end - 1, candidate.score) for candidate in got]
+
+
 def _find_brute_subsequences(scores: list[int]) -> list[tuple[int, int, int]]:
     """pvc's brute_segments (tandem_repeat.rs 1220): the maximal scoring subsequences from
     Ruzzo and Tompa's definition, as (start, end, score), `[start, end)` the indices of
@@ -302,7 +330,14 @@ _CRAFTED_SCORES = [
     [1] * 5 + [-3] + [1] * 8,  # dip stays above: one subsequence
     [2, 2, -7, 2, 2],
     [-7, 2, 2, -7, 2, -7, 2, 2, -7],
-    [1, 1, 1, -2, 1, 1, 1] + [-2] * 5 + [1] * 10,
+    [1, 1, 1, -2, 1, 1, 1]
+    + [-2] * 5
+    + [1]
+    * 10,  # The run at 7 starts from the total before the subsequence at 5, which is open over
+    # the subsequence at 0; Ruzzo and Tompa reach only a total before that is smaller, so
+    # the two stay apart. Found on 21 October 2026 by searching for a case where reaching
+    # an equal total gives other subsequences.
+    [1, 1, 1, -1, -1, 1, -1, 1, 1],
 ]
 
 
@@ -311,6 +346,8 @@ def test_ruzzo_tompa_matches_brute_force_on_crafted_cases(scores: list[int]) -> 
     expected = _find_brute_subsequences(scores)
     assert _find_rt_subsequences(scores, block_length=max(len(scores), 1)) == expected
     assert _find_rt_subsequences(scores, block_length=1) == expected
+    for chunk_bases in range(1, len(scores) + 2):
+        assert _find_rt_subsequences_on_arrays(scores, chunk_bases) == expected, chunk_bases
 
 
 def test_ruzzo_tompa_matches_brute_force_on_pseudo_random() -> None:
@@ -328,6 +365,8 @@ def test_ruzzo_tompa_matches_brute_force_on_pseudo_random() -> None:
         expected = _find_brute_subsequences(scores)
         assert _find_rt_subsequences(scores, block_length=max(length, 1)) == expected, scores
         assert _find_rt_subsequences(scores, block_length=7) == expected, scores
+        assert _find_rt_subsequences_on_arrays(scores, chunk_bases=length + 1) == expected
+        assert _find_rt_subsequences_on_arrays(scores, chunk_bases=7) == expected, scores
 
 
 # Compared by hand: score k compares the base at k + period with the base at k, a match True.
@@ -611,14 +650,14 @@ _DROP_RULE_CASES: list[tuple[str, str, list[tuple[int, int, int, int]]]] = [
     [(bases, expected) for _, bases, expected in _DROP_RULE_CASES],
     ids=[name for name, _, _ in _DROP_RULE_CASES],
 )
-def test_the_drop_rule_gives_pvcs_candidates_in_any_blocks(
+def test_the_drop_rule_gives_pvcs_candidates_in_any_chunks(
     bases: str, expected: list[tuple[int, int, int, int]]
 ) -> None:
     parameters = StrFinderParameters(copy_floors=_ZERO_FLOORS)
-    for block_bases in range(1, 61):
-        got = _find_candidates(bases, parameters, block_bases=block_bases)
+    for chunk_bases in range(1, 61):
+        got = _find_candidates(bases, parameters, chunk_bases=chunk_bases)
         found = [(c.start, c.end, c.period, c.score) for c in got]
-        assert found == expected, block_bases
+        assert found == expected, chunk_bases
 
 
 def test_a_candidate_under_its_copy_floor_is_not_returned() -> None:
@@ -638,10 +677,10 @@ def _make_random_bases(seed: int, length: int, alphabet: str) -> str:
 @given(
     bases=st.text(alphabet="ACGTN", max_size=300) | st.text(alphabet="AC", max_size=300),
     floors=st.tuples(*[st.integers(min_value=0, max_value=6)] * 6),
-    block_bases=st.integers(min_value=1, max_value=40),
+    chunk_bases=st.integers(min_value=1, max_value=40),
 )
-def test_the_copy_floors_and_the_blocks_change_nothing_but_what_is_under_the_floor(
-    bases: str, floors: tuple[int, int, int, int, int, int], block_bases: int
+def test_the_copy_floors_and_the_chunks_change_nothing_but_what_is_under_the_floor(
+    bases: str, floors: tuple[int, int, int, int, int, int], chunk_bases: int
 ) -> None:
     every = _find_candidates(bases, StrFinderParameters(copy_floors=_ZERO_FLOORS))
     over_floors = [
@@ -650,12 +689,12 @@ def test_the_copy_floors_and_the_blocks_change_nothing_but_what_is_under_the_flo
         if (candidate.end - candidate.start) // candidate.period >= floors[candidate.period - 1]
     ]
     parameters = StrFinderParameters(copy_floors=floors)
-    assert _find_candidates(bases, parameters, block_bases=block_bases) == over_floors
+    assert _find_candidates(bases, parameters, chunk_bases=chunk_bases) == over_floors
 
 
 def test_the_candidates_come_by_period_then_start() -> None:
     bases = _make_random_bases(seed=7, length=3000, alphabet="ACGT")
-    got = _find_candidates(bases, StrFinderParameters(copy_floors=_ZERO_FLOORS), block_bases=50)
+    got = _find_candidates(bases, StrFinderParameters(copy_floors=_ZERO_FLOORS), chunk_bases=50)
     keys = [(candidate.period, candidate.start) for candidate in got]
     assert keys == sorted(keys)
     assert {candidate.period for candidate in got} == {1, 2, 3, 4, 5, 6}
@@ -728,7 +767,7 @@ def _find_candidates_by_score(
     penalty=st.integers(1, 20),
     scan_min_copies=st.integers(1, 8),
     floors=st.tuples(*[st.integers(min_value=0, max_value=6)] * 6),
-    block_bases=st.integers(min_value=1, max_value=40),
+    chunk_bases=st.integers(min_value=1, max_value=40),
 )
 def test_step_one_gives_the_candidates_of_one_score_at_a_time(
     bases: str,
@@ -737,7 +776,7 @@ def test_step_one_gives_the_candidates_of_one_score_at_a_time(
     penalty: int,
     scan_min_copies: int,
     floors: tuple[int, int, int, int, int, int],
-    block_bases: int,
+    chunk_bases: int,
 ) -> None:
     parameters = StrFinderParameters(
         scan_min_period=periods[0],
@@ -747,18 +786,134 @@ def test_step_one_gives_the_candidates_of_one_score_at_a_time(
         scan_min_copies=scan_min_copies,
         copy_floors=floors,
     )
-    got = _find_candidates(bases, parameters, block_bases=block_bases)
+    got = _find_candidates(bases, parameters, chunk_bases=chunk_bases)
     found = [(c.start, c.end, c.period, c.score) for c in got]
     assert found == _find_candidates_by_score(bases, parameters)
 
 
+@st.composite
+def _make_bases_with_repeats(draw: st.DrawFn) -> str:
+    """A sequence of stretches, each of any letters, A, C, G and T in either case, N and
+    other letters of IUPAC, or a motif of 1 to 7 bases repeated, perhaps with one letter
+    changed."""
+    stretches = []
+    for _ in range(draw(st.integers(min_value=0, max_value=12))):
+        if draw(st.booleans()):
+            stretches.append(draw(st.text(alphabet="ACGTacgtNnRY", max_size=12)))
+            continue
+        motif = draw(st.text(alphabet="ACGTacgt", min_size=1, max_size=7))
+        repeat = motif * draw(st.integers(min_value=1, max_value=12))
+        changed = draw(st.integers(min_value=0, max_value=len(repeat)))
+        letter = draw(st.sampled_from("ACGTN"))
+        stretches.append(repeat[:changed] + letter + repeat[changed + 1 :])
+    return "".join(stretches)
+
+
+@settings(max_examples=500, deadline=None)
+@given(
+    bases=_make_bases_with_repeats(),
+    periods=st.tuples(st.integers(1, 6), st.integers(1, 6)).map(sorted),
+    reward=st.integers(1, 10),
+    penalty=st.integers(1, 20),
+    scan_min_copies=st.integers(1, 8),
+    floors=st.tuples(*[st.integers(min_value=0, max_value=6)] * 6),
+    chunk_bases=st.integers(min_value=1, max_value=64),
+)
+def test_step_one_gives_the_candidates_of_the_pure_python_step_one(
+    bases: str,
+    periods: list[int],
+    reward: int,
+    penalty: int,
+    scan_min_copies: int,
+    floors: tuple[int, int, int, int, int, int],
+    chunk_bases: int,
+) -> None:
+    parameters = StrFinderParameters(
+        scan_min_period=periods[0],
+        scan_max_period=periods[1],
+        match_reward=reward,
+        mismatch_penalty=penalty,
+        scan_min_copies=scan_min_copies,
+        copy_floors=floors,
+    )
+    expected = pure_python_step_one._find_candidates(bases, parameters)
+    assert _find_candidates(bases, parameters, chunk_bases=chunk_bases) == expected
+
+
+# Each chunk of step 1 ends where no candidate crosses. The expected candidates, (start,
+# end, period, score) with no copy floor, are those of the pure-Python step 1 of main at
+# 96b3938 (tests/pure_python_step_one.py), run on 21 October 2026.
+
+
+def test_a_repeat_longer_than_the_chunk_doubles_it_until_the_repeat_ends() -> None:
+    # 200 bases of (CA) with no place to end a chunk, from chunks of 1 base up.
+    bases = "TTGA" + "CA" * 100 + "GTTG"
+    parameters = StrFinderParameters(copy_floors=_ZERO_FLOORS)
+    expected = [
+        _Candidate(start=0, end=2, period=1, score=2),
+        _Candidate(start=205, end=207, period=1, score=2),
+        _Candidate(start=3, end=204, period=2, score=398),
+    ]
+    for chunk_bases in (1, 16, 64, 199, 200, 201, 207, 208):
+        assert _find_candidates(bases, parameters, chunk_bases=chunk_bases) == expected
+
+
+def test_candidates_beside_the_end_of_a_chunk_are_found_whole() -> None:
+    # In chunks that start at 1 base, the first chunk ends at 6, the first place where every
+    # period's stack is empty with its period of mismatches before it: (TT) of period 1 ends
+    # at 5 and (CCC) starts at 6. Found by a search of random sequences for a chunk's end one
+    # base after a candidate's.
+    bases = "ATATTGCCCACCTGCACACACACGACCATGGCAACAGCTCGAAAAGAC"
+    parameters = StrFinderParameters(copy_floors=_ZERO_FLOORS)
+    expected = [
+        _Candidate(start=3, end=5, period=1, score=2),
+        _Candidate(start=6, end=9, period=1, score=4),
+        _Candidate(start=10, end=12, period=1, score=2),
+        _Candidate(start=25, end=27, period=1, score=2),
+        _Candidate(start=29, end=31, period=1, score=2),
+        _Candidate(start=32, end=34, period=1, score=2),
+        _Candidate(start=41, end=45, period=1, score=6),
+        _Candidate(start=0, end=4, period=2, score=4),
+        _Candidate(start=14, end=23, period=2, score=14),
+    ]
+    for chunk_bases in range(1, len(bases) + 2):
+        assert _find_candidates(bases, parameters, chunk_bases=chunk_bases) == expected
+
+
+@pytest.mark.parametrize(
+    ("bases", "scan_min_period", "expected"),
+    [
+        ("", 1, []),
+        ("A", 1, []),
+        ("AA", 1, [_Candidate(start=0, end=2, period=1, score=2)]),
+        ("ACAC", 2, [_Candidate(start=0, end=4, period=2, score=4)]),
+        ("AAA", 3, []),
+    ],
+    ids=["empty", "one_base", "two_bases", "four_bases_from_period_2", "three_bases_from_3"],
+)
+def test_only_the_periods_shorter_than_the_sequence_are_scanned(
+    bases: str, scan_min_period: int, expected: list[_Candidate]
+) -> None:
+    parameters = StrFinderParameters(scan_min_period=scan_min_period, copy_floors=_ZERO_FLOORS)
+    for chunk_bases in (1, 2, 3, 65_536):
+        assert _find_candidates(bases, parameters, chunk_bases=chunk_bases) == expected
+
+
+@pytest.mark.parametrize("bases", ["N" * 300, "n" * 300, "NRY" * 100], ids=["N", "n", "NRY"])
+def test_a_contig_of_no_a_c_g_or_t_has_no_candidates(bases: str) -> None:
+    parameters = StrFinderParameters(copy_floors=_ZERO_FLOORS)
+    for chunk_bases in (1, 7, 64, 65_536):
+        assert _find_candidates(bases, parameters, chunk_bases=chunk_bases) == []
+
+
 @pytest.mark.slow
 def test_step_one_holds_far_fewer_than_every_candidate_of_four_million_bases() -> None:
-    # The plan's bound. Measured on CPython 3.15t, Apple M5 Pro, 19 October 2026: a peak of
-    # 8.0 MB, 4 MB of it the bases as bytes; _find_candidates took 23 to 25 s under
-    # tracemalloc, and this test 34 s. The same run in one block of the whole sequence,
-    # which holds every candidate and every subsequence of the scores until the end,
-    # peaked at 965.6 MB.
+    # The plan's bound. Measured on CPython 3.15t, Apple M5 Pro, 19 October 2026, with the
+    # pure-Python step 1 in blocks of 4,096 bases: a peak of 8.0 MB, 4 MB of it the bases as
+    # bytes. The same run in one block of the whole sequence, which holds every candidate
+    # and every subsequence of the scores until the end, peaked at 965.6 MB. The array step
+    # 1, in chunks of 65,536 bases or more, peaked at 15.4 MB on 21 October 2026, 4 MB of it
+    # the canonical bases.
     bases = _make_random_bases(seed=19, length=4_000_000, alphabet="ACGT")
     tracemalloc.start()
     try:
