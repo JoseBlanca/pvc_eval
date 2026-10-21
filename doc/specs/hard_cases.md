@@ -3,23 +3,28 @@
 *Status: draft of 21 October 2026, for the owner's approval of each expected outcome. No test of
 it exists yet. It answers `doc/spec.md` Open 3 and replaces the text of its §7.5. It stands on
 `doc/spec.md` §5.2 to §5.5, on `doc/specs/loci.md`, `doc/specs/reconciliation.md` and
-`doc/specs/compare.md`, and on the oracle of `doc/specs/respell.md` §8, `tests/haplotype_oracle.py`.*
+`doc/specs/compare.md`, and on the oracle of `doc/specs/respell.md` §8,
+`tests/haplotype_oracle.py`.*
 
 pvc's work on tandem repeats met, in its reports, the disagreements between VCF files that
 pvc_eval was made to judge: GIAB writing one haplotype as an indel and a SNP where pvc writes one
 record over the repeat, deletions across the edge of a repeat written as overlapping records with
 a `*` allele, and HipSTR writing the whole repeat in one record. This spec takes 50 of them, each
-with the VCF records of two real files at one locus, and gives the row of the table that
-`compare()` must give for it: the outcome, the locus, its locus alleles and the genotype of each
-file. Each becomes a test that runs `compare()` on a few hundred bases of the real reference.
+with the VCF records of two real files at one locus. They are numbered by kind: S1 to S14 for
+GIAB's split records against pvc's repeat record, E1 to E16 for deletions at a repeat's edge, H1
+to H15 for HipSTR's whole-repeat records, and O1 to O5 for other spellings. Each case gives the
+row of the table that `compare()` must give for it: the outcome, the locus, its locus alleles and
+the genotype of each file. Each becomes a test that runs `compare()` on a few hundred bases of the
+real reference.
 
-The owner approves each expected outcome; they are what the check stands on. 32 of the 50 are
-*same genotype*: the files spell one haplotype differently and pvc_eval must see through it. 11
-are *different* and 4 *same alleles, other genotype*, where the files truly disagree. 3 are
-*invalid in B*: pvc wrote what it meant to be the same haplotypes as the other file, and a rule of
-`doc/spec.md` §5.4 makes them impossible. Two of these three follow from the rule of Open 1, which
-the owner decides; the third from the collision rule the owner chose on 19 October 2026.
-pvc_eval at commit 96b3938 gives every one of the 50 rows below.
+What is asked of the owner is to approve each expected outcome, since the check stands on them,
+and to answer Open 1 (§6). 32 of the 50 are *same genotype*: the files spell one haplotype
+differently and pvc_eval must see through it. 11 are *different* and 4 *same alleles, other
+genotype*, where the files truly disagree. 3 are *invalid in B*, file B being pvc's: pvc wrote
+what it meant to be the same haplotypes as file A, and a rule of `doc/spec.md` §5.4 makes them
+impossible. Two of these three, S11 and E5, follow from the rule Open 1 asks about; the third,
+E11, from the collision rule the owner chose on 19 October 2026. pvc_eval at commit 96b3938 gives
+every one of the 50 rows below.
 
 Positions are 1-based and inclusive, as in a VCF, unless they are called excerpt positions.
 
@@ -57,16 +62,20 @@ Each expected row was worked out twice, and the two agree on all 50:
 2. **From `compare()`**, on the excerpt and the two VCF files, with the default `CompareConfig` and
    `finder_threads=0`.
 
-The oracle and pvc_eval read records by the same rules of §5.4, so the oracle checks the
-reconciliation's code, not its rules. Where a rule gives a result that the file's caller did not
-mean, both give it, and the case says so (S11, E5, E11).
+The oracle and pvc_eval read records by the rules of §5.4, with one difference: the oracle counts
+a `*` as covered only by an edit as written, where pvc_eval also counts every placement of a
+deletion. No case here turns on it: with coverage as written only, all 50 rows are the same (worked
+by the spec's reviewer). So the oracle checks the reconciliation's code, not its rules. Where a rule
+gives a result that the file's caller did not mean, both give it, and the case says so (S11, E5,
+E11).
 
 Every record was read back from its file at the line named and compared with the case: POS, REF,
-ALT and the sample's GT, all 50 cases, no difference. The STR regions that make each locus were
-compared with those the STR finder gives on 10,000 more bases around the excerpt: the same in all
-50. The finder drops a repeat within 15 bases of a contig's end (`doc/spec.md` §5.1), so an excerpt
-can lose a repeat at its edges, more than 100 bases from every locus here; none of those is in a
-row.
+ALT and the sample's GT, all 50 cases, no difference. An excerpt is a contig of its own, and the STR
+finder drops a repeat within 15 bases of a contig's end (`doc/spec.md` §5.1), so an excerpt could
+give other STR regions than the whole reference. The STR regions of each excerpt were compared with
+those the finder gives on the excerpt widened by 5,000 bases on each side. Over every locus they are
+the same, in all 50 cases; they differ only in repeats at an excerpt's edges, more than 100 bases
+from any locus.
 
 ## 2. The files
 
@@ -90,9 +99,11 @@ its header included. These files stay in pvc's directories and the tests do not 
 
 No human GATK call set on this machine has a `*` allele or two overlapping records: GATK's are
 slices of 29 to 78 records, and the runs behind the edge-deletion report were deleted. The
-overlapping records of humans here are pvc's own, which since 10 October 2026 writes a flank
-record beside a widened repeat record with a `*` allele, "how GATK writes it"
-(`doc/devel/ng/spec/str_edge_deletion_alleles.md` §6). GATK's own are the tomato cases, E12 to
+overlapping records of humans here are pvc's own. Since 10 October 2026, when a deletion crosses the
+edge of a repeat, pvc widens its record of the repeat over the deleted flank bases, the **widened
+repeat record**, and writes a `*` for that haplotype in its record of those flank bases, the **flank
+record**, "how GATK writes it" (`doc/devel/ng/spec/str_edge_deletion_alleles.md` §6). GATK's own are
+the tomato cases, E12 to
 E16, which have no GIAB file.
 
 ## 3. What the cases show
@@ -114,15 +125,17 @@ in these ways, each against the other:
   `1/1` (O1);
 - one insertion placed at three points of a compound repeat (O3 to O5).
 
-Where a file leaves the phase open, one of its possible genotypes is enough (S7, E4, E9, H6, H8).
+Where a file leaves the phase open, one of its possible genotypes is enough (S7, S8, S10, E4,
+E9, H6, H8, H11).
 
 **The locus takes the whole stretch.** In S3 the two files give the same repeat, A×22, and pvc
-adds a SNP on the base after it. The SNP touches the STR region and lies in the insertion's span,
-so the locus holds it, and the row is *different*: pvc_eval compares what each file says over the
-whole locus, not over the repeat alone (`doc/spec.md` §5.3). pvc's own tract scorer counts this
-repeat right.
+adds a SNP on the base after it. The SNP lies next to the STR region, which it therefore touches,
+and in the span of file A's insertion, every position the insertion could be written at
+(`doc/spec.md` §5.2), which ends on the base after the repeat. So the locus holds it, and the row is
+*different*: pvc_eval compares what each file says over the whole locus, not over the repeat alone
+(`doc/spec.md` §5.3). pvc's tract scorer, which compares the repeat alone, counts it right.
 
-**Three cases are invalid where the caller meant the other file's haplotypes.**
+**Three cases are invalid in pvc's file, B, where pvc meant file A's haplotypes.**
 
 - S11 and E5: pvc writes a flank record with a `*` allele and with REF and ALT padded over
   bases they share. Normalising trims those bases (§5.2), and the `*` is then measured against the
@@ -144,8 +157,9 @@ heterozygote homozygous (H13). Where the two of GIAB's files disagree with each 
 show both against the same caller: E6 and E7, H14 and H15. A haplotype on one copy in one file
 and on both in the other is *same alleles, other genotype* (E13, E14, H13, H15).
 
-**HipSTR's phase.** HipSTR writes every GT with `|` and no PS, with PQ 0.50 on every heterozygote
-and no phasing between its records (its `DSNP=0`). pvc_eval reads them as one phase set per
+**HipSTR's phase.** HipSTR writes every GT with `|` and no PS, yet it phases no record with another:
+its FORMAT field PQ, the probability it gives the phase, is 0.50 on every heterozygote, and DSNP,
+the reads it phased by SNPs, is 0 everywhere. pvc_eval reads them as one phase set per
 sample and contig (§5.4), so a locus holding two HipSTR records would be compared under a phase
 HipSTR never claimed. None of the 15 HipSTR cases holds two HipSTR records; the files hold one
 record per repeat.
@@ -160,9 +174,11 @@ the kind is complex.
 
 ### 4.1 GIAB's split records against pvc's repeat record
 
-The kind `doc/spec.md` §7.5 names first. Sources: `doc/devel/ng/research/tract_genotype_accuracy_2026-09-03.md`
+The kind `doc/spec.md` §7.5 names first. Sources:
+`doc/devel/ng/research/tract_genotype_accuracy_2026-09-03.md`
 §3 "The genotype-coding trap", §3.1, §3.4b and §3.4c (S1 to S6); `giab_unexplained_fn_2026-10-03.md`
-§4, "The 'same variant written another way' cases" (S7 to S11); `doc/devel/ng/spec/str_bundle_loci.md`
+§4, "The 'same variant written another way' cases" (S7 to S11);
+`doc/devel/ng/spec/str_bundle_loci.md`
 §10 step 4 (S12); `doc/devel/reports/reviews/ng_indel_genotypes_vs_giab_2026-09-11.md`, "Two
 things it cost" (S13, S14). All in `/Users/jose/devel/pop_var_caller/`.
 
@@ -216,8 +232,9 @@ No report of pvc names a locus where HipSTR and another file spell one haplotype
 `doc/devel/reports/ssr_hipstr_concordance_2026-06-25.md` is on tomato, with no GIAB file, and
 `tract_genotype_investigation/hipstr.md` gives HipSTR's scores and its traits (records reaching
 into the flank, `|` without phasing). These cases were found by comparing HipSTR30's 3,163 records
-with an ALT against TR, GIAB-HG002 and pvc-m07-30; 2,447 agree with all three by their
-haplotypes. File A is GIAB's where the case has one, so HipSTR is file B but in H2 and H11.
+with an ALT against TR, GIAB-HG002 and pvc-m07-30, by the haplotypes each gives over the repeat;
+2,447 of the 3,163 give the same as all three files. File A is GIAB's where the case has one, so
+HipSTR is file B but in H2 and H11.
 
 | case | locus | file A | file B | outcome | A, B |
 |---|---|---|---|---|---|
@@ -258,684 +275,780 @@ alleles, numbered, which are the haplotypes the two files say; and the genotype 
 the number of possible genotypes of each, and the outcome. A sample with more than one possible
 genotype has its others among the alleles listed.
 
-**S1.** TR writes a heterozygote of two insertions as two phased records at one position; pvc one record of two ALTs over the repeat. Two insertions at one point on different haplotypes do not collide.
+**S1.** TR writes a heterozygote of two insertions as two phased records at one position; pvc one
+record of two ALTs over the repeat. Two insertions at one point on different haplotypes do not
+collide.
 
 ```
-excerpt  chr1:4416100-4416400, 301 bases; excerpt position = position - 4416099
-A  TR:180       4416244 C CGTGT 0|1
-A  TR:181       4416244 C CGTGTGT 1|0
-B  pvc-ng30:2677      4416245 GTGTGTGTGTGTGTGTGT GTGTGTGTGTGTGTGTGTGTGT,GTGTGTGTGTGTGTGTGTGTGTGT 1/2
+excerpt  chr1:4416100-4416400, 301 bases; excerpt position = position - 4416099; sample HG002
+A  TR:180  4416244 C CGTGT 0|1
+A  TR:181  4416244 C CGTGTGT 1|0
+B  pvc-ng30:2677  4416245 GTGTGTGTGTGTGTGTGT GTGTGTGTGTGTGTGTGTGTGT,GTGTGTGTGTGTGTGTGTGTGTGT 1/2
 locus    chr1:4416244-4416275 (excerpt 145-176), kind STR; STR regions: 4416245-4416275 str-bundle
   0  CGTGTGTGTGTGTGTGTGTGAAAGAGAGAGAG
   1  CGTGTGTGTGTGTGTGTGTGTGTGTGAAAGAGAGAGAG
   2  CGTGTGTGTGTGTGTGTGTGTGTGAAAGAGAGAGAG
-A 1/2  B 1/2  possible 1, 1  -> same genotype
+possible genotypes  A: 1/2   B: 1/2
+row  A 1/2  B 1/2  possible 1, 1  records 2, 1  -> same genotype
 ```
 
-**S2.** TR writes the stretch as four records, an insertion followed by SNPs on the next two positions; pvc as a deletion and a repeat record. The insertion goes in between 150329035 and 150329036 and the SNP replaces 150329036, which is no collision.
+**S2.** TR writes the stretch as four records, an insertion followed by SNPs on the next two
+positions; pvc as a deletion and a repeat record. The insertion goes in between 150329035 and
+150329036 and the SNP replaces 150329036, which is no collision.
 
 ```
-excerpt  chr1:150328890-150329190, 301 bases; excerpt position = position - 150328889
-A  TR:1583      150329033 T A 1|1
-A  TR:1584      150329035 A ACTTTTT 1|1
-A  TR:1585      150329036 A T 1|1
-A  TR:1586      150329037 C T 1|1
-B  pvc-ng30:3583      150329032 GT G 1/1
-B  pvc-ng30:3584      150329038 TTTTTTTTTT TTTTTTTTTTTTTTTTT 1/1
+excerpt  chr1:150328890-150329190, 301 bases; excerpt position = position - 150328889; sample HG002
+A  TR:1583  150329033 T A 1|1
+A  TR:1584  150329035 A ACTTTTT 1|1
+A  TR:1585  150329036 A T 1|1
+A  TR:1586  150329037 C T 1|1
+B  pvc-ng30:3583  150329032 GT G 1/1
+B  pvc-ng30:3584  150329038 TTTTTTTTTT TTTTTTTTTTTTTTTTT 1/1
 locus    chr1:150329032-150329048 (excerpt 143-159), kind STR; STR regions: 150329038-150329047 str T
   0  GTAAACTTTTTTTTTTG
   1  GAAACTTTTTTTTTTTTTTTTTG
-A 1/1  B 1/1  possible 1, 1  -> same genotype
+possible genotypes  A: 1/1   B: 1/1
+row  A 1/1  B 1/1  possible 1, 1  records 4, 2  -> same genotype
 ```
 
-**S3.** Over the repeat both files give A×22. pvc's SNP on 9955423, the base after the repeat, touches the STR region and lies in the insertion's span, so the locus takes it in, and B carries an allele A does not.
+**S3.** Over the repeat both files give A×22. pvc's SNP on 9955423, the base after the repeat,
+touches the STR region and lies in the insertion's span, so the locus takes it in, and B carries an
+allele A does not.
 
 ```
-excerpt  chr1:9955260-9955560, 301 bases; excerpt position = position - 9955259
-A  TR:283       9955403 C CAAA 1|1
-B  pvc-ng30:2747      9955404 AAAAAAAAAAAAAAAAAAA AAAAAAAAAAAAAAAAAAAAAA 1/1
-B  pvc-ng30:2748      9955423 G A 0/1
+excerpt  chr1:9955260-9955560, 301 bases; excerpt position = position - 9955259; sample HG002
+A  TR:283  9955403 C CAAA 1|1
+B  pvc-ng30:2747  9955404 AAAAAAAAAAAAAAAAAAA AAAAAAAAAAAAAAAAAAAAAA 1/1
+B  pvc-ng30:2748  9955423 G A 0/1
 locus    chr1:9955403-9955423 (excerpt 144-164), kind STR; STR regions: 9955404-9955422 str A
   0  CAAAAAAAAAAAAAAAAAAAG
   1  CAAAAAAAAAAAAAAAAAAAAAAG
   2  CAAAAAAAAAAAAAAAAAAAAAAA
-A 1/1  B 1/2  possible 1, 1  -> different
+possible genotypes  A: 1/1   B: 1/2
+row  A 1/1  B 1/2  possible 1, 1  records 1, 2  -> different
 ```
 
-**S4.** Same length, other sequence: TR's haplotype deletes the repeat's last A and the G after it, with a SNP inside; pvc's old record deletes two A's inside and keeps the G.
+**S4.** Same length, other sequence: TR's haplotype deletes the repeat's last A and the G after it,
+with a SNP inside; pvc's old record deletes two A's inside and keeps the G.
 
 ```
-excerpt  chr1:14722006-14722306, 301 bases; excerpt position = position - 14722005
-A  TR:317       14722158 A T 0|1
-A  TR:318       14722161 AAG A 0|1
-B  pvc-ng30:2776      14722151 AAAAAAAAAAAA AAAAAAATAA 0/1
+excerpt  chr1:14722006-14722306, 301 bases; excerpt position = position - 14722005; sample HG002
+A  TR:317  14722158 A T 0|1
+A  TR:318  14722161 AAG A 0|1
+B  pvc-ng30:2776  14722151 AAAAAAAAAAAA AAAAAAATAA 0/1
 locus    chr1:14722151-14722179 (excerpt 146-174), kind STR; STR regions: 14722151-14722179 str-bundle
   0  AAAAAAAAAAAAGAATAAAAAATAAAAAA
   1  AAAAAAATAAAAATAAAAAATAAAAAA
   2  AAAAAAATAAGAATAAAAAATAAAAAA
-A 0/1  B 0/2  possible 1, 1  -> different
+possible genotypes  A: 0/1   B: 0/2
+row  A 0/1  B 0/2  possible 1, 1  records 2, 1  -> different
 ```
 
 **S5.** The same locus with pvc's later record, widened over the G, which spells TR's sequence.
 
 ```
-excerpt  chr1:14722006-14722306, 301 bases; excerpt position = position - 14722005
-A  TR:317       14722158 A T 0|1
-A  TR:318       14722161 AAG A 0|1
-B  pvc-main30:2770      14722151 AAAAAAAAAAAAG AAAAAAATAAA 0/1
+excerpt  chr1:14722006-14722306, 301 bases; excerpt position = position - 14722005; sample HG002
+A  TR:317  14722158 A T 0|1
+A  TR:318  14722161 AAG A 0|1
+B  pvc-main30:2770  14722151 AAAAAAAAAAAAG AAAAAAATAAA 0/1
 locus    chr1:14722151-14722179 (excerpt 146-174), kind STR; STR regions: 14722151-14722179 str-bundle
   0  AAAAAAAAAAAAGAATAAAAAATAAAAAA
   1  AAAAAAATAAAAATAAAAAATAAAAAA
-A 0/1  B 0/1  possible 1, 1  -> same genotype
+possible genotypes  A: 0/1   B: 0/1
+row  A 0/1  B 0/1  possible 1, 1  records 2, 1  -> same genotype
 ```
 
-**S6.** TR anchors the deletion on the base before the repeat, pvc writes the whole repeat from its first base.
+**S6.** TR anchors the deletion on the base before the repeat, pvc writes the whole repeat from its
+first base.
 
 ```
-excerpt  chr1:69233295-69233595, 301 bases; excerpt position = position - 69233294
-A  TR:966       69233430 TATAATAATA T 1|1
-B  pvc-ng30:3258      69233431 ATAATAATAATAATAATAATAATAATAATAATA ATAATAATAATAATAATAATAATA 1/1
+excerpt  chr1:69233295-69233595, 301 bases; excerpt position = position - 69233294; sample HG002
+A  TR:966  69233430 TATAATAATA T 1|1
+B  pvc-ng30:3258  69233431 ATAATAATAATAATAATAATAATAATAATAATA ATAATAATAATAATAATAATAATA 1/1
 locus    chr1:69233430-69233465 (excerpt 136-171), kind STR; STR regions: 69233431-69233463 str ATA
   0  TATAATAATAATAATAATAATAATAATAATAATAAT
   1  TATAATAATAATAATAATAATAATAAT
-A 1/1  B 1/1  possible 1, 1  -> same genotype
+possible genotypes  A: 1/1   B: 1/1
+row  A 1/1  B 1/1  possible 1, 1  records 1, 1  -> same genotype
 ```
 
-**S7.** HG003. GIAB writes a record of two ALTs and an unphased SNP; pvc one record whose ALT carries the SNP. GIAB's two phase assignments give two possible genotypes, and one of them is pvc's.
+**S7.** HG003. GIAB writes a record of two ALTs and an unphased SNP; pvc one record whose ALT
+carries the SNP. GIAB's two phase assignments give two possible genotypes, and one of them is pvc's.
 
 ```
-excerpt  chr11:123865020-123865320, 301 bases; excerpt position = position - 123865019
-A  GIAB-HG003:2756918   123865154 CGTGTGTGT CGTGTGT,C 2/1
-A  GIAB-HG003:2756919   123865171 G A 0/1
-B  pvc-300x-HG003:3112      123865155 GTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT GTGTGTGTGTGTGTATGTGTGTGTGTGTGTGTGTGT,GTGTGTGTGTGTGTGTGTGTGTGTGTGTGT 1/2
+excerpt  chr11:123865020-123865320, 301 bases; excerpt position = position - 123865019; sample HG003
+A  GIAB-HG003:2756918  123865154 CGTGTGTGT CGTGTGT,C 2/1
+A  GIAB-HG003:2756919  123865171 G A 0/1
+B  pvc-300x-HG003:3112  123865155 GTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT GTGTGTGTGTGTGTATGTGTGTGTGTGTGTGTGTGT,GTGTGTGTGTGTGTGTGTGTGTGTGTGTGT 1/2
 locus    chr11:123865140-123865192 (excerpt 121-173), kind STR; STR regions: 123865140-123865192 str-bundle
   0  AAAAATTCTGTAACCGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT
   1  AAAAATTCTGTAACCGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT
   2  AAAAATTCTGTAACCGTGTGTGTGTGTGTATGTGTGTGTGTGTGTGTGTGT
   3  AAAAATTCTGTAACCGTGTGTGTATGTGTGTGTGTGTGTGTGTGT
   4  AAAAATTCTGTAACCGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT
-A 1/2  B 1/2  possible 2, 1  -> same genotype
+possible genotypes  A: 1/2, 3/4   B: 1/2
+row  A 1/2  B 1/2  possible 2, 1  records 2, 1  -> same genotype
 ```
 
 **S8.** HG004. The pattern of S7 on a T repeat, the SNP on the repeat's last base.
 
 ```
-excerpt  chr14:90749262-90749562, 301 bases; excerpt position = position - 90749261
-A  GIAB-HG004:3265346   90749402 CTT CT,C 2/1
-A  GIAB-HG004:3265347   90749422 T G 0/1
-B  pvc-300x-HG004:3106      90749403 TTTTTTTTTTTTTTTTTTTT TTTTTTTTTTTTTTTTTG,TTTTTTTTTTTTTTTTTTT 1/2
+excerpt  chr14:90749262-90749562, 301 bases; excerpt position = position - 90749261; sample HG004
+A  GIAB-HG004:3265346  90749402 CTT CT,C 2/1
+A  GIAB-HG004:3265347  90749422 T G 0/1
+B  pvc-300x-HG004:3106  90749403 TTTTTTTTTTTTTTTTTTTT TTTTTTTTTTTTTTTTTG,TTTTTTTTTTTTTTTTTTT 1/2
 locus    chr14:90749397-90749422 (excerpt 136-161), kind STR; STR regions: 90749397-90749422 str-bundle
   0  TTTTTCTTTTTTTTTTTTTTTTTTTT
   1  TTTTTCTTTTTTTTTTTTTTTTTT
   2  TTTTTCTTTTTTTTTTTTTTTTTTG
   3  TTTTTCTTTTTTTTTTTTTTTTTG
   4  TTTTTCTTTTTTTTTTTTTTTTTTT
-A 3/4  B 3/4  possible 2, 1  -> same genotype
+possible genotypes  A: 1/2, 3/4   B: 3/4
+row  A 3/4  B 3/4  possible 2, 1  records 2, 1  -> same genotype
 ```
 
 **S9.** HG004. GIAB's `0/1` deletion and `1/1` SNP are pvc's one `1/2` record.
 
 ```
-excerpt  chr10:4853300-4853600, 301 bases; excerpt position = position - 4853299
-A  GIAB-HG004:2407486   4853442 CA C 0/1
-A  GIAB-HG004:2407487   4853458 A C 1/1
-B  pvc-300x-HG004:3028      4853443 AAAAAAAAAAAAAAAA AAAAAAAAAAAAAAAC,AAAAAAAAAAAAAAC 1/2
+excerpt  chr10:4853300-4853600, 301 bases; excerpt position = position - 4853299; sample HG004
+A  GIAB-HG004:2407486  4853442 CA C 0/1
+A  GIAB-HG004:2407487  4853458 A C 1/1
+B  pvc-300x-HG004:3028  4853443 AAAAAAAAAAAAAAAA AAAAAAAAAAAAAAAC,AAAAAAAAAAAAAAC 1/2
 locus    chr10:4853442-4853458 (excerpt 143-159), kind STR; STR regions: 4853443-4853458 str A
   0  CAAAAAAAAAAAAAAAA
   1  CAAAAAAAAAAAAAAAC
   2  CAAAAAAAAAAAAAAC
-A 1/2  B 1/2  possible 1, 1  -> same genotype
+possible genotypes  A: 1/2   B: 1/2
+row  A 1/2  B 1/2  possible 1, 1  records 2, 1  -> same genotype
 ```
 
 **S10.** HG004. The pattern of S7 on a CA repeat.
 
 ```
-excerpt  chr20:48207270-48207570, 301 bases; excerpt position = position - 48207269
-A  GIAB-HG004:3904085   48207407 GCACA GCACACA,G 2/1
-A  GIAB-HG004:3904086   48207435 A G 0/1
-B  pvc-300x-HG004:3235      48207408 CACACACACACACACACACACACACACA CACACACACACACACACACACACACACACA,CACACACACACACACACACACACG 1/2
+excerpt  chr20:48207270-48207570, 301 bases; excerpt position = position - 48207269; sample HG004
+A  GIAB-HG004:3904085  48207407 GCACA GCACACA,G 2/1
+A  GIAB-HG004:3904086  48207435 A G 0/1
+B  pvc-300x-HG004:3235  48207408 CACACACACACACACACACACACACACA CACACACACACACACACACACACACACACA,CACACACACACACACACACACACG 1/2
 locus    chr20:48207407-48207436 (excerpt 138-167), kind STR; STR regions: 48207408-48207435 str CA
   0  GCACACACACACACACACACACACACACAT
   1  GCACACACACACACACACACACACAT
   2  GCACACACACACACACACACACACACACACGT
   3  GCACACACACACACACACACACACGT
   4  GCACACACACACACACACACACACACACACAT
-A 3/4  B 3/4  possible 2, 1  -> same genotype
+possible genotypes  A: 1/2, 3/4   B: 3/4
+row  A 3/4  B 3/4  possible 2, 1  records 2, 1  -> same genotype
 ```
 
-**S11.** HG004. pvc writes the 2-base deletion as `TATACAC → TATAC,*` and the 4-base deletion in the repeat as a record of its own. Trimmed, the `*` record is `24760294 TAC → T,*`, whose REF is 24760294–24760296, and no placement of the 4-base deletion (24760297–24760301 at most) deletes a position of it, so the `*` is not covered and the sample is invalid. pvc meant GIAB's first possible genotype (Open 1).
+**S11.** HG004. pvc writes the 2-base deletion as `TATACAC → TATAC,*` and the 4-base deletion in the
+repeat as a record of its own. Trimmed, the `*` record is `24760294 TAC → T,*`, whose REF is
+24760294–24760296, and no placement of the 4-base deletion (24760297–24760301 at most) deletes a
+position of it, so the `*` is not covered and the sample is invalid. pvc meant GIAB's second
+possible
+genotype (Open 1).
 
 ```
-excerpt  chr8:24760150-24760450, 301 bases; excerpt position = position - 24760149
-A  GIAB-HG004:2066390   24760294 TAC T 0/1
-A  GIAB-HG004:2066391   24760296 CACAT C 0/1
-B  pvc-300x-HG004:2886      24760292 TATACAC TATAC,* 1/2
-B  pvc-300x-HG004:2887      24760297 ACATATATATATATATATAT ATATATATATATATAT 0/1
+excerpt  chr8:24760150-24760450, 301 bases; excerpt position = position - 24760149; sample HG004
+A  GIAB-HG004:2066390  24760294 TAC T 0/1
+A  GIAB-HG004:2066391  24760296 CACAT C 0/1
+B  pvc-300x-HG004:2886  24760292 TATACAC TATAC,* 1/2
+B  pvc-300x-HG004:2887  24760297 ACATATATATATATATATAT ATATATATATATATAT 0/1
 locus    chr8:24760287-24760317 (excerpt 138-168), kind STR; STR regions: 24760287-24760317 str-bundle
   0  AAAAATATACACATATATATATATATATATA
   1  AAAAATATATATATATATATATATA
   2  AAAAATATACATATATATATATATATA
   3  AAAAATATACATATATATATATATATATA
-A 0/1  B .  possible 2, 0  -> invalid in B (contradicting records)
+possible genotypes  A: 0/1, 2/3   B: none
+row  A 0/1  B .  possible 2, 0  records 2, 2  -> invalid in B, contradicting records
 ```
 
-**S12.** TR writes three phased records across an STR bundle, pvc one record over the bundle, widened over the flank SNP at 28575040.
+**S12.** TR writes three phased records across an STR bundle, pvc one record over the bundle,
+widened over the flank SNP at 28575040.
 
 ```
-excerpt  chr4:28574875-28575175, 301 bases; excerpt position = position - 28574874
-A  TR:7780      28575011 ACC A 1|0
-A  TR:7781      28575017 CCCCCCA C 0|1
-A  TR:7782      28575040 G C 1|0
-B  pvc-main30:7107      28575007 ACACACCCCCCCCCCCACACACACACACACACAG ACACACCCCCCCACACACACACACACAG,ACACACCCCCCCCCACACACACACACACACAC 1/2
+excerpt  chr4:28574875-28575175, 301 bases; excerpt position = position - 28574874; sample HG002
+A  TR:7780  28575011 ACC A 1|0
+A  TR:7781  28575017 CCCCCCA C 0|1
+A  TR:7782  28575040 G C 1|0
+B  pvc-main30:7107  28575007 ACACACCCCCCCCCCCACACACACACACACACAG ACACACCCCCCCACACACACACACACAG,ACACACCCCCCCCCACACACACACACACACAC 1/2
 locus    chr4:28575007-28575040 (excerpt 133-166), kind STR; STR regions: 28575007-28575039 str-bundle
   0  ACACACCCCCCCCCCCACACACACACACACACAG
   1  ACACACCCCCCCCCACACACACACACACACAC
   2  ACACACCCCCCCACACACACACACACAG
-A 1/2  B 1/2  possible 1, 1  -> same genotype
+possible genotypes  A: 1/2   B: 1/2
+row  A 1/2  B 1/2  possible 1, 1  records 3, 1  -> same genotype
 ```
 
 **S13.** HG004. GIAB writes an insertion and a SNP two positions apart, pvc one complex record.
 
 ```
-excerpt  chr9:11024574-11024874, 301 bases; excerpt position = position - 11024573
-A  GIAB-HG004:2245326   11024723 C CAG 1/1
-A  GIAB-HG004:2245327   11024725 C G 1/1
-B  pvc-explain30-HG004:2917      11024723 CAC CAGAG 1/1
+excerpt  chr9:11024574-11024874, 301 bases; excerpt position = position - 11024573; sample HG004
+A  GIAB-HG004:2245326  11024723 C CAG 1/1
+A  GIAB-HG004:2245327  11024725 C G 1/1
+B  pvc-explain30-HG004:2917  11024723 CAC CAGAG 1/1
 locus    chr9:11024723-11024725 (excerpt 150-152), kind complex; STR regions: none
   0  CAC
   1  CAGAG
-A 1/1  B 1/1  possible 1, 1  -> same genotype
+possible genotypes  A: 1/1   B: 1/1
+row  A 1/1  B 1/1  possible 1, 1  records 2, 1  -> same genotype
 ```
 
 **S14.** HG004. pvc's older run puts the insertion on one haplotype only.
 
 ```
-excerpt  chr9:11024574-11024874, 301 bases; excerpt position = position - 11024573
-A  GIAB-HG004:2245326   11024723 C CAG 1/1
-A  GIAB-HG004:2245327   11024725 C G 1/1
-B  pvc-ng30-HG004:2916      11024723 C CAG,G 0/1
-B  pvc-ng30-HG004:2917      11024725 C G 1/1
+excerpt  chr9:11024574-11024874, 301 bases; excerpt position = position - 11024573; sample HG004
+A  GIAB-HG004:2245326  11024723 C CAG 1/1
+A  GIAB-HG004:2245327  11024725 C G 1/1
+B  pvc-ng30-HG004:2916  11024723 C CAG,G 0/1
+B  pvc-ng30-HG004:2917  11024725 C G 1/1
 locus    chr9:11024723-11024725 (excerpt 150-152), kind complex; STR regions: none
   0  CAC
   1  CAGAG
   2  CAG
-A 1/1  B 1/2  possible 1, 1  -> different
+possible genotypes  A: 1/1   B: 1/2
+row  A 1/1  B 1/2  possible 1, 1  records 2, 2  -> different
 ```
 
-**E1.** The locus of pvc's report on deletions that touch an STR segment. TR anchors the deletion before the repeat; pvc's widened repeat record starts one base later.
+**E1.** The locus of pvc's report on deletions that touch an STR segment. TR anchors the deletion
+before the repeat; pvc's widened repeat record starts one base later.
 
 ```
-excerpt  chr5:7613015-7613315, 301 bases; excerpt position = position - 7613014
-A  TR:10175     7613158 AAT A 1|0
-B  pvc-touch30:8329      7613159 ATAAAAAAAAAAA AAAAAAAAAAA 0/1
+excerpt  chr5:7613015-7613315, 301 bases; excerpt position = position - 7613014; sample HG002
+A  TR:10175  7613158 AAT A 1|0
+B  pvc-touch30:8329  7613159 ATAAAAAAAAAAA AAAAAAAAAAA 0/1
 locus    chr5:7613158-7613171 (excerpt 144-157), kind STR; STR regions: 7613161-7613171 str A
   0  AATAAAAAAAAAAA
   1  AAAAAAAAAAAA
-A 0/1  B 0/1  possible 1, 1  -> same genotype
+possible genotypes  A: 0/1   B: 0/1
+row  A 0/1  B 0/1  possible 1, 1  records 1, 1  -> same genotype
 ```
 
-**E2.** pvc writes the deletion across the repeat's left edge in a widened repeat record and turns the flank record into `AC → AG,*`. Trimmed, the `*` record's REF is 31685224, which STR allele 1 replaces, so it covers the `*`.
+**E2.** pvc writes the deletion across the repeat's left edge in a widened repeat record and turns
+the flank record into `AC → AG,*`. Trimmed, the `*` record's REF is 31685224, which STR allele 1
+replaces, so it covers the `*`.
 
 ```
-excerpt  chr13:31685085-31685385, 301 bases; excerpt position = position - 31685084
-A  TR:26438     31685223 ACTAT A 1|1
-A  TR:26439     31685228 A G 1|1
-B  pvc-touch30:17007     31685223 AC AG,* 1/2
-B  pvc-touch30:17008     31685224 CTATATATATATATATATATATA GTATATATATATATATATA,CTATATATATATATATATA 1/2
+excerpt  chr13:31685085-31685385, 301 bases; excerpt position = position - 31685084; sample HG002
+A  TR:26438  31685223 ACTAT A 1|1
+A  TR:26439  31685228 A G 1|1
+B  pvc-touch30:17007  31685223 AC AG,* 1/2
+B  pvc-touch30:17008  31685224 CTATATATATATATATATATATA GTATATATATATATATATA,CTATATATATATATATATA 1/2
 locus    chr13:31685219-31685246 (excerpt 135-162), kind STR; STR regions: 31685219-31685246 str-bundle
   0  AAAAACTATATATATATATATATATATA
   1  AAAAAGTATATATATATATATATA
-A 1/1  B 1/1  possible 1, 1  -> same genotype
+possible genotypes  A: 1/1   B: 1/1
+row  A 1/1  B 1/1  possible 1, 1  records 2, 2  -> same genotype
 ```
 
-**E3.** pvc's run with the touching-deletion change: `GA → GG,*` beside a repeat record over the bundle. vcfeval scores these records as false and TR's as missed.
+**E3.** pvc's run with the touching-deletion change: `GA → GG,*` beside a repeat record over the
+bundle.
 
 ```
-excerpt  chr20:3028985-3029285, 301 bases; excerpt position = position - 3028984
-A  TR:34237     3029116 A G 1|1
-A  TR:34238     3029132 T G 1|1
-A  TR:34239     3029134 G T 1|1
-A  TR:34240     3029135 T TTTG 1|1
-B  pvc-touch30:21736     3029115 GA GG,* 1/2
-B  pvc-touch30:21737     3029116 ATTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTG GTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG,ATTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG 1/2
+excerpt  chr20:3028985-3029285, 301 bases; excerpt position = position - 3028984; sample HG002
+A  TR:34237  3029116 A G 1|1
+A  TR:34238  3029132 T G 1|1
+A  TR:34239  3029134 G T 1|1
+A  TR:34240  3029135 T TTTG 1|1
+B  pvc-touch30:21736  3029115 GA GG,* 1/2
+B  pvc-touch30:21737  3029116 ATTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTG GTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG,ATTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG 1/2
 locus    chr20:3029116-3029159 (excerpt 132-175), kind STR; STR regions: 3029117-3029159 str-bundle
   0  ATTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTG
   1  GTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG
-A 1/1  B 1/1  possible 1, 1  -> same genotype
+possible genotypes  A: 1/1   B: 1/1
+row  A 1/1  B 1/1  possible 1, 1  records 4, 2  -> same genotype
 ```
 
-**E4.** The same locus in pvc's run before that change, `GA → G,GG` unphased beside the repeat record: two possible genotypes, one of them TR's.
+**E4.** The same locus in pvc's run before that change, `GA → G,GG` unphased beside the repeat
+record: two possible genotypes, one of them TR's.
 
 ```
-excerpt  chr20:3028985-3029285, 301 bases; excerpt position = position - 3028984
-A  TR:34237     3029116 A G 1|1
-A  TR:34238     3029132 T G 1|1
-A  TR:34239     3029134 G T 1|1
-A  TR:34240     3029135 T TTTG 1|1
-B  pvc-base30:21766     3029115 GA G,GG 1/2
-B  pvc-base30:21767     3029117 TTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTG GTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG,TTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG 1/2
+excerpt  chr20:3028985-3029285, 301 bases; excerpt position = position - 3028984; sample HG002
+A  TR:34237  3029116 A G 1|1
+A  TR:34238  3029132 T G 1|1
+A  TR:34239  3029134 G T 1|1
+A  TR:34240  3029135 T TTTG 1|1
+B  pvc-base30:21766  3029115 GA G,GG 1/2
+B  pvc-base30:21767  3029117 TTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTG GTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG,TTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG 1/2
 locus    chr20:3029115-3029159 (excerpt 131-175), kind STR; STR regions: 3029117-3029159 str-bundle
   0  GATTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTG
   1  GGTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG
   2  GTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG
   3  GGGTTTTTTTTTTTTTTTGGTTTTGTTTGTTTGTTTGTTTGTTTGTTTG
-A 1/1  B 1/1  possible 1, 2  -> same genotype
+possible genotypes  A: 1/1   B: 1/1, 2/3
+row  A 1/1  B 1/1  possible 1, 2  records 4, 2  -> same genotype
 ```
 
-**E5.** pvc writes the 18-base deletion in the repeat record and turns the insertion record into `ACGACGCCGA → ACGACGCCGACGCCGA,*`. Trimmed, the `*` record is `104588961 A → ACGACGC,*`, whose REF is its anchor base alone, which no placement of the deletion deletes: the sample is invalid. pvc meant TR's haplotypes (Open 1).
+**E5.** pvc writes the 18-base deletion in the repeat record and turns the insertion record into
+`ACGACGCCGA → ACGACGCCGACGCCGA,*`. Trimmed, the `*` record is `104588961 A → ACGACGC,*`, whose REF
+is its anchor base alone, which no placement of the deletion deletes: the sample is invalid. pvc
+meant TR's haplotypes (Open 1).
 
 ```
-excerpt  chr8:104588825-104589125, 301 bases; excerpt position = position - 104588824
-A  TR:17773     104588961 A ACGACGC 0|1
-A  TR:17774     104588964 ACGCCGACGCCGCCGCCGC A 1|0
-B  pvc-touch30:12607     104588961 ACGACGCCGA ACGACGCCGACGCCGA,* 1/2
-B  pvc-touch30:12608     104588965 CGCCGACGCCGCCGCCGCCGCCGCCGCCGCCGC CGCCGCCGCCGCCGC 0/1
+excerpt  chr8:104588825-104589125, 301 bases; excerpt position = position - 104588824; sample HG002
+A  TR:17773  104588961 A ACGACGC 0|1
+A  TR:17774  104588964 ACGCCGACGCCGCCGCCGC A 1|0
+B  pvc-touch30:12607  104588961 ACGACGCCGA ACGACGCCGACGCCGA,* 1/2
+B  pvc-touch30:12608  104588965 CGCCGACGCCGCCGCCGCCGCCGCCGCCGCCGC CGCCGCCGCCGCCGC 0/1
 locus    chr8:104588961-104588997 (excerpt 137-173), kind STR; STR regions: 104588971-104588997 str CGC
   0  ACGACGCCGACGCCGCCGCCGCCGCCGCCGCCGCCGC
   1  ACGACGCCGCCGCCGCCGC
   2  ACGACGCCGACGCCGACGCCGCCGCCGCCGCCGCCGCCGCCGC
-A 1/2  B .  possible 1, 0  -> invalid in B (contradicting records)
+possible genotypes  A: 1/2   B: none
+row  A 1/2  B .  possible 1, 0  records 2, 2  -> invalid in B, contradicting records
 ```
 
-**E6.** pvc writes the deletion across the repeat's right edge in the repeat record and the flank SNP as `C → T,*`; TR writes three phased records.
+**E6.** pvc writes the deletion across the repeat's right edge in the repeat record and the flank
+SNP as `C → T,*`; TR writes three phased records.
 
 ```
-excerpt  chr12:13880855-13881155, 301 bases; excerpt position = position - 13880854
-A  TR:23634     13880994 T TTGTGTG 0|1
-A  TR:23635     13881009 TGTGTGC T 1|0
-A  TR:23636     13881015 C T 0|1
-B  pvc-touch30:15740     13880995 TGTGTGTGTGTGTGTGTGTGC TGTGTGTGTGTGTGT,TGTGTGTGTGTGTGTGTGTGTGTGTGC 1/2
-B  pvc-touch30:15741     13881015 C T,* 1/2
+excerpt  chr12:13880855-13881155, 301 bases; excerpt position = position - 13880854; sample HG002
+A  TR:23634  13880994 T TTGTGTG 0|1
+A  TR:23635  13881009 TGTGTGC T 1|0
+A  TR:23636  13881015 C T 0|1
+B  pvc-touch30:15740  13880995 TGTGTGTGTGTGTGTGTGTGC TGTGTGTGTGTGTGT,TGTGTGTGTGTGTGTGTGTGTGTGTGC 1/2
+B  pvc-touch30:15741  13881015 C T,* 1/2
 locus    chr12:13880994-13881016 (excerpt 140-162), kind STR; STR regions: 13880995-13881014 str TG
   0  TTGTGTGTGTGTGTGTGTGTGCG
   1  TTGTGTGTGTGTGTGTG
   2  TTGTGTGTGTGTGTGTGTGTGTGTGTGTG
-A 1/2  B 1/2  possible 1, 1  -> same genotype
+possible genotypes  A: 1/2   B: 1/2
+row  A 1/2  B 1/2  possible 1, 1  records 3, 2  -> same genotype
 ```
 
-**E7.** The same pvc records against GIAB v4.2.1, which lacks the SNP at 13881015. TR and GIAB v4.2.1 disagree here, and the locus is outside GIAB v4.2.1's benchmark regions.
+**E7.** The same pvc records against GIAB v4.2.1, which lacks the SNP at 13881015. TR and GIAB
+v4.2.1 disagree here, and the locus is outside GIAB v4.2.1's benchmark regions.
 
 ```
-excerpt  chr12:13880855-13881155, 301 bases; excerpt position = position - 13880854
-A  GIAB-HG002:2834424   13880994 T TTGTGTG 0/1
-A  GIAB-HG002:2834425   13881009 TGTGTGC T 0/1
-B  pvc-touch30:15740     13880995 TGTGTGTGTGTGTGTGTGTGC TGTGTGTGTGTGTGT,TGTGTGTGTGTGTGTGTGTGTGTGTGC 1/2
-B  pvc-touch30:15741     13881015 C T,* 1/2
+excerpt  chr12:13880855-13881155, 301 bases; excerpt position = position - 13880854; sample HG002
+A  GIAB-HG002:2834424  13880994 T TTGTGTG 0/1
+A  GIAB-HG002:2834425  13881009 TGTGTGC T 0/1
+B  pvc-touch30:15740  13880995 TGTGTGTGTGTGTGTGTGTGC TGTGTGTGTGTGTGT,TGTGTGTGTGTGTGTGTGTGTGTGTGC 1/2
+B  pvc-touch30:15741  13881015 C T,* 1/2
 locus    chr12:13880994-13881016 (excerpt 140-162), kind STR; STR regions: 13880995-13881014 str TG
   0  TTGTGTGTGTGTGTGTGTGTGCG
   1  TTGTGTGTGTGTGTGTGTGTGTG
   2  TTGTGTGTGTGTGTGTG
   3  TTGTGTGTGTGTGTGTGTGTGTGTGTGCG
   4  TTGTGTGTGTGTGTGTGTGTGTGTGTGTG
-A 0/1  B 2/4  possible 2, 1  -> different
+possible genotypes  A: 0/1, 2/3   B: 2/4
+row  A 0/1  B 2/4  possible 2, 1  records 2, 2  -> different
 ```
 
-**E8.** pvc's widened repeat allele already spells the deletion and the SNP, and the `*` went to the flank record's other haplotype, so pvc deletes the three bases on both.
+**E8.** pvc's widened repeat allele already spells the deletion and the SNP, and the `*` went to the
+flank record's other haplotype, so pvc deletes the three bases on both.
 
 ```
-excerpt  chr4:98053390-98053690, 301 bases; excerpt position = position - 98053389
-A  TR:8408      98053533 TAAC T 1|0
-A  TR:8409      98053539 A T 1|0
-B  pvc-touch30:7554      98053533 TAAC T,* 1/2
-B  pvc-touch30:7555      98053536 CAAAAAAAAAA TAAAAAAA 0/1
+excerpt  chr4:98053390-98053690, 301 bases; excerpt position = position - 98053389; sample HG002
+A  TR:8408  98053533 TAAC T 1|0
+A  TR:8409  98053539 A T 1|0
+B  pvc-touch30:7554  98053533 TAAC T,* 1/2
+B  pvc-touch30:7555  98053536 CAAAAAAAAAA TAAAAAAA 0/1
 locus    chr4:98053533-98053546 (excerpt 144-157), kind STR; STR regions: 98053537-98053546 str A
   0  TAACAAAAAAAAAA
   1  TAATAAAAAAA
   2  TAAAAAAAAAA
-A 0/1  B 1/2  possible 1, 1  -> different
+possible genotypes  A: 0/1   B: 1/2
+row  A 0/1  B 1/2  possible 1, 1  records 2, 2  -> different
 ```
 
-**E9.** The same locus in pvc's run before the change, unphased: one of its two possible genotypes is TR's.
+**E9.** The same locus in pvc's run before the change, unphased: one of its two possible genotypes
+is TR's.
 
 ```
-excerpt  chr4:98053390-98053690, 301 bases; excerpt position = position - 98053389
-A  TR:8408      98053533 TAAC T 1|0
-A  TR:8409      98053539 A T 1|0
-B  pvc-base30:7565      98053533 TAAC T 0/1
-B  pvc-base30:7566      98053537 AAAAAAAAAA AATAAAAAAA 0/1
+excerpt  chr4:98053390-98053690, 301 bases; excerpt position = position - 98053389; sample HG002
+A  TR:8408  98053533 TAAC T 1|0
+A  TR:8409  98053539 A T 1|0
+B  pvc-base30:7565  98053533 TAAC T 0/1
+B  pvc-base30:7566  98053537 AAAAAAAAAA AATAAAAAAA 0/1
 locus    chr4:98053533-98053546 (excerpt 144-157), kind STR; STR regions: 98053537-98053546 str A
   0  TAACAAAAAAAAAA
   1  TAATAAAAAAA
   2  TAACAATAAAAAAA
   3  TAAAAAAAAAA
-A 0/1  B 0/1  possible 1, 2  -> same genotype
+possible genotypes  A: 0/1   B: 0/1, 2/3
+row  A 0/1  B 0/1  possible 1, 2  records 2, 2  -> same genotype
 ```
 
-**E10.** pvc carries a 7-base and a 20-base deletion on one haplotype, where TR has the 20-base deletion on both.
+**E10.** pvc carries a 7-base and a 20-base deletion on one haplotype, where TR has the 20-base
+deletion on both.
 
 ```
-excerpt  chr16:5228700-5229000, 301 bases; excerpt position = position - 5228699
-A  TR:29998     5228832 AAGAGAGCGAGAGAGAGAGAG A 1|1
-A  TR:29999     5228859 A T 1|1
-B  pvc-touch30:18978     5228832 AAGAGAGC A,* 1/2
-B  pvc-touch30:18979     5228839 CGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGA CGAGAGAGAGAGAGAGAGAGAGA,TGAGAGAGAGAGAGAGAGAGAGA 1/2
+excerpt  chr16:5228700-5229000, 301 bases; excerpt position = position - 5228699; sample HG002
+A  TR:29998  5228832 AAGAGAGCGAGAGAGAGAGAG A 1|1
+A  TR:29999  5228859 A T 1|1
+B  pvc-touch30:18978  5228832 AAGAGAGC A,* 1/2
+B  pvc-touch30:18979  5228839 CGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGA CGAGAGAGAGAGAGAGAGAGAGA,TGAGAGAGAGAGAGAGAGAGAGA 1/2
 locus    chr16:5228832-5228881 (excerpt 133-182), kind STR; STR regions: 5228840-5228881 str GA
   0  AAGAGAGCGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGA
   1  AAGAGAGTGAGAGAGAGAGAGAGAGAGAGA
   2  AGAGAGAGAGAGAGAGAGAGAGA
-A 1/1  B 1/2  possible 1, 1  -> different
+possible genotypes  A: 1/1   B: 1/2
+row  A 1/1  B 1/2  possible 1, 1  records 2, 2  -> different
 ```
 
-**E11.** pvc means TR's haplotypes: STR allele 1 (−22) with the flank deletion `TAA → T`, and STR allele 2 (−14) with the `*`. Trimmed from the left first, allele 1 deletes 64356032–64356053 and allele 2 64356041–64356054, and `TAA → T` deletes 64356053–64356054: it collides with both as written, and the sample is invalid. The collision rule judges edits as written (decided by the owner on 19 October 2026).
+**E11.** pvc means TR's haplotypes: STR allele 1 (−22) with the flank deletion `TAA → T`, and STR
+allele 2 (−14) with the `*`. Trimmed from the left first, allele 1 deletes 64356032–64356053 and
+allele 2 64356041–64356054, and `TAA → T` deletes 64356053–64356054: it collides with both as
+written, and the sample is invalid. The collision rule judges edits as written (decided by the owner
+on 19 October 2026).
 
 ```
-excerpt  chr1:64355880-64356180, 301 bases; excerpt position = position - 64355879
-A  TR:932       64356030 TATATATATATATATATATATATAA T 0|1
-A  TR:933       64356040 TATATATATATATAA T 1|0
-B  pvc-touch30:3169      64356009 ATATATATATATATATATATATATATATATATATATATATATATAA ATATATATATATATATATATATAA,ATATATATATATATATATATATATATATATAT 1/2
-B  pvc-touch30:3170      64356052 TAA T,* 1/2
+excerpt  chr1:64355880-64356180, 301 bases; excerpt position = position - 64355879; sample HG002
+A  TR:932  64356030 TATATATATATATATATATATATAA T 0|1
+A  TR:933  64356040 TATATATATATATAA T 1|0
+B  pvc-touch30:3169  64356009 ATATATATATATATATATATATATATATATATATATATATATATAA ATATATATATATATATATATATAA,ATATATATATATATATATATATATATATATAT 1/2
+B  pvc-touch30:3170  64356052 TAA T,* 1/2
 locus    chr1:64356008-64356056 (excerpt 129-177), kind STR; STR regions: 64356009-64356052 str AT
   0  CATATATATATATATATATATATATATATATATATATATATATATAAAA
   1  CATATATATATATATATATATATATATATATATAA
   2  CATATATATATATATATATATATAA
-A 1/2  B .  possible 1, 0  -> invalid in B (contradicting records)
+possible genotypes  A: 1/2   B: none
+row  A 1/2  B .  possible 1, 0  records 2, 2  -> invalid in B, contradicting records
 ```
 
-**E12.** Tomato, sample SRS3394689. GATK writes the deletion of the flank A and a record `A → T,*` over it; pvc a repeat record and a record of three ALTs and `*`. Both delete the A on both haplotypes.
+**E12.** Tomato, sample SRS3394689. GATK writes the deletion of the flank A and a record `A → T,*`
+over it; pvc a repeat record and a record of three ALTs and `*`. Both delete the A on both
+haplotypes.
 
 ```
-excerpt  SL4.0ch05:576000-576300, 301 bases; excerpt position = position - 575999
-A  GATK-tomato:65098     576151 TA T 1/1
-A  GATK-tomato:65099     576152 A T,* 2/2
-B  pvc-tomato:71841     576140 TTTTTTTTTTTTA TTTTTTTTTTT 0/0
-B  pvc-tomato:71842     576152 ATA TA,TTA,* 1/1
+excerpt  SL4.0ch05:576000-576300, 301 bases; excerpt position = position - 575999; sample SRS3394689
+A  GATK-tomato:65098  576151 TA T 1/1
+A  GATK-tomato:65099  576152 A T,* 2/2
+B  pvc-tomato:71841  576140 TTTTTTTTTTTTA TTTTTTTTTTT 0/0
+B  pvc-tomato:71842  576152 ATA TA,TTA,* 1/1
 locus    SL4.0ch05:576140-576154 (excerpt 141-155), kind STR; STR regions: 576140-576151 str T
   0  TTTTTTTTTTTTATA
   1  TTTTTTTTTTTTTA
-A 1/1  B 1/1  possible 1, 1  -> same genotype
+possible genotypes  A: 1/1   B: 1/1
+row  A 1/1  B 1/1  possible 1, 1  records 2, 2  -> same genotype
 ```
 
 **E13.** Tomato, sample SRS3394663: GATK deletes the A on both haplotypes, pvc on one.
 
 ```
-excerpt  SL4.0ch05:576000-576300, 301 bases; excerpt position = position - 575999
-A  GATK-tomato:65098     576151 TA T 1/1
-A  GATK-tomato:65099     576152 A T,* 2/2
-B  pvc-tomato:71841     576140 TTTTTTTTTTTTA TTTTTTTTTTT 0/0
-B  pvc-tomato:71842     576152 ATA TA,TTA,* 0/1
+excerpt  SL4.0ch05:576000-576300, 301 bases; excerpt position = position - 575999; sample SRS3394663
+A  GATK-tomato:65098  576151 TA T 1/1
+A  GATK-tomato:65099  576152 A T,* 2/2
+B  pvc-tomato:71841  576140 TTTTTTTTTTTTA TTTTTTTTTTT 0/0
+B  pvc-tomato:71842  576152 ATA TA,TTA,* 0/1
 locus    SL4.0ch05:576140-576154 (excerpt 141-155), kind STR; STR regions: 576140-576151 str T
   0  TTTTTTTTTTTTATA
   1  TTTTTTTTTTTTTA
-A 1/1  B 0/1  possible 1, 1  -> same alleles, other genotype
+possible genotypes  A: 1/1   B: 0/1
+row  A 1/1  B 0/1  possible 1, 1  records 2, 2  -> same alleles, other genotype
 ```
 
 **E14.** Tomato, sample SRS3394701: GATK changes the A to T on both haplotypes, pvc on one.
 
 ```
-excerpt  SL4.0ch05:576000-576300, 301 bases; excerpt position = position - 575999
-A  GATK-tomato:65098     576151 TA T 0/0
-A  GATK-tomato:65099     576152 A T,* 1/1
-B  pvc-tomato:71841     576140 TTTTTTTTTTTTA TTTTTTTTTTT 0/0
-B  pvc-tomato:71842     576152 ATA TA,TTA,* 0/2
+excerpt  SL4.0ch05:576000-576300, 301 bases; excerpt position = position - 575999; sample SRS3394701
+A  GATK-tomato:65098  576151 TA T 0/0
+A  GATK-tomato:65099  576152 A T,* 1/1
+B  pvc-tomato:71841  576140 TTTTTTTTTTTTA TTTTTTTTTTT 0/0
+B  pvc-tomato:71842  576152 ATA TA,TTA,* 0/2
 locus    SL4.0ch05:576140-576154 (excerpt 141-155), kind STR; STR regions: 576140-576151 str T
   0  TTTTTTTTTTTTATA
   1  TTTTTTTTTTTTTTA
-A 1/1  B 0/1  possible 1, 1  -> same alleles, other genotype
+possible genotypes  A: 1/1   B: 0/1
+row  A 1/1  B 0/1  possible 1, 1  records 2, 2  -> same alleles, other genotype
 ```
 
-**E15.** Tomato, sample SRS3394663. GATK writes a 5-base deletion and two records whose `*` it covers; pvc the same deletion on both haplotypes and a contraction of the repeat on one.
+**E15.** Tomato, sample SRS3394663. GATK writes a 5-base deletion and two records whose `*` it
+covers; pvc the same deletion on both haplotypes and a contraction of the repeat on one.
 
 ```
-excerpt  SL4.0ch05:58429278-58429578, 301 bases; excerpt position = position - 58429277
-A  GATK-tomato:74913     58429428 ATAAAT A 1/1
-A  GATK-tomato:74914     58429429 T A,* 2/2
-A  GATK-tomato:74915     58429433 T A,* 2/2
-B  pvc-tomato:83029     58429420 AAAAAAAAAT AAAAAAAA,AAAAAT,AAAAAAA 0/2
-B  pvc-tomato:83030     58429429 TAAATAAA AAAAAAA,AAA,* 2/2
+excerpt  SL4.0ch05:58429278-58429578, 301 bases; excerpt position = position - 58429277; sample SRS3394663
+A  GATK-tomato:74913  58429428 ATAAAT A 1/1
+A  GATK-tomato:74914  58429429 T A,* 2/2
+A  GATK-tomato:74915  58429433 T A,* 2/2
+B  pvc-tomato:83029  58429420 AAAAAAAAAT AAAAAAAA,AAAAAT,AAAAAAA 0/2
+B  pvc-tomato:83030  58429429 TAAATAAA AAAAAAA,AAA,* 2/2
 locus    SL4.0ch05:58429419-58429434 (excerpt 142-157), kind STR; STR regions: 58429420-58429428 str A
   0  CAAAAAAAAATAAATA
   1  CAAAAAAAAAA
   2  CAAAAAA
-A 1/1  B 1/2  possible 1, 1  -> different
+possible genotypes  A: 1/1   B: 1/2
+row  A 1/1  B 1/2  possible 1, 1  records 3, 2  -> different
 ```
 
-**E16.** Tomato, sample SRS3394698: GATK gives two phased SNPs on both haplotypes, pvc the 5-base deletion on both.
+**E16.** Tomato, sample SRS3394698: GATK gives two phased SNPs on both haplotypes, pvc the 5-base
+deletion on both.
 
 ```
-excerpt  SL4.0ch05:58429278-58429578, 301 bases; excerpt position = position - 58429277
-A  GATK-tomato:74913     58429428 ATAAAT A 0/0
-A  GATK-tomato:74914     58429429 T A,* 1|1:58429429
-A  GATK-tomato:74915     58429433 T A,* 1|1:58429429
-B  pvc-tomato:83029     58429420 AAAAAAAAAT AAAAAAAA,AAAAAT,AAAAAAA 0/0
-B  pvc-tomato:83030     58429429 TAAATAAA AAAAAAA,AAA,* 2/2
+excerpt  SL4.0ch05:58429278-58429578, 301 bases; excerpt position = position - 58429277; sample SRS3394698
+A  GATK-tomato:74913  58429428 ATAAAT A 0/0
+A  GATK-tomato:74914  58429429 T A,* 1|1:58429429
+A  GATK-tomato:74915  58429433 T A,* 1|1:58429429
+B  pvc-tomato:83029  58429420 AAAAAAAAAT AAAAAAAA,AAAAAT,AAAAAAA 0/0
+B  pvc-tomato:83030  58429429 TAAATAAA AAAAAAA,AAA,* 2/2
 locus    SL4.0ch05:58429419-58429434 (excerpt 142-157), kind STR; STR regions: 58429420-58429428 str A
   0  CAAAAAAAAATAAATA
   1  CAAAAAAAAAAAAAAA
   2  CAAAAAAAAAA
-A 1/1  B 2/2  possible 1, 1  -> different
+possible genotypes  A: 1/1   B: 2/2
+row  A 1/1  B 2/2  possible 1, 1  records 3, 2  -> different
 ```
 
-**H1.** TR places the 8-base deletion after the repeat's two interruptions; HipSTR writes the whole repeat, from its first base.
+**H1.** TR places the 8-base deletion after the repeat's two interruptions; HipSTR writes the whole
+repeat, from its first base.
 
 ```
-excerpt  chr1:113339083-113339383, 301 bases; excerpt position = position - 113339082
-A  TR:1458      113339221 ATGTGTGTG A 1|0
-B  HipSTR30:3213      113339207 GTGTGTGTATGTGTATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT GTGTGTGTATGTGTATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT 0|1
+excerpt  chr1:113339083-113339383, 301 bases; excerpt position = position - 113339082; sample HG002
+A  TR:1458  113339221 ATGTGTGTG A 1|0
+B  HipSTR30:3213  113339207 GTGTGTGTATGTGTATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT GTGTGTGTATGTGTATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT 0|1
 locus    chr1:113339221-113339260 (excerpt 139-178), kind STR; STR regions: 113339222-113339259 str TG
   0  ATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT
   1  ATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT
-A 0/1  B 0/1  possible 1, 1  -> same genotype
+possible genotypes  A: 0/1   B: 0/1
+row  A 0/1  B 0/1  possible 1, 1  records 1, 1  -> same genotype
 ```
 
 **H2.** HipSTR against pvc, whose record covers the uninterrupted part of the repeat only.
 
 ```
-excerpt  chr1:113339083-113339383, 301 bases; excerpt position = position - 113339082
-A  HipSTR30:3213      113339207 GTGTGTGTATGTGTATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT GTGTGTGTATGTGTATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT 0|1
-B  pvc-m07-30:3467      113339222 TGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTG TGTGTGTGTGTGTGTGTGTGTGTGTGTGTG 0/1
+excerpt  chr1:113339083-113339383, 301 bases; excerpt position = position - 113339082; sample HG002
+A  HipSTR30:3213  113339207 GTGTGTGTATGTGTATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT GTGTGTGTATGTGTATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT 0|1
+B  pvc-m07-30:3467  113339222 TGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTG TGTGTGTGTGTGTGTGTGTGTGTGTGTGTG 0/1
 locus    chr1:113339221-113339260 (excerpt 139-178), kind STR; STR regions: 113339222-113339259 str TG
   0  ATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT
   1  ATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT
-A 0/1  B 0/1  possible 1, 1  -> same genotype
+possible genotypes  A: 0/1   B: 0/1
+row  A 0/1  B 0/1  possible 1, 1  records 1, 1  -> same genotype
 ```
 
 **H3.** HipSTR writes the whole repeat with the inserted copy; TR writes an insertion and a SNP.
 
 ```
-excerpt  chr1:72941135-72941435, 301 bases; excerpt position = position - 72941134
-A  TR:1010      72941294 T TATCTATCC 1|1
-A  TR:1011      72941298 C T 1|1
-B  HipSTR30:3016      72941260 TCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTA TCTATCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTATCTA 1|1
+excerpt  chr1:72941135-72941435, 301 bases; excerpt position = position - 72941134; sample HG002
+A  TR:1010  72941294 T TATCTATCC 1|1
+A  TR:1011  72941298 C T 1|1
+B  HipSTR30:3016  72941260 TCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTA TCTATCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTATCTA 1|1
 locus    chr1:72941245-72941319 (excerpt 111-185), kind STR; STR regions: 72941245-72941319 str-bundle
   0  AAAAACAGTCTATCATCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTATCATTTTT
   1  AAAAACAGTCTATCATCTATCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTATCTATCATTTTT
-A 1/1  B 1/1  possible 1, 1  -> same genotype
+possible genotypes  A: 1/1   B: 1/1
+row  A 1/1  B 1/1  possible 1, 1  records 2, 1  -> same genotype
 ```
 
-**H4.** TR against GIAB v4.2.1, which writes the same haplotype as two insertions, after 72941297 and after 72941298.
+**H4.** TR against GIAB v4.2.1, which writes the same haplotype as two insertions, after 72941297
+and after 72941298.
 
 ```
-excerpt  chr1:72941135-72941435, 301 bases; excerpt position = position - 72941134
-A  TR:1010      72941294 T TATCTATCC 1|1
-A  TR:1011      72941298 C T 1|1
-B  GIAB-HG002:98215     72941297 C CTATCCAT 1/1
-B  GIAB-HG002:98216     72941298 C CT 1/1
+excerpt  chr1:72941135-72941435, 301 bases; excerpt position = position - 72941134; sample HG002
+A  TR:1010  72941294 T TATCTATCC 1|1
+A  TR:1011  72941298 C T 1|1
+B  GIAB-HG002:98215  72941297 C CTATCCAT 1/1
+B  GIAB-HG002:98216  72941298 C CT 1/1
 locus    chr1:72941245-72941319 (excerpt 111-185), kind STR; STR regions: 72941245-72941319 str-bundle
   0  AAAAACAGTCTATCATCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTATCATTTTT
   1  AAAAACAGTCTATCATCTATCTATCTATCTATCTATCTATCTATCTATCTATCTATCCATCTATCTATCTATCTATCATTTTT
-A 1/1  B 1/1  possible 1, 1  -> same genotype
+possible genotypes  A: 1/1   B: 1/1
+row  A 1/1  B 1/1  possible 1, 1  records 2, 2  -> same genotype
 ```
 
-**H5.** HipSTR writes the whole repeat with the insertion and the SNP on one haplotype; TR writes them as two records phased on one haplotype.
+**H5.** HipSTR writes the whole repeat with the insertion and the SNP on one haplotype; TR writes
+them as two records phased on one haplotype.
 
 ```
-excerpt  chr1:80541386-80541686, 301 bases; excerpt position = position - 80541385
-A  TR:1070      80541526 C CAGATAGATAGATAGATAGATAGATAGAT 1|0
-A  TR:1071      80541557 G A 1|0
-B  HipSTR30:3058      80541499 AGATAGATGGATGGATGGATGGATAGACAGATAGATAGATAGATAGATAGATAGATAGGTAGATAGATAGATAGAT AGATAGATGGATGGATGGATGGATAGACAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGAT 0|1
+excerpt  chr1:80541386-80541686, 301 bases; excerpt position = position - 80541385; sample HG002
+A  TR:1070  80541526 C CAGATAGATAGATAGATAGATAGATAGAT 1|0
+A  TR:1071  80541557 G A 1|0
+B  HipSTR30:3058  80541499 AGATAGATGGATGGATGGATGGATAGACAGATAGATAGATAGATAGATAGATAGATAGGTAGATAGATAGATAGAT AGATAGATGGATGGATGGATGGATAGACAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGAT 0|1
 locus    chr1:80541526-80541557 (excerpt 141-172), kind complex; STR regions: none
   0  CAGATAGATAGATAGATAGATAGATAGATAGG
   1  CAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGA
-A 0/1  B 0/1  possible 1, 1  -> same genotype
+possible genotypes  A: 0/1   B: 0/1
+row  A 0/1  B 0/1  possible 1, 1  records 2, 1  -> same genotype
 ```
 
-**H6.** The same HipSTR record against GIAB v4.2.1's two unphased records: two possible genotypes, one of them HipSTR's.
+**H6.** The same HipSTR record against GIAB v4.2.1's two unphased records: two possible genotypes,
+one of them HipSTR's.
 
 ```
-excerpt  chr1:80541386-80541686, 301 bases; excerpt position = position - 80541385
-A  GIAB-HG002:109203    80541526 C CAGATAGATAGATAGATAGATAGATAGAT 0/1
-A  GIAB-HG002:109204    80541557 G A 0/1
-B  HipSTR30:3058      80541499 AGATAGATGGATGGATGGATGGATAGACAGATAGATAGATAGATAGATAGATAGATAGGTAGATAGATAGATAGAT AGATAGATGGATGGATGGATGGATAGACAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGAT 0|1
+excerpt  chr1:80541386-80541686, 301 bases; excerpt position = position - 80541385; sample HG002
+A  GIAB-HG002:109203  80541526 C CAGATAGATAGATAGATAGATAGATAGAT 0/1
+A  GIAB-HG002:109204  80541557 G A 0/1
+B  HipSTR30:3058  80541499 AGATAGATGGATGGATGGATGGATAGACAGATAGATAGATAGATAGATAGATAGATAGGTAGATAGATAGATAGAT AGATAGATGGATGGATGGATGGATAGACAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGAT 0|1
 locus    chr1:80541526-80541557 (excerpt 141-172), kind complex; STR regions: none
   0  CAGATAGATAGATAGATAGATAGATAGATAGG
   1  CAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGA
   2  CAGATAGATAGATAGATAGATAGATAGATAGA
   3  CAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGATAGG
-A 0/1  B 0/1  possible 2, 1  -> same genotype
+possible genotypes  A: 0/1, 2/3   B: 0/1
+row  A 0/1  B 0/1  possible 2, 1  records 2, 1  -> same genotype
 ```
 
-**H7.** HipSTR's REF starts 4 bases before the repeat, and its ALT has the same length as REF; TR writes four phased SNPs, one of them in that flank.
+**H7.** HipSTR's REF starts 4 bases before the repeat, and its ALT has the same length as REF; TR
+writes four phased SNPs, one of them in that flank.
 
 ```
-excerpt  chr1:14451792-14452092, 301 bases; excerpt position = position - 14451791
-A  TR:311       14451931 C T 1|0
-A  TR:312       14451937 T G 1|0
-A  TR:313       14451938 G T 1|0
-A  TR:314       14451940 T G 1|0
-B  HipSTR30:2683      14451930 TCTTTTTTGTTTTGTTTTGTTTTG TTTTTTTGTTGTTGTTTTGTTTTG 0|1
+excerpt  chr1:14451792-14452092, 301 bases; excerpt position = position - 14451791; sample HG002
+A  TR:311  14451931 C T 1|0
+A  TR:312  14451937 T G 1|0
+A  TR:313  14451938 G T 1|0
+A  TR:314  14451940 T G 1|0
+B  HipSTR30:2683  14451930 TCTTTTTTGTTTTGTTTTGTTTTG TTTTTTTGTTGTTGTTTTGTTTTG 0|1
 locus    chr1:14451931-14451957 (excerpt 140-166), kind STR; STR regions: 14451932-14451957 str-bundle
   0  CTTTTTTGTTTTGTTTTGTTTTGTTTT
   1  TTTTTTGTTGTTGTTTTGTTTTGTTTT
-A 0/1  B 0/1  possible 1, 1  -> same genotype
+possible genotypes  A: 0/1   B: 0/1
+row  A 0/1  B 0/1  possible 1, 1  records 4, 1  -> same genotype
 ```
 
-**H8.** The same HipSTR record against GIAB v4.2.1, which writes the same haplotype as a deletion and an insertion, unphased.
+**H8.** The same HipSTR record against GIAB v4.2.1, which writes the same haplotype as a deletion
+and an insertion, unphased.
 
 ```
-excerpt  chr1:14451792-14452092, 301 bases; excerpt position = position - 14451791
-A  GIAB-HG002:19368     14451930 TC T 0/1
-A  GIAB-HG002:19369     14451940 T TG 0/1
-B  HipSTR30:2683      14451930 TCTTTTTTGTTTTGTTTTGTTTTG TTTTTTTGTTGTTGTTTTGTTTTG 0|1
+excerpt  chr1:14451792-14452092, 301 bases; excerpt position = position - 14451791; sample HG002
+A  GIAB-HG002:19368  14451930 TC T 0/1
+A  GIAB-HG002:19369  14451940 T TG 0/1
+B  HipSTR30:2683  14451930 TCTTTTTTGTTTTGTTTTGTTTTG TTTTTTTGTTGTTGTTTTGTTTTG 0|1
 locus    chr1:14451930-14451957 (excerpt 139-166), kind STR; STR regions: 14451932-14451957 str-bundle
   0  TCTTTTTTGTTTTGTTTTGTTTTGTTTT
   1  TTTTTTTGTTGTTGTTTTGTTTTGTTTT
   2  TCTTTTTTGTTGTTGTTTTGTTTTGTTTT
   3  TTTTTTTGTTTTGTTTTGTTTTGTTTT
-A 0/1  B 0/1  possible 2, 1  -> same genotype
+possible genotypes  A: 0/1, 2/3   B: 0/1
+row  A 0/1  B 0/1  possible 2, 1  records 2, 1  -> same genotype
 ```
 
 **H9.** HipSTR's REF reaches 2 bases into the flank and its ALT carries TR's flank SNP at 61522963.
 
 ```
-excerpt  chr1:61522820-61523120, 301 bases; excerpt position = position - 61522819
-A  TR:910       61522963 G A 1|0
-A  TR:911       61522975 A ATATATATATATATATATATATATATATATG 1|0
-B  HipSTR30:2961      61522962 TGTATATATATATATA TATATATATATATATATATATATATATATATATATATATATATGTA 0|1
+excerpt  chr1:61522820-61523120, 301 bases; excerpt position = position - 61522819; sample HG002
+A  TR:910  61522963 G A 1|0
+A  TR:911  61522975 A ATATATATATATATATATATATATATATATG 1|0
+B  HipSTR30:2961  61522962 TGTATATATATATATA TATATATATATATATATATATATATATATATATATATATATATGTA 0|1
 locus    chr1:61522963-61522979 (excerpt 144-160), kind complex; STR regions: none
   0  GTATATATATATATATG
   1  ATATATATATATATATATATATATATATATATATATATATATGTATG
-A 0/1  B 0/1  possible 1, 1  -> same genotype
+possible genotypes  A: 0/1   B: 0/1
+row  A 0/1  B 0/1  possible 1, 1  records 2, 1  -> same genotype
 ```
 
-**H10.** HipSTR writes one phased record of two ALTs whose REF reaches past the repeat to carry the flank SNP at 102475817; TR writes an insertion and a deletion at one position, on different haplotypes, and the SNP.
+**H10.** HipSTR writes one phased record of two ALTs whose REF reaches past the repeat to carry the
+flank SNP at 102475817; TR writes an insertion and a deletion at one position, on different
+haplotypes, and the SNP.
 
 ```
-excerpt  chr1:102475645-102475945, 301 bases; excerpt position = position - 102475644
-A  TR:1332      102475773 T TAC 0|1
-A  TR:1333      102475773 TACAC T 1|0
-A  TR:1334      102475817 T C 0|1
-B  HipSTR30:3163      102475774 ACACACACACACACACACACACACACACACACACACACACACAT ACACACACACACACACACACACACACACACACACACACAT,ACACACACACACACACACACACACACACACACACACACACACACAC 1|2
+excerpt  chr1:102475645-102475945, 301 bases; excerpt position = position - 102475644; sample HG002
+A  TR:1332  102475773 T TAC 0|1
+A  TR:1333  102475773 TACAC T 1|0
+A  TR:1334  102475817 T C 0|1
+B  HipSTR30:3163  102475774 ACACACACACACACACACACACACACACACACACACACACACAT ACACACACACACACACACACACACACACACACACACACAT,ACACACACACACACACACACACACACACACACACACACACACACAC 1|2
 locus    chr1:102475773-102475817 (excerpt 129-173), kind STR; STR regions: 102475774-102475815 str AC
   0  TACACACACACACACACACACACACACACACACACACACACACAT
   1  TACACACACACACACACACACACACACACACACACACACAT
   2  TACACACACACACACACACACACACACACACACACACACACACACAC
-A 1/2  B 1/2  possible 1, 1  -> same genotype
+possible genotypes  A: 1/2   B: 1/2
+row  A 1/2  B 1/2  possible 1, 1  records 3, 1  -> same genotype
 ```
 
-**H11.** The same HipSTR record against pvc's record of two ALTs and its `AT → AC` beside it, unphased.
+**H11.** The same HipSTR record against pvc's record of two ALTs and its `AT → AC` beside it,
+unphased.
 
 ```
-excerpt  chr1:102475645-102475945, 301 bases; excerpt position = position - 102475644
-A  HipSTR30:3163      102475774 ACACACACACACACACACACACACACACACACACACACACACAT ACACACACACACACACACACACACACACACACACACACAT,ACACACACACACACACACACACACACACACACACACACACACACAC 1|2
-B  pvc-m07-30:3413      102475774 ACACACACACACACACACACACACACACACACACACACACAC ACACACACACACACACACACACACACACACACACACAC,ACACACACACACACACACACACACACACACACACACACACACAC 1/2
-B  pvc-m07-30:3414      102475816 AT AC 0/1
+excerpt  chr1:102475645-102475945, 301 bases; excerpt position = position - 102475644; sample HG002
+A  HipSTR30:3163  102475774 ACACACACACACACACACACACACACACACACACACACACACAT ACACACACACACACACACACACACACACACACACACACAT,ACACACACACACACACACACACACACACACACACACACACACACAC 1|2
+B  pvc-m07-30:3413  102475774 ACACACACACACACACACACACACACACACACACACACACAC ACACACACACACACACACACACACACACACACACACAC,ACACACACACACACACACACACACACACACACACACACACACAC 1/2
+B  pvc-m07-30:3414  102475816 AT AC 0/1
 locus    chr1:102475773-102475817 (excerpt 129-173), kind STR; STR regions: 102475774-102475815 str AC
   0  TACACACACACACACACACACACACACACACACACACACACACAT
   1  TACACACACACACACACACACACACACACACACACACACAT
   2  TACACACACACACACACACACACACACACACACACACACACACACAC
   3  TACACACACACACACACACACACACACACACACACACACAC
   4  TACACACACACACACACACACACACACACACACACACACACACACAT
-A 1/2  B 1/2  possible 1, 2  -> same genotype
+possible genotypes  A: 1/2   B: 1/2, 3/4
+row  A 1/2  B 1/2  possible 1, 2  records 1, 2  -> same genotype
 ```
 
-**H12.** HipSTR's second ALT carries G → C at 172778363, a flank base TR and pvc leave as it is; the lengths agree.
+**H12.** HipSTR's second ALT carries G → C at 172778363, a flank base TR and pvc leave as it is; the
+lengths agree.
 
 ```
-excerpt  chr1:172778235-172778535, 301 bases; excerpt position = position - 172778234
-A  TR:1784      172778363 G GCT 0|1
-A  TR:1785      172778363 G GCTCTCTCTCTCTCTCTCT 1|0
-B  HipSTR30:3357      172778362 AGCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCT AGCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCT,ACCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCT 1|2
+excerpt  chr1:172778235-172778535, 301 bases; excerpt position = position - 172778234; sample HG002
+A  TR:1784  172778363 G GCT 0|1
+A  TR:1785  172778363 G GCTCTCTCTCTCTCTCTCT 1|0
+B  HipSTR30:3357  172778362 AGCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCT AGCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCT,ACCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCT 1|2
 locus    chr1:172778363-172778407 (excerpt 129-173), kind STR; STR regions: 172778364-172778405 str CT
   0  GCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCA
   1  GCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCA
   2  GCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCA
   3  CCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCTCA
-A 1/2  B 2/3  possible 1, 1  -> different
+possible genotypes  A: 1/2   B: 2/3
+row  A 1/2  B 2/3  possible 1, 1  records 2, 1  -> different
 ```
 
-**H13.** The same 2-base deletion, on both haplotypes in HipSTR (Q 0.34) and on one in TR.
+**H13.** The same 2-base deletion, on both haplotypes in HipSTR and on one in TR. HipSTR gives its
+genotype a posterior probability, its FORMAT field Q, of 0.34.
 
 ```
-excerpt  chr10:12391846-12392146, 301 bases; excerpt position = position - 12391845
-A  TR:20498     12391976 AAC A 1|0
-B  HipSTR30:3816      12391977 ACACACACACACACACACACACACACACACACACACACAC ACACACACACACACACACACACACACACACACACACAC 1|1
+excerpt  chr10:12391846-12392146, 301 bases; excerpt position = position - 12391845; sample HG002
+A  TR:20498  12391976 AAC A 1|0
+B  HipSTR30:3816  12391977 ACACACACACACACACACACACACACACACACACACACAC ACACACACACACACACACACACACACACACACACACAC 1|1
 locus    chr10:12391976-12392017 (excerpt 131-172), kind STR; STR regions: 12391977-12392016 str AC
   0  AACACACACACACACACACACACACACACACACACACACACA
   1  AACACACACACACACACACACACACACACACACACACACA
-A 0/1  B 1/1  possible 1, 1  -> same alleles, other genotype
+possible genotypes  A: 0/1   B: 1/1
+row  A 0/1  B 1/1  possible 1, 1  records 1, 1  -> same alleles, other genotype
 ```
 
-**H14.** TR deletes the flank T at 93319249 on one haplotype; HipSTR deletes 4 bases of the repeat on both.
+**H14.** TR deletes the flank T at 93319249 on one haplotype; HipSTR deletes 4 bases of the repeat
+on both.
 
 ```
-excerpt  chr1:93319126-93319426, 301 bases; excerpt position = position - 93319125
-A  TR:1161      93319248 AT A 1|0
-B  HipSTR30:3117      93319250 TGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTG TGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTG 1|1
+excerpt  chr1:93319126-93319426, 301 bases; excerpt position = position - 93319125; sample HG002
+A  TR:1161  93319248 AT A 1|0
+B  HipSTR30:3117  93319250 TGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTG TGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTG 1|1
 locus    chr1:93319248-93319304 (excerpt 123-179), kind STR; STR regions: 93319250-93319303 str TG
   0  ATTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT
   1  ATGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT
   2  ATTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT
-A 0/1  B 2/2  possible 1, 1  -> different
+possible genotypes  A: 0/1   B: 2/2
+row  A 0/1  B 2/2  possible 1, 1  records 1, 1  -> different
 ```
 
-**H15.** GIAB v4.2.1 against the same HipSTR record: the 4-base deletion on one haplotype against both. TR and GIAB v4.2.1 disagree here.
+**H15.** GIAB v4.2.1 against the same HipSTR record: the 4-base deletion on one haplotype against
+both. TR and GIAB v4.2.1 disagree here.
 
 ```
-excerpt  chr1:93319126-93319426, 301 bases; excerpt position = position - 93319125
-A  GIAB-HG002:128803    93319249 TTGTG T 0/1
-B  HipSTR30:3117      93319250 TGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTG TGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTG 1|1
+excerpt  chr1:93319126-93319426, 301 bases; excerpt position = position - 93319125; sample HG002
+A  GIAB-HG002:128803  93319249 TTGTG T 0/1
+B  HipSTR30:3117  93319250 TGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTG TGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTG 1|1
 locus    chr1:93319249-93319304 (excerpt 124-179), kind STR; STR regions: 93319250-93319303 str TG
   0  TTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT
   1  TTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGT
-A 0/1  B 1/1  possible 1, 1  -> same alleles, other genotype
+possible genotypes  A: 0/1   B: 1/1
+row  A 0/1  B 1/1  possible 1, 1  records 1, 1  -> same alleles, other genotype
 ```
 
-**O1.** TR writes four records, each heterozygous and phased, whose two haplotypes have the same sequence; pvc writes one record, `1/1`.
+**O1.** TR writes four records, each heterozygous and phased, whose two haplotypes have the same
+sequence; pvc writes one record, `1/1`.
 
 ```
-excerpt  chr6:41399460-41399760, 301 bases; excerpt position = position - 41399459
-A  TR:12602     41399584 GCCT G 0|1
-A  TR:12603     41399613 CTCCTCT C 1|0
-A  TR:12604     41399625 TTCC T 0|1
-A  TR:12605     41399628 C T 1|0
-B  pvc-touch30:9746      41399585 CCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCTTCCTCCTCCTCCTCCT CCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCTTCCTCCTCCTCCT 1/1
+excerpt  chr6:41399460-41399760, 301 bases; excerpt position = position - 41399459; sample HG002
+A  TR:12602  41399584 GCCT G 0|1
+A  TR:12603  41399613 CTCCTCT C 1|0
+A  TR:12604  41399625 TTCC T 0|1
+A  TR:12605  41399628 C T 1|0
+B  pvc-touch30:9746  41399585 CCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCTTCCTCCTCCTCCTCCT CCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCTTCCTCCTCCTCCT 1/1
 locus    chr6:41399584-41399642 (excerpt 125-183), kind STR; STR regions: 41399585-41399641 str CCT
   0  GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCTTCCTCCTCCTCCTCCTC
   1  GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCTTCCTCCTCCTCCTC
-A 1/1  B 1/1  possible 1, 1  -> same genotype
+possible genotypes  A: 1/1   B: 1/1
+row  A 1/1  B 1/1  possible 1, 1  records 4, 1  -> same genotype
 ```
 
 **O2.** The same TR records against freebayes, which writes the haplotypes otherwise.
 
 ```
-excerpt  chr6:41399460-41399760, 301 bases; excerpt position = position - 41399459
-A  TR:12602     41399584 GCCT G 0|1
-A  TR:12603     41399613 CTCCTCT C 1|0
-A  TR:12604     41399625 TTCC T 0|1
-A  TR:12605     41399628 C T 1|0
-B  freebayes30:31443     41399613 CTCCTCTT CT,CTCCTCCT 1/2
-B  freebayes30:31444     41399625 T C 0/1
-B  freebayes30:31445     41399628 C T 0/1
+excerpt  chr6:41399460-41399760, 301 bases; excerpt position = position - 41399459; sample HG002
+A  TR:12602  41399584 GCCT G 0|1
+A  TR:12603  41399613 CTCCTCT C 1|0
+A  TR:12604  41399625 TTCC T 0|1
+A  TR:12605  41399628 C T 1|0
+B  freebayes30:31443  41399613 CTCCTCTT CT,CTCCTCCT 1/2
+B  freebayes30:31444  41399625 T C 0/1
+B  freebayes30:31445  41399628 C T 0/1
 locus    chr6:41399584-41399642 (excerpt 125-183), kind STR; STR regions: 41399585-41399641 str CCT
   0  GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCTTCCTCCTCCTCCTCCTC
   1  GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCTTCCTCCTCCTCCTC
@@ -946,51 +1059,56 @@ locus    chr6:41399584-41399642 (excerpt 125-183), kind STR; STR regions: 413995
   6  GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCCTCCTCCTCCTCCTCCTC
   7  GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCCTCTTCCTCCTCCTCCTC
   8  GCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCCTCTTCTTCCTCCTCCTCCTCCTC
-A 1/1  B 1/6  possible 1, 4  -> different
+possible genotypes  A: 1/1   B: 1/6, 2/3, 4/5, 7/8
+row  A 1/1  B 1/6  possible 1, 4  records 4, 3  -> different
 ```
 
-**O3.** One insertion of AAAAG written at three places in a run of A's followed by an AAAG repeat. TR inserts it inside the A run; pvc writes the A run whole. pvc_eval's STR finder makes the A run alone an STR region.
+**O3.** One insertion of AAAAG written at three places in a run of A's followed by an AAAG repeat.
+TR inserts it inside the A run; pvc writes the A run whole. pvc_eval's STR finder makes the A run
+alone an STR region.
 
 ```
-excerpt  chr3:37126720-37127020, 301 bases; excerpt position = position - 37126719
-A  TR:5893      37126868 A AAAAAG 1|1
-B  pvc-touch30:5857      37126860 AAAAAAAAAAAA AAAAAAAAAAAAAGAAA 1/1
+excerpt  chr3:37126720-37127020, 301 bases; excerpt position = position - 37126719; sample HG002
+A  TR:5893  37126868 A AAAAAG 1|1
+B  pvc-touch30:5857  37126860 AAAAAAAAAAAA AAAAAAAAAAAAAGAAA 1/1
 locus    chr3:37126860-37126872 (excerpt 141-153), kind STR; STR regions: 37126860-37126871 str A
   0  AAAAAAAAAAAAG
   1  AAAAAAAAAAAAAGAAAG
-A 1/1  B 1/1  possible 1, 1  -> same genotype
+possible genotypes  A: 1/1   B: 1/1
+row  A 1/1  B 1/1  possible 1, 1  records 1, 1  -> same genotype
 ```
 
-**O4.** TR against HipSTR, which writes the AAAG repeat whole. Its record trims to an insertion, whose span lies in the locus of O3.
+**O4.** TR against HipSTR, which writes the AAAG repeat whole. Its record trims to an insertion,
+whose span lies in the locus of O3.
 
 ```
-excerpt  chr3:37126720-37127020, 301 bases; excerpt position = position - 37126719
-A  TR:5893      37126868 A AAAAAG 1|1
-B  HipSTR30:10361     37126869 AAAGAAAGAAAGAAAGAAAGAAAG AAAAGAAAGAAAGAAAGAAAGAAAGAAAG 1|1
+excerpt  chr3:37126720-37127020, 301 bases; excerpt position = position - 37126719; sample HG002
+A  TR:5893  37126868 A AAAAAG 1|1
+B  HipSTR30:10361  37126869 AAAGAAAGAAAGAAAGAAAGAAAG AAAAGAAAGAAAGAAAGAAAGAAAGAAAG 1|1
 locus    chr3:37126860-37126872 (excerpt 141-153), kind STR; STR regions: 37126860-37126871 str A
   0  AAAAAAAAAAAAG
   1  AAAAAAAAAAAAAGAAAG
-A 1/1  B 1/1  possible 1, 1  -> same genotype
+possible genotypes  A: 1/1   B: 1/1
+row  A 1/1  B 1/1  possible 1, 1  records 1, 1  -> same genotype
 ```
 
 **O5.** TR against freebayes, which writes both repeats and their flank bases.
 
 ```
-excerpt  chr3:37126720-37127020, 301 bases; excerpt position = position - 37126719
-A  TR:5893      37126868 A AAAAAG 1|1
-B  freebayes30:16445     37126859 CAAAAAAAAAAAAGAAAGAAAGAAAGAAAGAAAGT CAAAAAAAAAAAAAGAAAGAAAGAAAGAAAGAAAGAAAGT 1/1
+excerpt  chr3:37126720-37127020, 301 bases; excerpt position = position - 37126719; sample HG002
+A  TR:5893  37126868 A AAAAAG 1|1
+B  freebayes30:16445  37126859 CAAAAAAAAAAAAGAAAGAAAGAAAGAAAGAAAGT CAAAAAAAAAAAAAGAAAGAAAGAAAGAAAGAAAGAAAGT 1/1
 locus    chr3:37126860-37126872 (excerpt 141-153), kind STR; STR regions: 37126860-37126871 str A
   0  AAAAAAAAAAAAG
   1  AAAAAAAAAAAAAGAAAG
-A 1/1  B 1/1  possible 1, 1  -> same genotype
+possible genotypes  A: 1/1   B: 1/1
+row  A 1/1  B 1/1  possible 1, 1  records 1, 1  -> same genotype
 ```
-
-
 
 ## 5. How it is verified
 
-`tests/test_hard_cases.py` holds one test per case, 50 in all, named by the case, `test_s1`
-to `test_o5`. The cases themselves are literals in `tests/hard_cases.py`, one value per case: the
+`tests/test_hard_cases.py` holds one test, `test_hard_case`, parametrized by the 50 cases, each
+named by its case, S1 to O5, in pytest's report. The cases themselves are literals in `tests/hard_cases.py`, one value per case: the
 excerpt's contig, offset and bases; the records of each file as VCF lines in excerpt positions,
 each with its original line beside it as a comment; the sample's name; and the expected row. Each
 test:
@@ -1014,25 +1132,32 @@ def find_possible_haplotypes(vcf: Path, reference: IndexedFasta, contig: str, st
                              ) -> frozenset[tuple[str, ...]] | None: ...
 ```
 
-It reads the records of one file with `parse_vcf`, takes those of its windows (`doc/specs/respell.md`
-§8) inside the stretch from `start` to `end`, 0-based and half-open, and gives the sample's
-possible genotypes over that stretch: each a sorted tuple of sequences, one per haplotype, with
+It reads the records of one file with `parse_vcf`, takes those of its windows
+(`doc/specs/respell.md` §8) inside the stretch from `start` to `end`, 0-based and half-open, and
+gives the sample's possible genotypes over that stretch, with the phase assignments of the blocks
+of all those windows taken together, as the oracle's check of a pair of windows takes them. Taken
+window by window and joined, they would give genotypes no assignment gives: in S4, a second one
+for TR, whose two windows hold one phase set. Each genotype is a sorted tuple of sequences, one per
+haplotype, with
 the reference's bases between the windows. It gives `None` when the sample is invalid, and raises
 `ValueError` when a window crosses the stretch's ends or the sample is over `ORACLE_CAP`. No case
 here has a missing haplotype, so a missing one raises `ValueError` too.
 
-**Each test can fail.** The plan shows each test failing once on a changed record before it is
-trusted: an ALT changed by one base in file B of a case that is *same genotype*, and the `*` of
-S11 replaced by `0`, which makes it *same genotype*.
+**Each test can fail.** The plan shows the test failing before it is trusted, at each of its two
+checks: the oracle's, with an ALT of file B changed by one base in a case that is *same genotype*;
+and `compare()`'s, with the oracle's literal left as it is and one field of the expected row
+changed, the outcome of one case and one locus allele of another. The `*` of S11 replaced by `0`
+gives *same genotype* and fails both.
 
-**The excerpts against the reference.** One more test, `test_excerpts_are_the_references`, reads
-each excerpt's stretch from the FASTA `PVC_EVAL_GRCH38` names and checks that it is the case's
-bases; it is skipped, with a message naming the variable, when the variable is not set or names no
-file, as `tests/test_compare_real.py` is. The five tomato excerpts are checked likewise against
-`PVC_EVAL_TOMATO`, the SL4.0 FASTA at
-`/Users/jose/genomes/s_lycopersicum/4.00/S_lycopersicum_chromosomes.4.00.fa` on this machine.
-The same test checks that the STR regions of each locus are those the STR finder gives over the
-excerpt widened by 5,000 bases on each side.
+**The excerpts against the reference.** Two more tests read each excerpt's stretch from a
+reference and check that it is the case's bases, and that the STR regions of each locus are those
+the STR finder gives over the excerpt widened by 5,000 bases on each side.
+`test_grch38_excerpts_are_the_references` does it for the 45 GRCh38 cases, from the FASTA that
+`PVC_EVAL_GRCH38` names, and `test_tomato_excerpts_are_the_references` for the five tomato cases,
+E12 to E16, from the FASTA that `PVC_EVAL_TOMATO` names, the SL4.0 chromosomes at
+`/Users/jose/genomes/s_lycopersicum/4.00/S_lycopersicum_chromosomes.4.00.fa` on this machine. Each
+is skipped on its own, with a message naming its variable, when the variable is not set or names
+no file, as `tests/test_compare_real.py` is. The 50 tests of the cases need neither.
 
 ## 6. Open points
 
@@ -1041,24 +1166,43 @@ padded over bases its REF and ALTs share, and a `*` in it means "the haplotype's
 REF, as written, are deleted by another record". pvc_eval trims the record before it asks whether
 a deletion covers the `*` (`doc/spec.md` §5.2, §5.4; `doc/specs/reconciliation.md` §4.2), and in S11
 and E5 trimming removes exactly the bases the deletion reaches. The sample is invalid where pvc
-meant the other file's haplotypes. In pvc-touch30, E5 is the one record of 53 with a `*` allele
-that trimming leaves uncovered; S11 is pvc-300x-HG004's one `*` record.
+meant the other file's haplotypes. In pvc-touch30, E5 is the one record of 53 with a `*` allele that
+trimming leaves uncovered; S11
+is pvc-300x-HG004's one `*` record. Three answers:
 
-- **Keep the rule.** S11 and E5 stay *invalid in B*. A caller's padded `*` record is judged by its
-  trimmed REF, as every other record is judged by its trimmed alleles. Nothing changes.
+- **Keep the rule.** S11 and E5 stay *invalid in B*, with B's genotype `.` and its reason
+  `contradicting records`. A caller's padded `*` record is judged by its trimmed REF, as every
+  other record is judged by its trimmed alleles. Nothing changes in pvc_eval. A pvc file is then
+  read as pvc means it only where its `*` record, trimmed, still shares a position with a
+  placement of the deletion; in S11 no spelling of the 2-base deletion does, so pvc would have to
+  write the two haplotypes in one record.
 - **Measure a `*` against the REF as written.** A deletion covers a `*` when one of its placements
   deletes a position of the `*` record's REF as the file wrote it, before trimming. S11 and E5
-  become *same genotype*, with the same rows in every other case here and in
+  become *same genotype*, with the same locus alleles: S11 reports `2/3` and `2/3`, B with one
+  possible genotype, and E5 `1/2` and `1/2`. Every other case here keeps its row, and so do
   `doc/specs/reconciliation.md` R1 and R2, whose `*` records are not padded (worked with a copy of
-  the oracle changed so, on S11, E5, E2, E3, E6 and S1). It costs a change to `doc/spec.md` §5.4
-  and to `doc/specs/reconciliation.md` §4.2, a field of `VcfRecord` for the stretch its REF covered
-  as written, which it does not keep now, and the same change in `pvc_eval.reconcile` and in the
-  oracle. A file could then cover a `*` with a deletion of a flank base it padded the REF over,
+  the oracle changed so, on S11, E5, E2, E3, E6 and S1). It costs a change to `doc/spec.md` §5.4 and
+  to `doc/specs/reconciliation.md` §4.2, a field of
+`VcfRecord` for the stretch its REF covered as written, which it does not keep now, and the same
+change in `pvc_eval.reconcile` and in the oracle; and in `doc/specs/respell.md`, whose rule for
+which records a re-spelling keeps whole, "touches the REF of a record with a `*` ALT", and whose
+`*` records added under deletions both use the trimmed REF, so that a re-spelling could otherwise
+change whether a padded `*` is covered. A file could then cover a `*` with a deletion of a flank
+base it padded the REF over,
   which no caller here does.
+- **Trim a `*` record from the left first**, as an edit is trimmed (§5.4), and measure the `*`
+  against what is left. S11's REF becomes 24760296–24760298 and E5's the base 104588970, which the
+  deletions reach: both become *same genotype*, with the rows of the second answer, and no other
+  case changes (run by the spec's reviewer). It costs the same changes as the second answer, since
+  `VcfRecord` keeps the alleles trimmed from the right first and the left trimming needs them as
+  written. It does not count the bases a caller padded on the left as part of the REF, but it
+  works here only because pvc pads on the left: a record padded on the right would still lose
+  the bases the deletion reaches.
 
-The recommendation is to measure against the REF as written: a `*` names the bases of the REF its
-caller wrote, and pvc writes such records on purpose (`str_edge_deletion_alleles.md` §6). Meanwhile the
-tests expect *invalid in B* for S11 and E5, as the spec says now; the other answer changes their
+The recommendation is the second answer, to measure against the REF as written: a `*` names the
+bases of the REF its caller wrote, whichever side the caller padded, and pvc writes such records on
+purpose (`str_edge_deletion_alleles.md` §6). Meanwhile the tests expect *invalid in B* for S11 and
+E5, as the spec says now; the other answer changes their
 expected rows in this spec first, then the code.
 
 ## 7. Changes to `doc/spec.md`
@@ -1069,15 +1213,15 @@ change to §5.4 in a commit of its own before any code.
 
 ## 8. Not in this spec
 
-- **Cases reconstructed from a report's words.** Every case has its records on disk. Two reports
-  describe a record that is no longer there: `giab_unexplained_fn_2026-10-03.md` §4 gives S11's
+- **Cases reconstructed from a report's words.** Every case has its records on disk. One report
+  describes a record that is no longer there: `giab_unexplained_fn_2026-10-03.md` §4 gives S11's
   pvc record as `TATACAC → TATAC` `1/1` from a run whose worktree is gone. With that record the row
   would be *different*, since the 2-base deletion would then be on both haplotypes. The later run
   of pvc-300x-HG004 is used instead.
-- **Two HipSTR records in one locus**, whose phase HipSTR does not claim (§3): none was found among
-  the cases; a test of it would be made up, and belongs with the owner's decision on how to read
-  `|` without PS, if they take one.
+- **Two HipSTR records in one locus** (§3): a test of it would be made up, and belongs with the
+  owner's decision on how to read `|` without PS, if they take one.
 - **vcfeval's verdicts** on the same records, which pvc's reports quote: the comparison of
   evaluators is `doc/spec.md` §8.
 - **pvc's own errors** that the cases show, S4, S14, E8 and E10: they are pvc's to fix, and
   pvc_eval reports them as *different*, as it should.
+
