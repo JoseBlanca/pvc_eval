@@ -369,7 +369,8 @@ record with a symbolic ALT, `<DEL>,.`, which is otherwise skipped.
 error naming the file, the line, the position and the letter with its code point (decided by the
 owner on 21 October 2026). Upper-cased by Python's rules, `ß` became the allele `SS` and agreed with
 another file's `SS`; such a letter is no base, as in a REF (below), and comes only from a damaged
-file. A symbolic allele, `<DEL>`, is no ALT of bases, and is skipped as before.
+file. A record with a symbolic allele, `<DEL>` or `<DEL>,ß`, is skipped as before, unchecked for its
+other ALTs, since such a record is checked only for its contig and its order (below).
 
 **Checks.** Each VCF record's contig must be in the reference, its REF must lie within the contig's
 length, and records must come in the `.fai`'s contig order and by position; otherwise the run stops
