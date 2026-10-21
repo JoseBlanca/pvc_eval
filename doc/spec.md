@@ -110,7 +110,7 @@ the contigs whose loci need STR regions.
 
 **Errors, which stop the run:** a VCF not sorted in the `.fai`'s contig order and by position; a
 contig in a VCF but not in the reference; a VCF record whose REF reaches past the end of its
-contig, or whose REF differs from the reference (§5.2); an ALT `.` among other ALTs (§5.2); a
+contig, or whose REF differs from the reference (§5.2); an ALT `.` among other ALTs, or an ALT that holds a letter outside ASCII (§5.2); a
 gzipped VCF or BED that is damaged (§5.2); no sample pairs; a sample named in `--sample-map` absent
 from its file; a line of `--sample-map` that is not two fields; a pair given twice; a sample name
 given twice in a header, when a pair needs it. Samples present in only one file and not mapped are listed as a warning and not
@@ -364,6 +364,12 @@ says (found by the review of 21 October 2026).
 (`G A,.`) means nothing in VCF, and stops the run with an error naming the file and the line
 (decided by the owner on 21 October 2026); it was read as an allele. The rule holds also for a
 record with a symbolic ALT, `<DEL>,.`, which is otherwise skipped.
+
+**An ALT outside ASCII.** An ALT of bases that holds a letter outside ASCII stops the run with an
+error naming the file, the line, the position and the letter with its code point (decided by the
+owner on 21 October 2026). Upper-cased by Python's rules, `ß` became the allele `SS` and agreed with
+another file's `SS`; such a letter is no base, as in a REF (below), and comes only from a damaged
+file. A symbolic allele, `<DEL>`, is no ALT of bases, and is skipped as before.
 
 **Checks.** Each VCF record's contig must be in the reference, its REF must lie within the contig's
 length, and records must come in the `.fai`'s contig order and by position; otherwise the run stops

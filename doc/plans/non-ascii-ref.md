@@ -1,6 +1,6 @@
 # Plan: a REF letter outside ASCII
 
-*Status: done, 21 October 2026, on the branch `hard-cases`, which the owner asked for. A
+*Status: under way, 21 October 2026, on the branch `hard-cases`, which the owner asked for. A
 small change with no spec of its own; it builds the sentence of `doc/spec.md` §5.2 that says a REF
 letter outside ASCII is no base. The work report is `doc/reports/hard-cases.md`.*
 
@@ -31,3 +31,20 @@ Before it: at 95f100b the checks pass and `uv run pytest -q` gives "1968 passed,
   What could go wrong: the alleles are upper-cased in another place too, when the record is built;
   a REF must be upper-cased the same way in both, or a REF that passes the check is stored
   otherwise.
+
+- [ ] **2. An ALT holding a letter outside ASCII stops the run**
+
+  The owner decided on 21 October 2026, after milestone 1, that such an ALT stops the run: it was
+  upper-cased by Python's rules, `ß` read as `SS`, and could agree with another file's `SS`.
+
+  Spec: `doc/spec.md` §5.2, "An ALT outside ASCII", and §3's list of errors.
+
+  Deliverables:
+  - In `tests/test_vcf.py`, `parse_vcf` raises `PvcEvalInputError` naming the file, the line, the
+    position and the letter with its code point, for an ALT `ß`, for `Aß`, for the second ALT of
+    `G A,ß`, and for an ALT beside a `*`, `G ß,*`. Each is accepted at e839edc.
+  - A record with a symbolic ALT, `<DEL>`, is skipped as before, and an ALT `.` among others gives
+    its own error as before: the tests of §5.2 that pass at e839edc pass unchanged.
+
+  What could go wrong: the check must come where every ALT of bases is read, before the alleles
+  are upper-cased and trimmed, and in the same order of errors as the other faults of a line.
