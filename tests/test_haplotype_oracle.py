@@ -13,7 +13,12 @@ from pathlib import Path
 
 import pytest
 from tests.conftest import CaseFiles, make_chrom_line, write_case_vcf
-from tests.haplotype_oracle import ORACLE_CAP, HaplotypeComparison, check_same_haplotypes
+from tests.haplotype_oracle import (
+    ORACLE_CAP,
+    HaplotypeComparison,
+    check_same_haplotypes,
+    find_possible_haplotypes,
+)
 
 from pvc_eval.fasta import IndexedFasta
 
@@ -544,6 +549,97 @@ def test_a_file_of_20000_windows_and_20000_records_with_no_alt_takes_under_5_sec
         num_windows=num_windows, num_linked_pairs=0, num_over_cap=0
     )
     assert elapsed < 5, f"{elapsed:.1f} s"
+
+
+# --- find_possible_haplotypes (doc/specs/hard_cases.md §5) ---
+
+_R10_BASES = "TATACACATAGG"  # doc/specs/reconciliation.md R10, from position 10
+
+
+def _find(
+    directory: Path, reference: IndexedFasta, lines: Sequence[str], start: int, end: int
+) -> frozenset[tuple[str, ...]] | None:
+    vcf = write_case_vcf(directory / "a.vcf", lines, fills_ps=False)
+    return find_possible_haplotypes(vcf, reference, "chr1", start, end, 0)
+
+
+def test_find_possible_haplotypes_gives_r10s_genotype(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    # R10: the locus 10-19 has the alleles TATACACATA, TATACATA and TATACA, and the possible
+    # genotypes (1, 2).
+    reference = case_files.write_reference(10, _R10_BASES)
+    lines = ["10 TATACAC TATAC,* 1/2", "15 ACATA A 0/1"]
+
+    possible_genotypes = _find(tmp_path, reference, lines, 9, 19)
+
+    assert possible_genotypes == frozenset({("TATACA", "TATACATA")})
+
+
+def test_find_possible_haplotypes_takes_the_windows_of_a_phase_set_together(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    # doc/specs/hard_cases.md S4, file A, from 14722151 at position 1: the SNP at 8 and the
+    # deletion of 12-13, phased with no PS, lie in two windows, 8 and 12-14. Taken
+    # together they give one genotype; taken window by window and joined they would also
+    # give the SNP and the deletion on different haplotypes.
+    reference = case_files.write_reference(1, "AAAAAAAAAAAAGAATAAAAAATAAAAAA")
+    lines = ["8 A T 0|1", "11 AAG A 0|1"]
+
+    possible_genotypes = _find(tmp_path, reference, lines, 0, 29)
+
+    assert possible_genotypes == frozenset(
+        {("AAAAAAAAAAAAGAATAAAAAATAAAAAA", "AAAAAAATAAAAATAAAAAATAAAAAA")}
+    )
+
+
+def test_find_possible_haplotypes_gives_none_for_an_invalid_sample(
+    case_files: CaseFiles, tmp_path: Path
+) -> None:
+    # A `*` on both haplotypes and no deletion to cover it: contradicting records.
+    reference = case_files.write_reference(10, _R10_BASES)
+
+    assert _find(tmp_path, reference, ["10 TATACAC TATAC,* 2/2"], 9, 19) is None
+
+
+@pytest.mark.parametrize(
+    ("bases", "lines", "start", "end", "message"),
+    [
+        pytest.param(
+            _R10_BASES,
+            ["10 TATACAC TATAC,* 1/2", "15 ACATA A 0/1"],
+            9,
+            15,
+            "crosses",
+            id="a-window-across-the-end",
+        ),
+        pytest.param(_R10_BASES, ["13 A G ./1"], 9, 19, "missing", id="a-missing-haplotype"),
+        # Fourteen unphased heterozygous SNPs in one window: 2^13 phase assignments.
+        pytest.param(
+            "TATACACATAGGTACGTACG",
+            [
+                f"{pos} {base} {'C' if base == 'A' else 'A'} 0/1"
+                for pos, base in enumerate("TATACACATAGGTA", start=10)
+            ],
+            9,
+            29,
+            str(ORACLE_CAP),
+            id="over-the-cap",
+        ),
+    ],
+)
+def test_find_possible_haplotypes_raises_value_error(
+    case_files: CaseFiles,
+    tmp_path: Path,
+    bases: str,
+    lines: Sequence[str],
+    start: int,
+    end: int,
+    message: str,
+) -> None:
+    reference = case_files.write_reference(10, bases)
+    with pytest.raises(ValueError, match=message):
+        _find(tmp_path, reference, lines, start, end)
 
 
 def test_the_oracle_imports_nothing_of_what_the_check_of_7_4_tests() -> None:
