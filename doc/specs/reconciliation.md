@@ -349,12 +349,13 @@ GT` or `ploidy mismatch`. `./.` read with ploidy 1, and
 **R10. A padded `*` record.** Reference 10–21 `TATACACATAGG`, `10 TATACAC TATAC,* 1/2` and
 `15 ACATA A 0/1`, unphased, the records of `doc/specs/hard_cases.md` S11 over their own few bases.
 Normalised, the first record is `12 TAC T,*`, whose 2-base deletion deletes 13–14, and the second
-deletes 16–19, or 15–18 slid left. The locus is 12–19, the union of their spans. The `*`'s REF as
-written is 10–16, which both placements of the second deletion reach, so it covers the `*`.
-Assignment 0 puts the 2-base deletion on one haplotype and the `*` with the 4-base deletion on the
-other: alleles `TACACATA,TACATA,TACA`, possible genotypes `(1, 2)`. Assignment 1 leaves the `*` on
-a haplotype with no deletion, which is impossible. Measured against the normalised REF, 12–14,
-which no placement reaches, the sample would be invalid, `contradicting records`.
+deletes 16–19, or 15–18 slid left. The first record's span holds its REF as written, 10–16
+(`doc/spec.md` §5.2), so the locus is 10–19. The `*`'s REF as written is 10–16, which both
+placements of the second deletion reach, so it covers the `*`. Assignment 0 puts the 2-base
+deletion on one haplotype and the `*` with the 4-base deletion on the other: alleles
+`TATACACATA,TATACATA,TATACA`, possible genotypes `(1, 2)`. Assignment 1 leaves the `*` on a
+haplotype with no deletion, which is impossible. Measured against the normalised REF, 12–14, which
+no placement reaches, the sample would be invalid, `contradicting records`.
 
 ## 5. Evaluation
 
