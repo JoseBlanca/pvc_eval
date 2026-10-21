@@ -1,6 +1,8 @@
-"""What the tests of reconciliation share: CaseFiles, which writes a case's reference and
-VCF lines to a directory and reads them back with parse_vcf, its fixture, and the helpers
-that build a case's sample pairs and read its locus's bases.
+"""What the tests of reconciliation and of the re-spelling program share: CaseFiles, which
+writes a case's reference and VCF lines to a directory and reads them back with parse_vcf,
+its fixture; write_case_vcf, which writes a case's lines as a VCF file, with
+make_chrom_line and FILEFORMAT_LINE; and the helpers that build a case's sample pairs and
+read its locus's bases.
 """
 
 from collections.abc import Iterator, Mapping, Sequence
@@ -63,18 +65,16 @@ class CaseFiles:
         """The records parse_vcf reads from lines `POS REF ALT GT...`, one GT per sample,
         each written `GT` or `GT:PS`, on CONTIG; with has_chrom, the lines are
         `CHROM POS REF ALT GT...`."""
-        samples = "\t".join(f"S{index}" for index in range(num_samples))
-        text = "##fileformat=VCFv4.3\n"
-        text += f"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{samples}\n"
-        for line in lines:
-            fields = line.split()
-            chrom = fields.pop(0) if has_chrom else CONTIG
-            pos, ref, alt, *gts = fields
-            sample_fields = [gt if ":" in gt else f"{gt}:." for gt in gts]
-            text += f"{chrom}\t{pos}\t.\t{ref}\t{alt}\t.\t.\t.\tGT:PS\t{'\t'.join(sample_fields)}\n"
-        path = self._make_path("vcf")
-        path.write_text(text, encoding="utf-8")
+        path = self.write_vcf(lines, num_samples=num_samples, has_chrom=has_chrom)
         return tuple(parse_vcf(path, reference, span_limit=span_limit, ploidy=ploidy))
+
+    def write_vcf(
+        self, lines: Sequence[str], *, num_samples: int = 1, has_chrom: bool = False
+    ) -> Path:
+        """A VCF file of lines `POS REF ALT GT...`, as write_and_parse_records reads them."""
+        return write_case_vcf(
+            self._make_path("vcf"), lines, num_samples=num_samples, has_chrom=has_chrom
+        )
 
     def _make_path(self, suffix: str) -> Path:
         self._num_files += 1
@@ -85,6 +85,52 @@ class CaseFiles:
 def case_files(tmp_path: Path) -> Iterator[CaseFiles]:
     with ExitStack() as stack:
         yield CaseFiles(tmp_path, stack)
+
+
+FILEFORMAT_LINE = "##fileformat=VCFv4.3"
+
+
+def make_chrom_line(num_samples: int) -> str:
+    """The #CHROM line of a VCF with samples S0, S1..., and no FORMAT column with none."""
+    columns = ["#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO"]
+    if num_samples:
+        columns += ["FORMAT", *(f"S{index}" for index in range(num_samples))]
+    return "\t".join(columns)
+
+
+def write_case_vcf(
+    path: Path,
+    lines: Sequence[str],
+    *,
+    num_samples: int | None = None,
+    has_chrom: bool = False,
+    header_lines: Sequence[str] = (FILEFORMAT_LINE,),
+    fills_ps: bool = True,
+) -> Path:
+    """A VCF file at path of a case's lines, `POS REF ALT sample...`, on CONTIG, or
+    `CHROM POS REF ALT sample...` with has_chrom; ID, QUAL, FILTER and INFO are `.`.
+
+    num_samples: the samples of the #CHROM line, by default as many as the first line has.
+    fills_ps: FORMAT is GT:PS and a sample field with no PS gets `.`; otherwise FORMAT is
+        GT:PS when some field of the line has a PS and GT when none has, and the fields
+        are written as given, as the cases of doc/specs/respell.md are.
+    """
+    if num_samples is None:
+        num_samples = len(lines[0].split()) - (4 if has_chrom else 3)
+    text_lines = [*header_lines, make_chrom_line(num_samples)]
+    for line in lines:
+        fields = line.split()
+        chrom = fields.pop(0) if has_chrom else CONTIG
+        pos, ref, alt, *sample_fields = fields
+        columns = [chrom, pos, ".", ref, alt, ".", ".", "."]
+        if num_samples:
+            has_ps = fills_ps or any(":" in sample_field for sample_field in sample_fields)
+            if fills_ps:
+                sample_fields = [field if ":" in field else f"{field}:." for field in sample_fields]
+            columns += ["GT:PS" if has_ps else "GT", *sample_fields]
+        text_lines.append("\t".join(columns))
+    path.write_text("".join(f"{text_line}\n" for text_line in text_lines), encoding="utf-8")
+    return path
 
 
 def get_locus_bases(reference: IndexedFasta, locus: Locus) -> str:

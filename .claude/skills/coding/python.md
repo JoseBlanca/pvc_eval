@@ -253,6 +253,7 @@ that pays for it.
   | stop | set the stop of a run's threads, or wake those that wait, so that they end |
   | reconcile | build a locus's locus alleles and its samples' sample results (`doc/specs/reconciliation.md` §4) |
   | evaluate | give the outcome of a sample pair (`doc/specs/reconciliation.md` §5) |
+  | respell | write a VCF file again in other words that give every sample the same haplotypes (`doc/specs/respell.md`) |
 
 - Public is only what another module or the user calls: everything else
   starts with an underscore, functions, classes and constants alike. The
