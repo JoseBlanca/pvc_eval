@@ -1,6 +1,6 @@
 # Plan: pvc's hard cases
 
-*Status: under way, 21 October 2026. It builds `doc/specs/hard_cases.md`, approved by the owner on
+*Status: done, 21 October 2026. It builds `doc/specs/hard_cases.md`, approved by the owner on
 21 October 2026 with its 50 expected outcomes, and the owner's answer to that spec's Open 1, a `*`
 measured against its record's REF as written, which changed `doc/spec.md` §5.4,
 `doc/specs/reconciliation.md` §4.2 and §7, and `doc/specs/respell.md` the same day. The owner
@@ -70,7 +70,7 @@ They run in order: milestone 2's cases S11 and E5 stand on milestone 1.
   test that builds a padded record by hand without it gets the old rule silently. The oracle and
   `reconcile` must read the same field, or the property tests of reconciliation compare two rules.
 
-- [ ] **2. The 50 hard cases through `compare()`**
+- [x] **2. The 50 hard cases through `compare()`**
 
   What it gives: §7.5 of `doc/spec.md` checked, case by case.
 
