@@ -116,6 +116,9 @@ class VcfRecord:
         keeps no GQ.
     line_number: the 1-based line of the file, for messages.
     span: the record's span (§5.2), 0-based and half-open; it always contains the REF.
+    written_ref: the stretch the REF covers as the file wrote it, before trimming, 0-based
+        and half-open, against which a `*` is measured (doc/specs/reconciliation.md §4.2);
+        it always contains the REF. None stands for the REF, as in a record built by hand.
     """
 
     contig: str
@@ -125,6 +128,7 @@ class VcfRecord:
     genotypes: tuple[VcfGenotype | MALFORMED_GT | OTHER_PLOIDY_GT, ...]
     line_number: int
     span: Span
+    written_ref: Span | None = None
 
     def __post_init__(self) -> None:
         if self.start < 0:
@@ -136,6 +140,13 @@ class VcfRecord:
             raise ValueError(
                 f"span {span_start}-{span_end} must contain the REF, {self.start}-{self.end}"
             )
+        if self.written_ref is not None:
+            written_start, written_end = self.written_ref
+            if written_start > self.start or written_end < self.end:
+                raise ValueError(
+                    f"written REF {written_start}-{written_end} must contain the REF,"
+                    f" {self.start}-{self.end}"
+                )
 
     @property
     def end(self) -> int:
@@ -942,6 +953,7 @@ def _parse_batch(
             genotypes=genotypes,
             line_number=line.line_number,
             span=line.span,
+            written_ref=(line.pos, line.pos + len(line.fields[3])),
         )
         records.append((line.pos, record))
     return records, num_not_numbers

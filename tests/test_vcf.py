@@ -1264,6 +1264,70 @@ def test_records_are_trimmed_and_never_moved(tmp_path: Path, reference: IndexedF
     assert get_placement(record) == (3, ("AA", "A"), (2, 5))
 
 
+# doc/specs/reconciliation.md R10: the reference 10-21 TATACACATAGG, 1-based, after 9 Gs.
+@pytest.mark.parametrize(
+    ("line", "start", "alleles", "written_ref"),
+    [
+        # Trimmed to TAC -> T,* at 12-14, 1-based; the file's REF covers 10-16.
+        ("chr1\t10\t.\tTATACAC\tTATAC,*", 11, ("TAC", "T", "*"), (9, 16)),
+        ("chr1\t15\t.\tACATA\tA", 14, ("ACATA", "A"), (14, 19)),
+    ],
+    ids=["padded-star-record", "unpadded-record"],
+)
+def test_written_ref_is_the_ref_as_the_file_wrote_it(
+    tmp_path: Path,
+    make_reference: MakeReference,
+    line: str,
+    start: int,
+    alleles: tuple[str, ...],
+    written_ref: tuple[int, int],
+) -> None:
+    reference = make_reference(*make_fasta({"chr1": "GGGGGGGGGTATACACATAGG"}))
+    path = write_vcf(tmp_path, f"{line}\t.\t.\t.\tGT\t1/2\t0/0\n")
+
+    (record,) = parse_vcf(path, reference)
+
+    assert (record.start, record.alleles, record.written_ref) == (start, alleles, written_ref)
+
+
+def test_written_ref_left_out_is_none_which_stands_for_the_ref() -> None:
+    record = VcfRecord(
+        contig="chr1",
+        start=11,
+        alleles=("TAC", "T", "*"),
+        qual=None,
+        genotypes=(),
+        line_number=1,
+        span=(11, 17),
+    )
+
+    assert record.written_ref is None
+
+
+@pytest.mark.parametrize(
+    ("written_ref", "message"),
+    [
+        ((12, 16), "written REF 12-16 must contain the REF, 11-14"),
+        ((9, 13), "written REF 9-13 must contain the REF, 11-14"),
+    ],
+    ids=["starts-after-the-ref", "ends-before-the-ref"],
+)
+def test_written_ref_that_does_not_hold_the_ref_is_refused(
+    written_ref: tuple[int, int], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        VcfRecord(
+            contig="chr1",
+            start=11,
+            alleles=("TAC", "T", "*"),
+            qual=None,
+            genotypes=(),
+            line_number=1,
+            span=(11, 17),
+            written_ref=written_ref,
+        )
+
+
 def test_records_come_out_in_order_of_span_start(
     tmp_path: Path, make_reference: MakeReference
 ) -> None:
