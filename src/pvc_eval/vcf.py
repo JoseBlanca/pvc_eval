@@ -617,14 +617,29 @@ def _format_ref_difference(
     """
     differing_pair = (ref[first_differing].translate(_ASCII_UPPER_CASE), ref_bases[first_differing])
     no_code = next((base for base in differing_pair if base not in _IUPAC_CODES), None)
-    note = "" if no_code is None else f" ('{no_code}' is no IUPAC code)"
+    note = "" if no_code is None else f" ({_format_letters(no_code)} is no IUPAC code)"
     if len(ref) <= _MAX_REF_WRITTEN:
-        return f"is '{ref}', and the reference, read in upper case, has '{ref_bases}' there{note}."
+        return (
+            f"is {_format_letters(ref)}, and the reference, read in upper case, has"
+            f" '{ref_bases}' there{note}."
+        )
     return (
-        f"({len(ref):,} bases) has '{ref[first_differing]}' at"
+        f"({len(ref):,} bases) has {_format_letters(ref[first_differing])} at"
         f" {contig}:{pos + first_differing + 1}, where the reference, read in upper case, has"
         f" '{ref_bases[first_differing]}'{note}."
     )
+
+
+def _format_letters(text: str) -> str:
+    """The text in quotes, followed by the code points of its characters outside ASCII, each
+    once: `'AßT' (U+00DF)`. A letter that looks like a base, the Kelvin sign like K, or one
+    that shows as nothing, a combining mark or a space, is then not read as what it looks
+    like."""
+    outside_ascii = dict.fromkeys(character for character in text if not character.isascii())
+    if not outside_ascii:
+        return f"'{text}'"
+    code_points = ", ".join(f"U+{ord(character):04X}" for character in outside_ascii)
+    return f"'{text}' ({code_points})"
 
 
 def _log_warnings(path: Path, span_limit: int | None, status: _ReadStatus) -> None:

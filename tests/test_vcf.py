@@ -1190,35 +1190,53 @@ def test_iupac_codes_that_share_no_base_differ(
     )
 
 
-# Written by its name, since ruff takes the letter itself for an f.
+# Written by their names, since ruff takes the long s for an f and the Kelvin sign for a K,
+# and a combining mark joins the character before it.
 LONG_S = "\N{LATIN SMALL LETTER LONG S}"
+KELVIN_SIGN = "\N{KELVIN SIGN}"
+COMBINING_ACUTE = "\N{COMBINING ACUTE ACCENT}"
 
 
+# A character outside ASCII is written with its code point, so that one that looks like a
+# base, or like nothing, is not read as one.
 @pytest.mark.parametrize(
     ("reference_bases", "ref", "found"),
     [
         (
             "G",
             "ß",
-            "is 'ß', and the reference, read in upper case, has 'G' there ('ß' is no IUPAC code).",
+            "is 'ß' (U+00DF), and the reference, read in upper case, has 'G' there"
+            " ('ß' (U+00DF) is no IUPAC code).",
         ),
         (
             "G",
             LONG_S,
-            f"is '{LONG_S}', and the reference, read in upper case, has 'G' there"
-            f" ('{LONG_S}' is no IUPAC code).",
+            f"is '{LONG_S}' (U+017F), and the reference, read in upper case, has 'G' there"
+            f" ('{LONG_S}' (U+017F) is no IUPAC code).",
         ),
         (
             "AGT",
             "AßT",
-            "is 'AßT', and the reference, read in upper case, has 'AGT' there"
-            " ('ß' is no IUPAC code).",
+            "is 'AßT' (U+00DF), and the reference, read in upper case, has 'AGT' there"
+            " ('ß' (U+00DF) is no IUPAC code).",
         ),
         (
             "ACGTACGTACGTACGTACGTG",
             "ACGTACGTACGTACGTACGTß",
-            "(21 bases) has 'ß' at chr1:23, where the reference, read in upper case, has 'G'"
-            " ('ß' is no IUPAC code).",
+            "(21 bases) has 'ß' (U+00DF) at chr1:23, where the reference, read in upper case,"
+            " has 'G' ('ß' (U+00DF) is no IUPAC code).",
+        ),
+        (
+            "G",
+            KELVIN_SIGN,
+            f"is '{KELVIN_SIGN}' (U+212A), and the reference, read in upper case, has 'G' there"
+            f" ('{KELVIN_SIGN}' (U+212A) is no IUPAC code).",
+        ),
+        (
+            "GA",
+            f"G{COMBINING_ACUTE}",
+            f"is 'G{COMBINING_ACUTE}' (U+0301), and the reference, read in upper case, has 'GA'"
+            f" there ('{COMBINING_ACUTE}' (U+0301) is no IUPAC code).",
         ),
     ],
     ids=[
@@ -1226,6 +1244,8 @@ LONG_S = "\N{LATIN SMALL LETTER LONG S}"
         "long_s_against_g",
         "sharp_s_inside_a_longer_ref",
         "sharp_s_ending_a_ref_of_21_bases",
+        "kelvin_sign_against_g",
+        "combining_mark_after_g",
     ],
 )
 def test_ref_letter_outside_ascii_differs_from_the_reference(
