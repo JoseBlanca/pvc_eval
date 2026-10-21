@@ -17,7 +17,7 @@ from tests.haplotype_oracle import (
     ORACLE_CAP,
     HaplotypeComparison,
     check_same_haplotypes,
-    find_possible_haplotypes,
+    find_possible_genotypes,
 )
 
 from pvc_eval.fasta import IndexedFasta
@@ -551,7 +551,7 @@ def test_a_file_of_20000_windows_and_20000_records_with_no_alt_takes_under_5_sec
     assert elapsed < 5, f"{elapsed:.1f} s"
 
 
-# --- find_possible_haplotypes (doc/specs/hard_cases.md §5) ---
+# --- find_possible_genotypes (doc/specs/hard_cases.md §5) ---
 
 _R10_BASES = "TATACACATAGG"  # doc/specs/reconciliation.md R10, from position 10
 
@@ -560,12 +560,10 @@ def _find(
     directory: Path, reference: IndexedFasta, lines: Sequence[str], start: int, end: int
 ) -> frozenset[tuple[str, ...]] | None:
     vcf = write_case_vcf(directory / "a.vcf", lines, fills_ps=False)
-    return find_possible_haplotypes(vcf, reference, "chr1", start, end, 0)
+    return find_possible_genotypes(vcf, reference, "chr1", start, end, 0)
 
 
-def test_find_possible_haplotypes_gives_r10s_genotype(
-    case_files: CaseFiles, tmp_path: Path
-) -> None:
+def test_find_possible_genotypes_gives_r10s_genotype(case_files: CaseFiles, tmp_path: Path) -> None:
     # R10: the locus 10-19 has the alleles TATACACATA, TATACATA and TATACA, and the possible
     # genotypes (1, 2).
     reference = case_files.write_reference(10, _R10_BASES)
@@ -576,7 +574,7 @@ def test_find_possible_haplotypes_gives_r10s_genotype(
     assert possible_genotypes == frozenset({("TATACA", "TATACATA")})
 
 
-def test_find_possible_haplotypes_takes_the_windows_of_a_phase_set_together(
+def test_find_possible_genotypes_takes_the_windows_of_a_phase_set_together(
     case_files: CaseFiles, tmp_path: Path
 ) -> None:
     # doc/specs/hard_cases.md S4, file A, from 14722151 at position 1: the SNP at 8 and the
@@ -593,7 +591,7 @@ def test_find_possible_haplotypes_takes_the_windows_of_a_phase_set_together(
     )
 
 
-def test_find_possible_haplotypes_gives_none_for_an_invalid_sample(
+def test_find_possible_genotypes_gives_none_for_an_invalid_sample(
     case_files: CaseFiles, tmp_path: Path
 ) -> None:
     # A `*` on both haplotypes and no deletion to cover it: contradicting records.
@@ -628,7 +626,7 @@ def test_find_possible_haplotypes_gives_none_for_an_invalid_sample(
         ),
     ],
 )
-def test_find_possible_haplotypes_raises_value_error(
+def test_find_possible_genotypes_raises_value_error(
     case_files: CaseFiles,
     tmp_path: Path,
     bases: str,

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 from tests.compare_case import write_fasta
-from tests.haplotype_oracle import find_possible_haplotypes
+from tests.haplotype_oracle import find_possible_genotypes
 from tests.hard_cases import HARD_CASES, HardCase, Reference
 
 from pvc_eval.compare import compare
@@ -106,7 +106,7 @@ def test_hard_case(case: HardCase, tmp_path: Path) -> None:
 
     with IndexedFasta(reference) as indexed_fasta:
         oracle_genotypes = [
-            find_possible_haplotypes(vcf, indexed_fasta, case.contig, start_1based - 1, end, 0)
+            find_possible_genotypes(vcf, indexed_fasta, case.contig, start_1based - 1, end, 0)
             for vcf in (vcf_a, vcf_b)
         ]
     rows = list(compare(vcf_a, vcf_b, reference, finder_threads=0))

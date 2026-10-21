@@ -12,7 +12,7 @@ Positions are 0-based and half-open, but in the messages, which give windows 1-b
 inclusive as a VCF does.
 
 Public: check_same_haplotypes, HaplotypeComparison, ORACLE_CAP; check_same_samples, which the
-check of §7.4 uses too; find_possible_haplotypes, one file's possible genotypes over a
+check of §7.4 uses too; find_possible_genotypes, one file's possible genotypes over a
 stretch, which the tests of doc/specs/hard_cases.md §5 use.
 """
 
@@ -173,7 +173,7 @@ def check_same_haplotypes(
     )
 
 
-def find_possible_haplotypes(
+def find_possible_genotypes(
     vcf: Path,
     reference: IndexedFasta,
     contig: str,
