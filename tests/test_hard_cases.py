@@ -12,12 +12,12 @@ E12 to E16.
 """
 
 import dataclasses
-import os
 from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 from tests.compare_case import write_fasta
+from tests.conftest import EnvironmentPath, get_paths_from_environment
 from tests.haplotype_oracle import find_possible_genotypes
 from tests.hard_cases import HARD_CASES, HardCase, Reference
 
@@ -140,20 +140,6 @@ def test_hard_case(case: HardCase, tmp_path: Path) -> None:
     assert _get_checked_fields(rows[0]) == _make_expected_row(case)
 
 
-def _get_reference(variable: str, what: str) -> Path:
-    """The FASTA a variable names; skips the test when it is unset, or when the file or
-    the .fai beside it is missing."""
-    value = os.environ.get(variable)
-    if not value:
-        pytest.skip(f"{variable} is not set; it names {what}")
-    path = Path(value)
-    if not path.is_file():
-        pytest.skip(f"{variable} names {path}, which does not exist; it names {what}")
-    if not Path(f"{path}.fai").is_file():
-        pytest.skip(f"{variable} names {path}, which has no {path.name}.fai beside it")
-    return path
-
-
 def _find_excerpt_problems(
     reference_path: Path, reference: Reference, directory: Path
 ) -> list[str]:
@@ -217,10 +203,18 @@ def test_an_str_region_across_the_locus_end_is_found(tmp_path: Path) -> None:
 
 
 def test_grch38_excerpts_are_the_references(tmp_path: Path) -> None:
-    path = _get_reference("PVC_EVAL_GRCH38", "the GRCh38 FASTA, with its .fai beside it")
+    (path,) = get_paths_from_environment(
+        EnvironmentPath(
+            "PVC_EVAL_GRCH38", "the GRCh38 FASTA, with its .fai beside it", beside=(".fai",)
+        )
+    )
     assert _find_excerpt_problems(path, Reference.GRCH38, tmp_path) == []
 
 
 def test_tomato_excerpts_are_the_references(tmp_path: Path) -> None:
-    path = _get_reference("PVC_EVAL_TOMATO", "the SL4.0 tomato FASTA, with its .fai beside it")
+    (path,) = get_paths_from_environment(
+        EnvironmentPath(
+            "PVC_EVAL_TOMATO", "the SL4.0 tomato FASTA, with its .fai beside it", beside=(".fai",)
+        )
+    )
     assert _find_excerpt_problems(path, Reference.SL4_0, tmp_path) == []

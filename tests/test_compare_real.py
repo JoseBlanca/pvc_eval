@@ -19,11 +19,11 @@ checks that from what the row holds.
 """
 
 import dataclasses
-import os
 from pathlib import Path
 
 import pytest
 from tests.compare_case import write_compare_case
+from tests.conftest import EnvironmentPath, get_paths_from_environment
 
 from pvc_eval.compare import CompareConfig, compare
 from pvc_eval.fasta import IndexedFasta
@@ -37,20 +37,6 @@ _CONTIG = "chr20"
 _ROWS_SHOWN = 20
 # The fields of OutcomeRow that come in pairs, one for each file, without their _a and _b.
 _SAMPLE_FIELDS = ("genotype", "possible", "quality", "gq", "records", "invalid_reason")
-
-
-def _get_path_from_environment(variable: str, what: str, beside: str) -> tuple[Path | None, str]:
-    """The path a variable names, and "" when it and the file beside it exist; otherwise
-    None and why it cannot be used."""
-    value = os.environ.get(variable)
-    if not value:
-        return None, f"{variable} is not set; it names {what}"
-    path = Path(value)
-    if not path.is_file():
-        return None, f"{variable} names {path}, which does not exist; it names {what}"
-    if not Path(f"{path}{beside}").is_file():
-        return None, f"{variable} names {path}, which has no {path.name}{beside} beside it"
-    return path, ""
 
 
 def _find_why_broken(row: OutcomeRow) -> str:
@@ -266,16 +252,16 @@ def test_small_file_against_itself_gives_missing_invalid_and_too_complex_in_both
 def test_hg002_against_itself_over_chr20_gives_only_outcomes_of_one_file(
     tmp_path: Path,
 ) -> None:
-    reference, reference_problem = _get_path_from_environment(
-        "PVC_EVAL_GRCH38", "the GRCh38 FASTA, with its .fai beside it", ".fai"
+    reference, vcf = get_paths_from_environment(
+        EnvironmentPath(
+            "PVC_EVAL_GRCH38", "the GRCh38 FASTA, with its .fai beside it", beside=(".fai",)
+        ),
+        EnvironmentPath(
+            "PVC_EVAL_HG002_VCF",
+            "GIAB's HG002 v4.2.1 benchmark VCF for GRCh38, bgzipped, with its .tbi beside it",
+            beside=(".tbi",),
+        ),
     )
-    vcf, vcf_problem = _get_path_from_environment(
-        "PVC_EVAL_HG002_VCF",
-        "GIAB's HG002 v4.2.1 benchmark VCF for GRCh38, bgzipped, with its .tbi beside it",
-        ".tbi",
-    )
-    if reference is None or vcf is None:
-        pytest.skip(". ".join(problem for problem in (reference_problem, vcf_problem) if problem))
     with IndexedFasta(reference) as indexed_fasta:
         contig_length = indexed_fasta.get_length(_CONTIG)
     regions = tmp_path / "chr20.bed"
