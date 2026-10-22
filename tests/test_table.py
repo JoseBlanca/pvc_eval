@@ -199,6 +199,7 @@ def test_format_table_row_writes_the_kind_as_its_word(kind: Kind, expected: str)
 @pytest.mark.parametrize(
     ("outcome", "expected"),
     [
+        (Outcome.PARTLY_OUTSIDE, "partly outside the regions"),
         (Outcome.TOO_COMPLEX, "too complex"),
         (Outcome.INVALID_IN_A, "invalid in A"),
         (Outcome.INVALID_IN_B, "invalid in B"),
@@ -636,6 +637,21 @@ def test_the_summary_counts_by_outcome_and_stratum_over_every_sample_pair(
     ]
     # The table, without all_rows, leaves out the three rows reference in both.
     assert len(output.read_text(encoding="utf-8").splitlines()) == 1 + 7
+
+
+def test_the_summary_puts_partly_outside_the_regions_first(tmp_path: Path) -> None:
+    summary = tmp_path / "summary.tsv"
+    rows = [
+        _make_summary_row("chr1", Kind.SNP, "generic", "HG002", Outcome.TOO_COMPLEX),
+        _make_summary_row("chr1", Kind.STR, "str", "HG002", Outcome.PARTLY_OUTSIDE),
+        _make_summary_row("chr2", Kind.STR, "str", "HG002", Outcome.PARTLY_OUTSIDE),
+    ]
+    write_table(iter(rows), tmp_path / "loci.tsv", summary=summary)
+    assert summary.read_text(encoding="utf-8").splitlines() == [
+        "outcome\tstratum\tSNP\tindel\tSTR\tcomplex\ttotal",
+        "partly outside the regions\tstr\t0\t0\t2\t0\t2",
+        "too complex\tgeneric\t1\t0\t0\t0\t1",
+    ]
 
 
 def test_the_summary_sorts_the_strata_by_code_point(tmp_path: Path) -> None:

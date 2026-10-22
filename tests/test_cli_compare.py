@@ -548,6 +548,7 @@ def test_help_names_every_outcome_and_kind_as_the_table_writes_them(
     description = " ".join(stdout.split("\noptions:\n")[0].split())
     # doc/spec.md §5.5 and §5.6, as Outcome and Kind give them to the table.
     for word in (
+        "partly outside the regions",
         "too complex",
         "invalid in A",
         "invalid in B",

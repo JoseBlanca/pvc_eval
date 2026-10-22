@@ -203,8 +203,10 @@ _COMPARE_ABOUT = (
     " A; only in B; different; reference in both; missing in A, missing in B or missing in"
     " both (a haplotype the genotype says nothing about); invalid in A, invalid in B or"
     " invalid in both (VCF records that claim something impossible for the sample); or too"
-    " complex (a sample that needs more phase assignments than --phasing-cap). Each locus"
-    " has a kind: SNP, indel, STR (it holds an STR region) or complex.",
+    " complex (a sample that needs more phase assignments than --phasing-cap); or, with"
+    " --regions, partly outside the regions (a locus that reaches past them, which is"
+    " counted as neither agreement nor disagreement). Each locus has a kind: SNP, indel,"
+    " STR (it holds an STR region) or complex.",
     "The STR regions are the tandem repeats of the reference. They come from --str-regions"
     " or, without it, from the STR finder, run with its default parameters on the contigs"
     " that hold a VCF record and, with --regions, only on those --regions names. It takes"
@@ -411,9 +413,10 @@ def _add_compare_parser(commands: argparse._SubParsersAction) -> None:
         "--regions",
         type=Path,
         metavar="BED",
-        help="compare only the loci that share at least one position with these regions. Such"
-        " a locus is compared whole, its VCF records outside the regions included; every other"
-        " locus is skipped, with no row and no count in the summary (default: every locus)",
+        help="compare only the loci that share at least one position with these regions; every"
+        " other locus is skipped, with no row and no count in the summary. A locus that also"
+        " has a position outside them is partly outside the regions, for every sample pair,"
+        " and counts as neither agreement nor disagreement (default: every locus)",
     )
     add(
         "--strata",

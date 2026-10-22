@@ -367,6 +367,7 @@ of its indices other than 0:
 
 | outcome | when | reported |
 |---|---|---|
+| partly outside the regions | `make_outcome_rows` is told the locus is (`doc/spec.md` §5.5) | none |
 | too complex | either sample is too complex | none |
 | invalid in A, in B, in both | that sample is invalid | none |
 | missing in A, in B, in both | every genotype of that sample's *P* has a `MISSING` | the first of each |
@@ -384,9 +385,12 @@ of its indices other than 0:
 applied. Within one ploidy two genotypes all REF are equal anyway; the words "counting as equal"
 matter only across ploidies (decided by the owner on 19 October 2026).
 
-*Too complex* and *invalid* report no pair, and in the row a sample that is too complex or invalid
-has no genotype. Its partner, when it is reconciled, shows its first possible genotype, as
-`doc/spec.md` §6 says column by column. So a row *invalid in A* still shows what B called. `PairEvaluation` holds only the reported pair;
+*Partly outside the regions* depends on the locus and `--regions`, not on the sample results, so
+`evaluate_pair` never gives it: `make_outcome_rows` gives it to every pair of a locus it is told
+lies partly outside the regions, whatever `evaluate_pair` would give (decided by the owner on 22
+October 2026). *Partly outside the regions*, *too complex* and *invalid* report no pair. In their
+rows a sample that is too complex or invalid has no genotype, and a sample that was reconciled
+shows its first possible genotype, as `doc/spec.md` §6 says column by column. So a row *invalid in A* still shows what B called. `PairEvaluation` holds only the reported pair;
 `make_outcome_rows` takes the partner's genotype from its own sample result.
 
 **Cases**, as `evaluate_pair` sees them, with `.` for `MISSING`:
@@ -431,7 +435,7 @@ is `None`, except a stratum, which is the loci spec's text, and the closed sets 
 | `sample_a`, `sample_b` | `str` | the names of the pair |
 | `outcome` | `Outcome` | §5 |
 | `alleles` | `tuple[str, ...] \| None` | the locus alleles, REF first; `None` from an evaluator that builds none |
-| `genotype_a`, `genotype_b` | `LocusGenotype \| None` | the reported genotype; in a row *too complex* or *invalid*, the first possible genotype of a sample that has one (§5); `None` for a sample too complex or invalid, or from another evaluator |
+| `genotype_a`, `genotype_b` | `LocusGenotype \| None` | the reported genotype; in a row *partly outside the regions*, *too complex* or *invalid*, the first possible genotype of a sample that has one (§5); `None` for a sample too complex or invalid, or from another evaluator |
 | `possible_a`, `possible_b` | `int \| None` | how many possible genotypes; 0 for an invalid sample; `None` for a sample too complex, or from another evaluator |
 | `quality_a`, `quality_b` | `float \| None` | the lowest QUAL among the records of the file in the locus at which the sample's VCF genotype has an index other than 0; records with no QUAL are passed over; `None` when no record is left |
 | `gq_a`, `gq_b` | `int \| None` | the lowest GQ among the same records, likewise |
@@ -490,6 +494,7 @@ The types every evaluator shares are in a module that holds only them, as `pvc_e
 ```python
 # pvc_eval.outcome
 class Outcome(StrEnum):
+    PARTLY_OUTSIDE = "partly outside the regions"
     TOO_COMPLEX = "too complex"
     INVALID_IN_A = "invalid in A"
     INVALID_IN_B = "invalid in B"
@@ -555,7 +560,9 @@ def reconcile_loci(loci: Iterator[Locus], reference: IndexedFasta,
 
 `evaluate_pair` gives the outcome of §5 from two sample results. `make_outcome_rows`, stage 5,
 gives a reconciled locus's rows, one per sample pair in the order of `sample_pairs`. It takes the
-kind and the stratum as values, since they come from the locus alone (`doc/specs/loci.md`).
+kind and the stratum as values, since they come from the locus alone (`doc/specs/loci.md`), and
+`partly_outside`, true when `--regions` is given and the locus has a position outside them
+(`Regions.covers`, `doc/specs/loci.md`), which makes every row *partly outside the regions*.
 
 ```python
 # pvc_eval.evaluate
@@ -568,7 +575,8 @@ class PairEvaluation:
 def evaluate_pair(result_a: SampleResult, result_b: SampleResult) -> PairEvaluation: ...
 
 def make_outcome_rows(reconciled: ReconciledLocus, sample_pairs: Sequence[SamplePair], *,
-                      kind: Kind, stratum: str | None) -> Iterator[OutcomeRow]: ...
+                      kind: Kind, stratum: str | None,
+                      partly_outside: bool = False) -> Iterator[OutcomeRow]: ...
 ```
 
 `reconcile` and `evaluate` are verbs the verb table of `.claude/skills/coding/python.md` lacks.
@@ -601,6 +609,10 @@ a literal.
 - **At `evaluate_pair`**: every case E1 to E14 of §5.
 - **At `make_outcome_rows`**: every field of §6 on one locus with two pairs, one of them sharing a
   sample; the partner's genotype in a row *invalid in A*; the reason in a row *too complex*;
+  with `partly_outside`, a row *partly outside the regions* for a pair that would be *same
+  genotype*, one that would be *reference in both*, one with an invalid sample and one with a
+  sample too complex, each showing each sample's first possible genotype, or none for the
+  invalid or too complex one, and the reason;
   `quality` and `gq` with a QUAL absent, and with a `*`.
 - **At `parse_vcf`**: `1` read with ploidy 2 is `OTHER_PLOIDY_GT`, with ploidy 1 a genotype;
   `1/1` read with ploidy 1 is `OTHER_PLOIDY_GT`; `./.` read with ploidy 1 and `.` with ploidy 2
@@ -616,7 +628,7 @@ a literal.
   invalid, and decomposed is not; reference `GTTT` with `2 TT GCTA 1/1` and `3 T G,TC 2/2` is
   valid, and decomposed is invalid (decided by the owner on 19 October 2026). Records that touch
   are kept whole in B. The records of both are read by `parse_vcf` over a generated reference, and the `Locus`
-  is built in the test over the spans of both. Every row is then *same genotype*, *reference in
+  is built in the test over the spans of both, with no `--regions`. Every row is then *same genotype*, *reference in
   both*, *missing in both*, *invalid in both* or *too complex*, the last three only where A
   itself has a missing haplotype, an invalid sample or a sample over the cap (`doc/spec.md`
   §7.3). Each sample's result in B is also the same as in A, the same possible genotypes with
