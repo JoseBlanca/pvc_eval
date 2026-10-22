@@ -54,8 +54,10 @@ would be:
 7. `select_loci(loci, regions)`;
 8. `reconcile_loci(loci, reference, sample_pairs, ploidy_a=..., ploidy_b=..., phasing_cap=...)`;
 9. for each reconciled locus, `make_outcome_rows(reconciled, sample_pairs, kind=locus_kind(locus),
-   stratum=...)`, where the stratum is `pvc_stratum(locus)` with `--strata pvc`,
-   `strata.stratum(locus)` with a BED, and `None` without `--strata`.
+   stratum=..., partly_outside=...)`, where the stratum is `pvc_stratum(locus)` with `--strata
+   pvc`, `strata.stratum(locus)` with a BED, and `None` without `--strata`, and `partly_outside`
+   is `not regions.covers(locus.contig, locus.start, locus.end)` with `--regions`, and false
+   without it.
 
 `compare()` yields the rows in the order these give them: locus by locus, and in each locus in the
 order of the sample pairs. Steps 1 to 3 run when the stream starts, at the first `next()`, so that
@@ -367,7 +369,8 @@ and its first line is these names.
 - The counts are summed over every sample pair. A cohort's summary therefore does not say which
   pair disagrees; the table does.
 - Every row `compare()` yields is counted, *reference in both* included, with or without
-  `--all-rows`. Loci that `--regions` skips give no row and are not counted.
+  `--all-rows`. Loci that `--regions` skips give no row and are not counted; the rows of a locus
+  partly outside the regions are counted under that outcome.
 - A line is written for each outcome and stratum that have at least one row; in it, a kind with
   no row is written `0`. Without `--strata` the stratum is `.` on every line, so the table keeps
   one layout.
@@ -590,7 +593,8 @@ writes for `compare()`'s rows; each option's value out of range, with its messag
 stderr, matched by pattern since they hold a time.
 
 **A file against itself over real data**, the check of `doc/spec.md` §7.3: GIAB's HG002 v4.2.1
-benchmark VCF for GRCh38 against itself, over chr20, every row *same genotype*, *reference in
+benchmark VCF for GRCh38 against itself, over the whole of chr20, so that no locus is partly
+outside the regions, every row *same genotype*, *reference in
 both*, *missing in both*, *invalid in both* or *too complex*, the last three only where the file
 itself has a missing haplotype, an invalid sample or a sample over the cap. It reads GRCh38 from
 the path in `PVC_EVAL_GRCH38` and the VCF from `PVC_EVAL_HG002_VCF`, and is skipped, with a

@@ -182,8 +182,15 @@ def compare(
         )
         for reconciled in reconciled_loci:
             locus = reconciled.locus
+            partly_outside = regions is not None and not regions.covers(
+                locus.contig, locus.start, locus.end
+            )
             yield from make_outcome_rows(
-                reconciled, sample_pairs, kind=locus_kind(locus), stratum=get_stratum(locus)
+                reconciled,
+                sample_pairs,
+                kind=locus_kind(locus),
+                stratum=get_stratum(locus),
+                partly_outside=partly_outside,
             )
 
 

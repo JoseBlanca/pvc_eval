@@ -20,11 +20,16 @@ from pvc_eval.vcf import MISSING, VcfGenotype, VcfRecord
 class PairEvaluation:
     """The outcome of a sample pair at a locus and the pair of possible genotypes it
     reports (doc/specs/reconciliation.md §5); both genotypes are None when the outcome
-    reports none, too complex and invalid."""
+    reports none: partly outside the regions, too complex and invalid."""
 
     outcome: Outcome
     genotype_a: LocusGenotype | None
     genotype_b: LocusGenotype | None
+
+
+# The rows of a locus partly outside the regions: the outcome comes from the locus, not from
+# the sample results, and reports no pair (doc/specs/reconciliation.md §5).
+_PARTLY_OUTSIDE = PairEvaluation(Outcome.PARTLY_OUTSIDE, None, None)
 
 
 def evaluate_pair(result_a: SampleResult, result_b: SampleResult) -> PairEvaluation:
@@ -61,6 +66,7 @@ def make_outcome_rows(
     *,
     kind: Kind,
     stratum: str | None,
+    partly_outside: bool = False,
 ) -> Iterator[OutcomeRow]:
     """The row of each sample pair at a reconciled locus, in the order of sample_pairs
     (doc/specs/reconciliation.md §6).
@@ -68,6 +74,9 @@ def make_outcome_rows(
     kind: the locus's kind, locus_kind's.
     stratum: the locus's stratum as doc/specs/loci.md gives it, `.` included; None
         without --strata.
+    partly_outside: whether --regions is given and the locus has a position outside them;
+        every row is then partly outside the regions, whatever evaluate_pair gives, and
+        reports no pair (doc/spec.md §5.5).
     """
     locus = reconciled.locus
     records_a = _count_records_with_alt(locus.records_a)
@@ -75,7 +84,7 @@ def make_outcome_rows(
     for sample_pair in sample_pairs:
         result_a = reconciled.results_a[sample_pair.index_a]
         result_b = reconciled.results_b[sample_pair.index_b]
-        evaluation = evaluate_pair(result_a, result_b)
+        evaluation = _PARTLY_OUTSIDE if partly_outside else evaluate_pair(result_a, result_b)
         quality_a, gq_a = _find_lowest_qual_and_gq(locus.records_a, sample_pair.index_a)
         quality_b, gq_b = _find_lowest_qual_and_gq(locus.records_b, sample_pair.index_b)
         yield OutcomeRow(

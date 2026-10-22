@@ -1,5 +1,5 @@
-"""The selection of --regions: read_regions, Regions and select_loci (doc/specs/loci.md
-"Regions", doc/spec.md §3 and §7.2).
+"""The selection of --regions: read_regions, Regions with its covers, and select_loci
+(doc/specs/loci.md "Regions", doc/spec.md §3, §5.5 and §7.2).
 
 The spec's cases give positions 1-based and inclusive; loci are built 0-based and
 half-open, and a BED line is 0-based and half-open, so the locus at 100 to 120 is (99, 120)
@@ -7,6 +7,8 @@ and the region at 110 to 200 is the BED line `chr1 109 200`.
 """
 
 from pathlib import Path
+
+import pytest
 
 from pvc_eval.locus import Locus
 from pvc_eval.regions import Regions, read_regions, select_loci
@@ -131,3 +133,53 @@ def test_regions_sorts_and_merges_what_it_is_given() -> None:
     regions = Regions({"chr1": [(300, 400), (100, 300), (150, 160)]})
 
     assert [regions.overlaps("chr1", 150, 160), regions.overlaps("chr1", 200, 210)] == [True, True]
+
+
+# chr1: regions at 101-150 and 151-200 (1-based), which lie next to each other and are merged,
+# and at 301-400.
+_COVERS_BED = ["chr1\t100\t150", "chr1\t150\t200", "chr1\t300\t400"]
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "expected"),
+    [
+        (100, 200, True),
+        (120, 130, True),
+        # Across the two lines that lie next to each other: one region once merged.
+        (140, 160, True),
+        (99, 120, False),
+        (190, 201, False),
+        # Across the gap between 200 and 301: both ends inside, positions between outside.
+        (190, 310, False),
+        (199, 200, True),
+        (200, 201, False),
+        (300, 301, True),
+        (399, 400, True),
+        (400, 401, False),
+    ],
+    ids=[
+        "the_whole_region",
+        "inside",
+        "across_lines_next_to_each_other",
+        "past_the_start",
+        "past_the_end",
+        "across_a_gap",
+        "last_position",
+        "first_position_after",
+        "first_position",
+        "last_position_of_the_last",
+        "after_the_last",
+    ],
+)
+def test_covers_when_every_position_lies_in_the_regions(
+    tmp_path: Path, start: int, end: int, *, expected: bool
+) -> None:
+    regions = read_regions(write_bed(tmp_path, _COVERS_BED), _CONTIGS)
+
+    assert regions.covers("chr1", start, end) is expected
+
+
+def test_covers_nothing_on_a_contig_with_no_region(tmp_path: Path) -> None:
+    regions = read_regions(write_bed(tmp_path, _COVERS_BED), _CONTIGS)
+
+    assert regions.covers("chr2", 0, 1) is False
