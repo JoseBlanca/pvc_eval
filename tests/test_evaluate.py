@@ -482,3 +482,94 @@ def test_make_outcome_rows_gives_lowest_quality_and_gq_of_records_with_alt(
     (row,) = make_outcome_rows(reconciled, sample_pairs, kind=Kind.COMPLEX, stratum=None)
 
     assert (row.quality_a, row.gq_a, row.quality_b, row.gq_b) == (quality, gq, None, None)
+
+
+def test_make_outcome_rows_partly_outside_gives_it_to_every_pair_with_first_genotypes() -> None:
+    # Locus 10-11, A, a SNP A>G at 10 in both files. Without partly_outside, S0-T0 would be
+    # same genotype, S1-T1 reference in both and S2-T2 invalid in A (S2's GT is malformed).
+    records_a = (
+        make_record(
+            10,
+            ("A", "G"),
+            30.0,
+            [make_genotype((0, 1), 20), make_genotype((0, 0), 21), MALFORMED_GT],
+        ),
+    )
+    records_b = (
+        make_record(
+            10,
+            ("A", "G"),
+            50.0,
+            [make_genotype((0, 1), 40), make_genotype((0, 0), 41), make_genotype((0, 1), 42)],
+        ),
+    )
+    locus = Locus(CONTIG, 10, 11, records_a, records_b, ())
+    sample_pairs = tuple(
+        SamplePair(name_a=f"S{index}", index_a=index, name_b=f"T{index}", index_b=index)
+        for index in range(3)
+    )
+    reconciled = reconcile(locus, "A", sample_pairs)
+
+    rows = list(
+        make_outcome_rows(
+            reconciled, sample_pairs, kind=Kind.SNP, stratum="generic", partly_outside=True
+        )
+    )
+
+    common = {
+        "contig": CONTIG,
+        "start": 10,
+        "end": 11,
+        "kind": Kind.SNP,
+        "stratum": "generic",
+        "str_regions": (),
+        "outcome": Outcome.PARTLY_OUTSIDE,
+        "alleles": ("A", "G"),
+        "records_a": 1,
+        "records_b": 1,
+        "invalid_reason_b": None,
+    }
+    assert rows == [
+        OutcomeRow(
+            **common,
+            sample_a="S0",
+            sample_b="T0",
+            genotype_a=(0, 1),
+            genotype_b=(0, 1),
+            possible_a=1,
+            possible_b=1,
+            quality_a=30.0,
+            quality_b=50.0,
+            gq_a=20,
+            gq_b=40,
+            invalid_reason_a=None,
+        ),
+        OutcomeRow(
+            **common,
+            sample_a="S1",
+            sample_b="T1",
+            genotype_a=(0, 0),
+            genotype_b=(0, 0),
+            possible_a=1,
+            possible_b=1,
+            quality_a=None,
+            quality_b=None,
+            gq_a=None,
+            gq_b=None,
+            invalid_reason_a=None,
+        ),
+        OutcomeRow(
+            **common,
+            sample_a="S2",
+            sample_b="T2",
+            genotype_a=None,
+            genotype_b=(0, 1),
+            possible_a=0,
+            possible_b=1,
+            quality_a=None,
+            quality_b=50.0,
+            gq_a=None,
+            gq_b=42,
+            invalid_reason_a=InvalidReason.MALFORMED_GT,
+        ),
+    ]

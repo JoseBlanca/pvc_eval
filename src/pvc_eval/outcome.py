@@ -18,6 +18,7 @@ class Outcome(StrEnum):
     """The outcome of a sample pair at a locus, in the words the table writes
     (doc/spec.md §5.5)."""
 
+    PARTLY_OUTSIDE = "partly outside the regions"
     TOO_COMPLEX = "too complex"
     INVALID_IN_A = "invalid in A"
     INVALID_IN_B = "invalid in B"
@@ -59,8 +60,8 @@ class OutcomeRow:
         of the BED overlaps; None without --strata.
     str_regions: the STR regions the locus contains.
     alleles: the locus alleles, REF first; None from an evaluator that builds none.
-    genotype_a, genotype_b: the reported genotype; in a row too complex or invalid, the
-        first possible genotype of a sample that has one; None for a sample too complex or
+    genotype_a, genotype_b: the reported genotype; in a row partly outside the regions, too
+        complex or invalid, the first possible genotype of a sample that has one; None for a sample too complex or
         invalid, or from another evaluator.
     possible_a, possible_b: how many possible genotypes the sample has; 0 for an invalid
         sample; None for a sample too complex, or from another evaluator.

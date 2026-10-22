@@ -86,9 +86,16 @@ def _run_nine_steps(
             )
             for reconciled in reconciled_loci:  # step 9
                 locus = reconciled.locus
+                partly_outside = regions is not None and not regions.covers(
+                    locus.contig, locus.start, locus.end
+                )
                 rows.extend(
                     make_outcome_rows(
-                        reconciled, sample_pairs, kind=locus_kind(locus), stratum=get_stratum(locus)
+                        reconciled,
+                        sample_pairs,
+                        kind=locus_kind(locus),
+                        stratum=get_stratum(locus),
+                        partly_outside=partly_outside,
                     )
                 )
     except PvcEvalInputError as error:
@@ -268,6 +275,33 @@ def test_locus_widened_by_str_region_gives_its_row(tmp_path: Path) -> None:
             invalid_reason_b=None,
         )
     ]
+
+
+@pytest.mark.parametrize(
+    ("bed_lines", "expected"),
+    [
+        (["chr3 100 120"], Outcome.SAME_GENOTYPE),
+        # Two lines that lie next to each other cover the locus as one region.
+        (["chr3 100 110", "chr3 110 120"], Outcome.SAME_GENOTYPE),
+        (["chr3 100 101"], Outcome.PARTLY_OUTSIDE),
+        (["chr3 119 300"], Outcome.PARTLY_OUTSIDE),
+        (["chr3 100 110", "chr3 111 120"], Outcome.PARTLY_OUTSIDE),
+    ],
+    ids=["inside", "inside_two_lines", "past_the_end", "past_the_start", "across_a_gap"],
+)
+def test_locus_reaching_past_the_regions_is_partly_outside_them(
+    tmp_path: Path, bed_lines: list[str], expected: Outcome
+) -> None:
+    # The locus at chr3:101-120 (1-based), 0-based (100, 120), same genotype without
+    # --regions, as test_locus_widened_by_str_region_gives_its_row shows.
+    case = write_compare_case(tmp_path)
+    config = CompareConfig(regions=write_bed(tmp_path / "regions.bed", bed_lines))
+    rows = [
+        (row.contig, row.start, row.end, row.outcome, row.genotype_a, row.genotype_b)
+        for row in compare(case.a, case.b, case.reference, config, finder_threads=0)
+        if row.contig == "chr3" and row.start < 200
+    ]
+    assert rows == [("chr3", 100, 120, expected, (0, 1), (0, 1))]
 
 
 def test_contigs_with_records_are_scanned_and_contig_4_is_not(

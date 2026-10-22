@@ -1,9 +1,10 @@
 """The selection of --regions (doc/spec.md §3, doc/specs/loci.md "Regions"): a locus is
-compared when it shares at least one position with a region, and skipped otherwise.
+compared when it shares at least one position with a region, and skipped otherwise; a locus
+compared that has a position outside the regions is partly outside them (doc/spec.md §5.5).
 
 Positions are 0-based and half-open, as a BED and a Locus give them.
 
-Public: Regions, the regions of a BED; read_regions, which reads them; select_loci, which
+Public: Regions, the regions of a BED, with overlaps and covers; read_regions, which reads them; select_loci, which
 yields the loci they keep.
 """
 
@@ -41,6 +42,20 @@ class Regions:
         ends = self._ends[contig]
         first_after_start = bisect_right(ends, start)  # the first region that ends after start
         return first_after_start < len(ends) and self._starts[contig][first_after_start] < end
+
+    def covers(self, contig: str, start: int, end: int) -> bool:
+        """Whether every position of `[start, end)` of contig, 0-based and half-open, lies
+        in a region. Regions that lie next to each other are one, so a stretch across the
+        edge between two of them is covered."""
+        if contig not in self._ends:
+            return False
+        ends = self._ends[contig]
+        first_after_start = bisect_right(ends, start)  # the only region that can hold start
+        return (
+            first_after_start < len(ends)
+            and self._starts[contig][first_after_start] <= start
+            and end <= ends[first_after_start]
+        )
 
 
 def read_regions(path: Path, contigs: Sequence[str]) -> Regions:
