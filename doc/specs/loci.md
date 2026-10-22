@@ -249,10 +249,12 @@ yields.
 ### Regions
 
 `--regions` keeps a locus when it shares at least one position with a region, and skips it
-otherwise (`doc/spec.md` §3). A locus is the stretch from `start` to `end`; a record with no ALT
-whose REF reaches past it does not count. A locus at 100–120 is kept by a region at 110–200, and
-compared whole, its records at 100–109 included. It is skipped by a region at 121–200, which only
-lies next to it.
+otherwise (`doc/spec.md` §3). A kept locus that has a position outside the regions is *partly
+outside the regions* (`doc/spec.md` §5.5). A locus is the stretch from `start` to `end`; a record
+with no ALT whose REF reaches past it does not count. A locus at 100–120 is kept by a region at
+110–200, and is partly outside it. It is skipped by a region at 121–200, which only lies next to
+it. With regions at 90–109 and 110–200, which lie next to each other and are merged, it is kept
+and wholly inside.
 
 `read_regions` reads the BED whole, since BEDs such as GIAB's come sorted by contig name rather
 than in the `.fai`'s order. GIAB's benchmark regions for HG002 on GRCh38 hold about 300,000 lines.
@@ -276,11 +278,13 @@ BED's names differ from the reference's only in style, `1` against `chr1`, the m
 rename them, since keeping only the reference's contigs would then keep no line.
 
 `select_loci` yields, in their order, the loci that share a position with the regions, and every
-locus when `regions` is None.
+locus when `regions` is None. `Regions.covers` says whether every position of a stretch lies in
+the regions, which the caller of `make_outcome_rows` asks of each locus `select_loci` keeps.
 
 ```python
 class Regions:
     def overlaps(self, contig: str, start: int, end: int) -> bool: ...
+    def covers(self, contig: str, start: int, end: int) -> bool: ...
 
 def read_regions(path: Path, contigs: Sequence[str]) -> Regions: ...
 def select_loci(loci: Iterator[Locus], regions: Regions | None) -> Iterator[Locus]: ...
@@ -406,8 +410,8 @@ not overlap.
 `tmp_path` that holds an AT repeat and an insertion of AT before it. It is skipped, with a message,
 until `segment_contig` exists on the branch.
 
-**At `select_loci`, `locus_kind`, `pvc_stratum` and `Strata.stratum`:** the cases of their
-sections; a region list read from an unsorted BED with overlapping lines; each refusal of
+**At `select_loci`, `Regions.covers`, `locus_kind`, `pvc_stratum` and `Strata.stratum`:** the
+cases of their sections; a region list read from an unsorted BED with overlapping lines; each refusal of
 `read_regions` and `read_strata`; the strata cases of `doc/spec.md` §7.2 at `pvc_stratum`; and
 one locus of each kind, including a *too complex* one, which is §7.2's.
 

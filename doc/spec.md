@@ -96,7 +96,7 @@ the contigs whose loci need STR regions.
 |---|---|
 | `--reference` | FASTA with its `.fai`. Contig names and order come from the `.fai`. |
 | `--a`, `--b` | the two VCFs, plain or bgzipped. |
-| `--regions` | compare only the loci that overlap these regions, by at least one position; every other locus is skipped and gets no row, nor a count in the summary. A locus that overlaps is compared whole, its VCF records outside the regions included, since loci are built from all VCF records (§5.3). The VCF records of a contig it does not name are not read beyond their contig and position (`doc/specs/regions_read.md`). Without it, every locus is compared. |
+| `--regions` | compare only the loci that overlap these regions, by at least one position; every other locus is skipped and gets no row, nor a count in the summary. A locus that overlaps them but has a position outside them gets the outcome *partly outside the regions* for every sample pair (§5.5), since loci are built from all VCF records (§5.3) and the regions do not cover all of it. The VCF records of a contig it does not name are not read beyond their contig and position (`doc/specs/regions_read.md`). Without it, every locus is compared and none is partly outside. |
 | `--strata` | BED with a fourth column naming each interval's class; a locus takes the class of the intervals it overlaps (several are joined with `,`; none gives `.`). The word `pvc` instead of a path gives each locus one region type from the STR regions it holds — `satellite`, `str-bundle`, `str` or `generic` — with no BED needed (§5.7); a file named `pvc` is given as `./pvc`. |
 | `--str-regions` | BED of STR regions to use instead of running the STR finder. |
 | `--sample-map` | two columns: a sample of A, a sample of B. Without it, samples are paired by name. |
@@ -633,6 +633,7 @@ Each sample pair at each compared locus gets exactly one outcome. The first rule
 
 | outcome | when |
 |---|---|
+| **partly outside the regions** | with `--regions`, the locus shares a position with the regions and has a position outside them (§3) |
 | **too complex** | either file's sample exceeds the phasing cap at the locus and was not reconciled (§5.4) |
 | **invalid in A**, **invalid in B**, **invalid in both** | that file's sample is invalid at the locus |
 | **missing in A**, **missing in B**, **missing in both** | every possible genotype of that file's sample has a missing haplotype |
@@ -645,10 +646,25 @@ Each sample pair at each compared locus gets exactly one outcome. The first rule
 When several possible genotypes exist, the pair reported in the table is the first, taking A's
 possible genotypes in order and, for each, B's in order, that meets the rule of the outcome. Where
 the rule names no pair (*missing*, *reference in both*, *only in*, *different*), it is the first
-possible genotype of each file. *Too complex* and *invalid* report no pair; in their rows a sample
-that was reconciled shows its first possible genotype (§6). Rows come locus by
+possible genotype of each file. *Partly outside the regions*, *too complex* and *invalid* report no
+pair; in their rows a sample that was reconciled shows its first possible genotype (§6). Rows come locus by
 locus, and within a locus in the order of the sample pairs: file A's header order, or the order of
 `--sample-map`.
+
+*Partly outside the regions* is neither agreement nor disagreement, and is counted as neither
+(decided by the owner on 22 October 2026, over comparing such a locus whole). When file A is a
+benchmark's truth set and `--regions` its confident regions, A holds no VCF records past their
+edge, so a record of B there, or the record of A that B spells across the edge, would read as
+*only in B* or *different* although nothing was compared there. Of the 12 GIAB runs on chr22 of
+22 October 2026 (HG002, HG003 and HG004 at 5x to 300x against pvc's calls), every locus wholly
+inside the regions got the outcome hap.py gave it; the disagreements were 31 to 69 loci per run
+that reach past the regions, mostly long STR regions, which hap.py does not assess (it labels
+their records `UNK`). Positions are judged on the locus, `start` to `end`: a record with no ALT
+whose REF reaches past the locus does not count, and regions that overlap or lie next to each
+other are one. The locus is still reconciled, so its row shows what each file called. The
+outcome comes first so that no other outcome is given on positions the regions leave out, and
+so its rows are written without `--all-rows`, one per sample pair, also where both files are
+reference.
 
 `./1` in both files is *missing in both*, not *same genotype*: half of each genotype is unknown,
 so nothing says the files agree there (decided by the owner on 19 October 2026).
@@ -745,7 +761,8 @@ Nothing about pvc_eval is trusted until these pass.
    - loci: chaining across both files; the traded events of §5.3, one locus at chain distance 1
      and two at 0; adjacent SNPs, chained at 0; a record with no ALT, which starts no locus; an insertion next to a repeat pulling it in; two
      complex records at the two ends of a repeat; with `--regions`, a locus
-     sticking out of a region compared whole, and one sharing no position with any region skipped;
+     sticking out of a region *partly outside the regions*, one inside two regions that lie next
+     to each other compared, and one sharing no position with any region skipped;
    - reconciliation: the invalid example of §5.4 and its valid variant; GATK's `*` form, and a `*`
      on a haplotype with no deletion, and one on a deletion's anchor base only (impossible); the
      `bcftools norm` output of GATK's `*` form (valid), and of the first case of §5.2 (invalid); an insertion that slides with its bases rotated; the insertion of `52 AG → A,AAG` after the
