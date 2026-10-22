@@ -593,7 +593,8 @@ writes for `compare()`'s rows; each option's value out of range, with its messag
 stderr, matched by pattern since they hold a time.
 
 **A file against itself over real data**, the check of `doc/spec.md` §7.3: GIAB's HG002 v4.2.1
-benchmark VCF for GRCh38 against itself, over chr20, every row *same genotype*, *reference in
+benchmark VCF for GRCh38 against itself, over the whole of chr20, so that no locus is partly
+outside the regions, every row *same genotype*, *reference in
 both*, *missing in both*, *invalid in both* or *too complex*, the last three only where the file
 itself has a missing haplotype, an invalid sample or a sample over the cap. It reads GRCh38 from
 the path in `PVC_EVAL_GRCH38` and the VCF from `PVC_EVAL_HG002_VCF`, and is skipped, with a

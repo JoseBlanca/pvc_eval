@@ -777,7 +777,9 @@ Nothing about pvc_eval is trusted until these pass.
      without a type column (an error).
 3. **A file against itself:** every row *same genotype*, *reference in both*, *missing in both*,
    *invalid in both* or *too complex*; the last three only where the file itself has a missing
-   haplotype, an invalid sample or a sample over the phasing cap.
+   haplotype, an invalid sample or a sample over the phasing cap. This holds without `--regions`,
+   or with regions no locus reaches past; a locus that does is *partly outside the regions*
+   (§5.5).
 4. **A file against re-spellings of itself** — every VCF record decomposed into single-base and
    single-indel records with genotypes carried over; neighbouring records merged into complex ones;
    indels shifted right within their repeats, where no other edit of the same haplotype lies in

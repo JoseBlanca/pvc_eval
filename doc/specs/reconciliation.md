@@ -371,9 +371,9 @@ matter only across ploidies (decided by the owner on 19 October 2026).
 *Partly outside the regions* depends on the locus and `--regions`, not on the sample results, so
 `evaluate_pair` never gives it: `make_outcome_rows` gives it to every pair of a locus it is told
 lies partly outside the regions, whatever `evaluate_pair` would give (decided by the owner on 22
-October 2026). *Partly outside the regions*, *too complex* and *invalid* report no pair, and in the
-row a sample that is too complex or invalid has no genotype. Its partner, when it is reconciled, shows its first possible genotype, as
-`doc/spec.md` §6 says column by column. So a row *invalid in A* still shows what B called. `PairEvaluation` holds only the reported pair;
+October 2026). *Partly outside the regions*, *too complex* and *invalid* report no pair. In their
+rows a sample that is too complex or invalid has no genotype, and a sample that was reconciled
+shows its first possible genotype, as `doc/spec.md` §6 says column by column. So a row *invalid in A* still shows what B called. `PairEvaluation` holds only the reported pair;
 `make_outcome_rows` takes the partner's genotype from its own sample result.
 
 **Cases**, as `evaluate_pair` sees them, with `.` for `MISSING`:
@@ -418,7 +418,7 @@ is `None`, except a stratum, which is the loci spec's text, and the closed sets 
 | `sample_a`, `sample_b` | `str` | the names of the pair |
 | `outcome` | `Outcome` | §5 |
 | `alleles` | `tuple[str, ...] \| None` | the locus alleles, REF first; `None` from an evaluator that builds none |
-| `genotype_a`, `genotype_b` | `LocusGenotype \| None` | the reported genotype; in a row *too complex* or *invalid*, the first possible genotype of a sample that has one (§5); `None` for a sample too complex or invalid, or from another evaluator |
+| `genotype_a`, `genotype_b` | `LocusGenotype \| None` | the reported genotype; in a row *partly outside the regions*, *too complex* or *invalid*, the first possible genotype of a sample that has one (§5); `None` for a sample too complex or invalid, or from another evaluator |
 | `possible_a`, `possible_b` | `int \| None` | how many possible genotypes; 0 for an invalid sample; `None` for a sample too complex, or from another evaluator |
 | `quality_a`, `quality_b` | `float \| None` | the lowest QUAL among the records of the file in the locus at which the sample's VCF genotype has an index other than 0; records with no QUAL are passed over; `None` when no record is left |
 | `gq_a`, `gq_b` | `int \| None` | the lowest GQ among the same records, likewise |
@@ -589,7 +589,7 @@ a literal.
   invalid, and decomposed is not; reference `GTTT` with `2 TT GCTA 1/1` and `3 T G,TC 2/2` is
   valid, and decomposed is invalid (decided by the owner on 19 October 2026). Records that touch
   are kept whole in B. The records of both are read by `parse_vcf` over a generated reference, and the `Locus`
-  is built in the test over the spans of both. Every row is then *same genotype*, *reference in
+  is built in the test over the spans of both, with no `--regions`. Every row is then *same genotype*, *reference in
   both*, *missing in both*, *invalid in both* or *too complex*, the last three only where A
   itself has a missing haplotype, an invalid sample or a sample over the cap (`doc/spec.md`
   §7.3). Each sample's result in B is also the same as in A, the same possible genotypes with
