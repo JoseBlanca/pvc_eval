@@ -4,8 +4,8 @@ compared that has a position outside the regions is partly outside them (doc/spe
 
 Positions are 0-based and half-open, as a BED and a Locus give them.
 
-Public: Regions, the regions of a BED, with overlaps and covers; read_regions, which reads them; select_loci, which
-yields the loci they keep.
+Public: Regions, the regions of a BED, with overlaps and covers; read_regions, which reads
+them; select_loci, which yields the loci they keep.
 """
 
 from bisect import bisect_right

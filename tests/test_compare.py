@@ -286,8 +286,19 @@ def test_locus_widened_by_str_region_gives_its_row(tmp_path: Path) -> None:
         (["chr3 100 101"], Outcome.PARTLY_OUTSIDE),
         (["chr3 119 300"], Outcome.PARTLY_OUTSIDE),
         (["chr3 100 110", "chr3 111 120"], Outcome.PARTLY_OUTSIDE),
+        # Only the locus's last base, or only its first, lies outside.
+        (["chr3 100 119"], Outcome.PARTLY_OUTSIDE),
+        (["chr3 101 120"], Outcome.PARTLY_OUTSIDE),
     ],
-    ids=["inside", "inside_two_lines", "past_the_end", "past_the_start", "across_a_gap"],
+    ids=[
+        "inside",
+        "inside_two_lines",
+        "past_the_end",
+        "past_the_start",
+        "across_a_gap",
+        "last_base_outside",
+        "first_base_outside",
+    ],
 )
 def test_locus_reaching_past_the_regions_is_partly_outside_them(
     tmp_path: Path, bed_lines: list[str], expected: Outcome

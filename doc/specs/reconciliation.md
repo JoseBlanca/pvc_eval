@@ -572,8 +572,9 @@ a literal.
 - **At `make_outcome_rows`**: every field of §6 on one locus with two pairs, one of them sharing a
   sample; the partner's genotype in a row *invalid in A*; the reason in a row *too complex*;
   with `partly_outside`, a row *partly outside the regions* for a pair that would be *same
-  genotype*, one that would be *reference in both* and one with an invalid sample, each showing
-  each sample's first possible genotype, or none for the invalid one, and its reason;
+  genotype*, one that would be *reference in both*, one with an invalid sample and one with a
+  sample too complex, each showing each sample's first possible genotype, or none for the
+  invalid or too complex one, and the reason;
   `quality` and `gq` with a QUAL absent, and with a `*`.
 - **At `parse_vcf`**: `1` read with ploidy 2 is `OTHER_PLOIDY_GT`, with ploidy 1 a genotype;
   `1/1` read with ploidy 1 is `OTHER_PLOIDY_GT`; `./.` read with ploidy 1 and `.` with ploidy 2

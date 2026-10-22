@@ -573,3 +573,28 @@ def test_make_outcome_rows_partly_outside_gives_it_to_every_pair_with_first_geno
             invalid_reason_a=InvalidReason.MALFORMED_GT,
         ),
     ]
+
+
+def test_make_outcome_rows_partly_outside_comes_before_too_complex() -> None:
+    # Locus 10-12, AC, with a phasing cap of 1: S0 is 0/1 at two unphased SNPs, two
+    # assignments, so too complex without partly_outside.
+    records_a = (
+        make_record(10, ("A", "G"), 30.0, [make_genotype((0, 1), 20)]),
+        make_record(11, ("C", "T"), 35.0, [make_genotype((0, 1), 25)]),
+    )
+    records_b = (make_record(10, ("A", "G"), 50.0, [make_genotype((0, 1), 60)]),)
+    locus = Locus(CONTIG, 10, 12, records_a, records_b, ())
+    sample_pairs = (SamplePair(name_a="S0", index_a=0, name_b="T0", index_b=0),)
+    reconciled = reconcile(locus, "AC", sample_pairs, phasing_cap=1)
+
+    (row,) = make_outcome_rows(
+        reconciled, sample_pairs, kind=Kind.SNP, stratum=None, partly_outside=True
+    )
+
+    assert (row.outcome, row.genotype_a, row.possible_a, row.genotype_b, row.possible_b) == (
+        Outcome.PARTLY_OUTSIDE,
+        None,
+        None,
+        (0, 1),
+        1,
+    )
